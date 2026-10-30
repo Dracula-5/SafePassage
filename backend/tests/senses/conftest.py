@@ -18,7 +18,7 @@ REDIS_URL = os.environ.get("TEST_REDIS_URL")
 
 
 def fixture_text(name: str) -> str:
-    return (FIXTURES / name).read_text()
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 class NoKnownRows:

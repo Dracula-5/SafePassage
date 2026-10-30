@@ -32,7 +32,7 @@ def _ref(feature: dict) -> str:
 
 
 def _features(path: Path):
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         for line in fh:
             yield json.loads(line.lstrip("\x1e"))
 
