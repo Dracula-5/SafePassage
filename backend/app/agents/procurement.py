@@ -27,6 +27,31 @@ class StockRow:
     unit_weight_kg: float
 
 
+def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    import math
+
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(a))
+
+
+def nearby_candidates(stock: list[StockRow], points: list[tuple[float, float]], radius_m: float,
+                      per_item: int) -> list[StockRow]:
+    """Suppliers within radius_m (straight line) of any relief point, nearest `per_item` per item.
+
+    Keeps the road-time matrix inside the router's limits; farther stock is not considered.
+    """
+    def nearest(s: StockRow) -> float:
+        return min(haversine_m(s.lon, s.lat, lon, lat) for lon, lat in points)
+
+    by_item: dict[str, list[tuple[float, StockRow]]] = defaultdict(list)
+    for s in stock:
+        d = nearest(s)
+        if d <= radius_m:
+            by_item[s.item_code].append((d, s))
+    return [s for rows in by_item.values() for _, s in sorted(rows, key=lambda x: x[0])[:per_item]]
+
+
 def order_key(plan_id: str, supplier_id: str, destination_id: str) -> str:
     return hashlib.sha256(f"{plan_id}|{supplier_id}|{destination_id}".encode()).hexdigest()[:16]
 
