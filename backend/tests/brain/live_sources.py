@@ -3,6 +3,7 @@
 import xml.etree.ElementTree as ET
 
 import httpx
+import pytest
 from shapely import Polygon, box
 
 from app.routing.valhalla import Location
@@ -31,6 +32,9 @@ async def live_hazards(client: httpx.AsyncClient, limit: int = 60):
     for item in list(ET.fromstring(rss.content).iter("item"))[:limit]:
         guid = item.findtext("guid")
         resp = await client.get(SACHET_POLYGON.format(guid), timeout=30)
+        if resp.status_code == 403:
+            # SACHET rate-limits polygon downloads per IP; do not keep hammering it from tests.
+            pytest.skip("SACHET polygon endpoint is rate-limiting this IP (HTTP 403)")
         if resp.status_code != 200 or "<polygon>" not in resp.text:
             continue
         for poly in sorted(parse_cap_polygons(resp.text), key=lambda p: -p.area):
