@@ -1,0 +1,10 @@
+{
+  "name": "ReliefRoute Driver",
+  "short_name": "RR Driver",
+  "start_url": "/driver/",
+  "scope": "/driver/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0b7285",
+  "icons": [{ "src": "/driver/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
