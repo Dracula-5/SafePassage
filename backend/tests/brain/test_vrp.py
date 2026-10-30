@@ -79,7 +79,10 @@ def test_vehicle_availability_window():
 
 @pytest.mark.parametrize("bad", [
     {"durations_s": [[0, 1], [1]]},
-    {"stops": [VrpStop(stop_id="x", node=0, demand_kg=1)]},
+    {"stops": [VrpStop(stop_id="x", node=9, demand_kg=1)]},
+    {"stops": [VrpStop(stop_id="p", node=1, demand_kg=1, kind="pickup")]},
+    {"stops": [VrpStop(stop_id="p", node=1, demand_kg=1, kind="pickup"),
+               VrpStop(stop_id="d", node=2, demand_kg=2, kind="dropoff")], "pairs": [("p", "d")]},
     {"stops": [VrpStop(stop_id="x", node=1, demand_kg=1), VrpStop(stop_id="x", node=2, demand_kg=1)]},
 ])
 def test_invalid_problems_rejected(bad):
@@ -87,3 +90,49 @@ def test_invalid_problems_rejected(bad):
                 stops=[], horizon_s=100)
     with pytest.raises(ValueError):
         VrpProblem(**(base | bad))
+
+
+def test_pickup_delivery_pairs_same_vehicle_pickup_first_and_capacity():
+    # Line 0..5. Truck at 0 (cap 1000). Supplier at 1 holds two orders for 3 and 5.
+    p = VrpProblem(
+        durations_s=matrix(6),
+        vehicles=[VrpVehicle(vehicle_id="t", start_node=0, end_node=0, capacity_kg=1000)],
+        stops=[VrpStop(stop_id="p1", node=1, demand_kg=600, kind="pickup"),
+               VrpStop(stop_id="d1", node=3, demand_kg=600, kind="dropoff"),
+               VrpStop(stop_id="p2", node=1, demand_kg=300, kind="pickup"),   # same supplier node
+               VrpStop(stop_id="d2", node=5, demand_kg=300, kind="dropoff")],
+        pairs=[("p1", "d1"), ("p2", "d2")], horizon_s=24 * 3600, time_limit_s=1,
+    )
+    sol = solve(p)
+    assert sol.unserved == []
+    [route] = sol.routes
+    order = [v.stop_id for v in route.visits]
+    assert order.index("p1") < order.index("d1") and order.index("p2") < order.index("d2")
+    assert route.peak_load_kg <= 1000 and route.load_kg == 900
+
+
+def test_pair_too_heavy_is_dropped_together():
+    p = VrpProblem(
+        durations_s=matrix(3),
+        vehicles=[VrpVehicle(vehicle_id="t", start_node=0, end_node=0, capacity_kg=500)],
+        stops=[VrpStop(stop_id="p", node=1, demand_kg=800, kind="pickup"),
+               VrpStop(stop_id="d", node=2, demand_kg=800, kind="dropoff")],
+        pairs=[("p", "d")], horizon_s=3600, time_limit_s=1,
+    )
+    assert sorted(solve(p).unserved) == ["d", "p"]
+
+
+def test_pairs_never_exceed_capacity_on_board():
+    p = VrpProblem(
+        durations_s=matrix(4),
+        vehicles=[VrpVehicle(vehicle_id="a", start_node=0, end_node=0, capacity_kg=700),
+                  VrpVehicle(vehicle_id="b", start_node=0, end_node=0, capacity_kg=700)],
+        stops=[VrpStop(stop_id="p1", node=1, demand_kg=600, kind="pickup"),
+               VrpStop(stop_id="d1", node=2, demand_kg=600, kind="dropoff"),
+               VrpStop(stop_id="p2", node=1, demand_kg=600, kind="pickup"),
+               VrpStop(stop_id="d2", node=3, demand_kg=600, kind="dropoff")],
+        pairs=[("p1", "d1"), ("p2", "d2")], horizon_s=24 * 3600, time_limit_s=1,
+    )
+    sol = solve(p)
+    # Either truck may do both trips in sequence; what must hold is the on-board limit.
+    assert sol.unserved == [] and all(r.peak_load_kg <= 700 for r in sol.routes)
