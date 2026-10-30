@@ -291,3 +291,15 @@ CREATE VIEW v_source_freshness AS
 SELECT sh.*,
        (sh.last_success_at IS NULL OR now() - sh.last_success_at > make_interval(secs => sh.ttl_seconds)) AS is_stale
 FROM source_health sh;
+
+-- Facilities and suppliers for cross-reads (approved request A-facilities-suppliers-views).
+CREATE VIEW v_facilities AS
+SELECT f.id, f.source, f.source_ref, f.kind, f.name, f.geom, f.capacity_people, f.attributes,
+       f.fetched_at, EXISTS (SELECT 1 FROM suppliers s WHERE s.facility_id = f.id) AS is_supplier
+FROM facilities f;
+
+-- portal_token_hash is deliberately not exposed.
+CREATE VIEW v_suppliers AS
+SELECT s.id, s.facility_id, s.name, s.contact_phone, s.contact_whatsapp, s.preferred_language,
+       s.verified, f.geom, f.name AS facility_name
+FROM suppliers s JOIN facilities f ON f.id = s.facility_id;

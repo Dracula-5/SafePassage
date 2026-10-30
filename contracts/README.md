@@ -22,7 +22,8 @@ the human decides and applies it.
    agent_events, LangGraph checkpoint tables. B writes hazards, facilities, suppliers, stock,
    vehicles, telemetry, source_health.
 2. Cross-reads use the `v_*` views (`v_active_hazards`, `v_vehicle_status`,
-   `v_vehicle_assignment`, `v_available_stock`, `v_source_freshness`). Reading your own
+   `v_vehicle_assignment`, `v_available_stock`, `v_source_freshness`, `v_facilities`,
+   `v_suppliers`). Reading your own
    tables directly is fine.
 3. Owners may add columns, indexes and private tables in their own `1xx`/`2xx` migrations.
    They may not drop, rename or retype a column listed in `db/SCHEMA.md`.
