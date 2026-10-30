@@ -20,6 +20,8 @@ Every source is a poller with a timeout, retries with jitter, and a circuit brea
 
 **Deduplication.** Hazards have a `dedupe_key` and a content hash. A repeat of the same alert changes nothing and emits nothing; `version` moves only on real changes.
 
+**Matching AePDS offices to mandals.** The two sources romanise Telugu names differently, and a wrong match puts real stock in the wrong town. An office must match a spelling-insensitive key, inside the districts that its neighbours' exact matches point to, with one answer left. Anything else is skipped and logged by name. Plain fuzzy matching was tried and rejected: it sent Kovur to Kovvur and Bogole to Ongole.
+
 **Never burst SACHET polygon downloads.** It blocks the IP with 403s for hours. The poller is throttled.
 
 ## Telemetry

@@ -6,6 +6,8 @@ Built for a Gen-AI buildathon (Theme 2: Climate, Resource Infrastructure & Globa
 
 **LLMs reason, solvers compute.** Gemini triages alerts, briefs the human and translates driver instructions. OR-Tools plans the routes and Shapely verifies them. The LLM never supplies a coordinate, distance or stock figure.
 
+![Dashboard: a planned route bending around a flood drill at Tenali, with the agent timeline and approval panel](docs/images/dashboard.png)
+
 ## How it works
 
 ```mermaid
@@ -72,7 +74,7 @@ See [docs/brain.md](docs/brain.md) and [docs/senses.md](docs/senses.md) for the 
 | [NDMA SACHET](https://sachet.ndma.gov.in/) (CAP) | Official alerts | Live. When SACHET rate-limits polygon downloads, alerts are placed on OSM boundaries by their area names, and labelled as such |
 | [GDACS](https://www.gdacs.org/) | Cyclones and floods | Live |
 | [Open-Meteo](https://open-meteo.com/) | Forecast rainfall, classified with IMD 24 h categories | Live |
-| [AePDS](https://aepos.ap.gov.in/) | Real PDS rice and dal stock per mandal | Live, every 6 h. Pickup points are approximate because shop locations are not published |
+| [AePDS](https://aepos.ap.gov.in/) | Real PDS rice and dal stock per mandal | Live, every 6 h. Pickup points are approximate because shop locations are not published. About 36 offices are skipped because their names can't be matched with certainty |
 | OpenStreetMap ([Geofabrik](https://download.geofabrik.de/asia/india.html)) | Roads, facilities, admin boundaries, census population tags | Official extract. Overpass is tried first for facilities |
 | Supplier portal, WhatsApp | Stock reported by real suppliers | Portal live. WhatsApp needs Twilio credentials |
 | Driver PWA | Real phone GPS | Live |
@@ -200,5 +202,7 @@ docs/                  Design notes, demo script, gate reports
 - **Population is an estimate.** OSM census tags cover about 2.7% of settlements, so rural populations are undercounted. City figures are scaled by how much of their mandal the hazard covers, assuming even density. Every plan shows its coverage.
 - **PDS stock locations are approximate:** a point inside the mandal, not the shops.
 - **SMS and WhatsApp need Twilio credentials.** Without them, messages are recorded as not sent.
+- **No re-sourcing after dispatch.** If a supplier is cut off once goods are on order, they are escalated to a human rather than bought elsewhere.
+- **Waves aren't scheduled.** Goods beyond the first wave are shown to the human, not planned automatically.
 - **One brain worker at a time.** Crash recovery assumes a single worker.
 - **Telugu and Hindi voice** depend on the speech voices installed on the driver's phone.

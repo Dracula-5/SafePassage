@@ -11,7 +11,8 @@ COPY backend/app ./backend/app
 COPY backend/migrations ./backend/migrations
 COPY driver-pwa ./driver-pwa
 
-RUN useradd --create-home relief && mkdir -p /data && chown relief /data
+# documents must exist here: a new named volume takes its owner from the image, or PO PDFs can't be written.
+RUN useradd --create-home relief && mkdir -p /data/documents && chown -R relief /data
 USER relief
 WORKDIR /app/backend
 ENV HOME=/home/relief
