@@ -23,7 +23,7 @@ from reliefroute_contracts.streams import HAZARD_UPDATED, VEHICLE_DEVIATION, VEH
 
 from app.core import bus
 from app.core.logging import get_logger
-from app.routing.repository import fetch_active_hazards
+from app.routing.repository import blocks_roads, fetch_active_hazards
 from app.solvers.deviation import distance_from_route_m, distance_m, remaining_route
 from app.solvers.geometry import LonLat as Point, verify_route
 
@@ -182,6 +182,8 @@ class RouteMonitor:
     # ---------------------------------------------------------------- hazards and sweeps
     async def on_hazard(self, hazard: HazardUpdated) -> None:
         if hazard.change not in ("created", "updated"):
+            return
+        if not blocks_roads(hazard.hazard_type.value, hazard.severity.value, hazard.is_drill):
             return
         shapes = [h for h in await fetch_active_hazards(self.deps.pool, bbox=hazard.bbox) if h.hazard_id == str(hazard.hazard_id)]
         if not shapes:

@@ -11,7 +11,7 @@ import pytest
 from reliefroute_contracts.events import HazardUpdated, LonLat, VehicleTelemetry
 from reliefroute_contracts.streams import VEHICLE_DEVIATION
 
-from app.agents.data import population_in
+from app.agents.data import population_in, relief_points
 from app.core import bus
 from app.graph import plans
 from app.graph.monitor import RouteMonitor
@@ -66,6 +66,56 @@ async def replan_from(world, published):  # noqa: F811
     await runner.start_replan(claimed["id"], claimed["thread_id"], list(claimed["hazard_ids"]), claimed["parent_plan_id"],
                               claimed["trigger_ref"])  # fmt: skip
     return child
+
+
+async def add_hazard(pool, ref, source, hazard_type, severity, box):
+    return await pool.fetchval(
+        """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, headline, geom, fetched_at, expires_at)
+           VALUES ($1, $2, $2, $3, $4, 'x', ST_Multi(ST_MakeEnvelope($5, $6, $7, $8, 4326)), now(), now() + interval '2 days')
+           RETURNING id""", source, ref, hazard_type, severity, *box)
+
+
+AROUND_THE_DEPOT = (80.70, 16.45, 80.90, 16.60)  # the real shape of an Open-Meteo forecast cell
+
+
+async def test_a_rain_forecast_over_the_depot_does_not_close_its_roads(world, published):  # noqa: F811
+    pool = world["pool"]
+    await add_hazard(pool, "rain-1", "open_meteo", "heavy_rain", "severe", AROUND_THE_DEPOT)
+    await add_hazard(pool, "storm-1", "sachet", "storm", "severe", AROUND_THE_DEPOT)
+    await run_to_dispatch(world)
+    assert await pool.fetchval("SELECT count(*) FROM routes") >= 1
+
+
+async def test_a_real_flood_over_the_depot_does_close_its_roads(world, published):  # noqa: F811
+    pool = world["pool"]
+    await add_hazard(pool, "flood-1", "gdacs", "flood", "severe", AROUND_THE_DEPOT)
+    plan = world["plan"]
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await world["runner"].start(plan, thread, [world["hazard"]])
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "failed"
+    assert await pool.fetchval("SELECT count(*) FROM routes") == 0
+
+
+async def test_rain_forecast_crossing_a_route_is_not_a_deviation(world, published):  # noqa: F811
+    pool = world["pool"]
+    await run_to_dispatch(world)
+    box = (80.5, 16.3, 81.0, 16.7)
+    rain = await add_hazard(pool, "rain-2", "open_meteo", "heavy_rain", "severe", box)
+    await RouteMonitor(world["deps"]).on_hazard(HazardUpdated(
+        hazard_id=UUID(str(rain)), change="created", source="open_meteo", hazard_type="heavy_rain", severity="severe",
+        version=1, bbox=box, area_km2=3000.0, is_drill=False))
+    assert not published
+
+
+async def test_a_hospital_on_the_edge_of_the_flood_is_not_a_relief_point(world):  # noqa: F811
+    pool = world["pool"]
+    near = await pool.fetchval(
+        """INSERT INTO facilities (source, source_ref, kind, name, geom, fetched_at)
+           VALUES ('osm', 'node/edge', 'hospital', 'On the edge', ST_SetSRID(ST_MakePoint(80.6605, 16.51), 4326), now())
+           RETURNING id""")
+    close = await relief_points(pool, [world["hazard"]], 15_000, 10, min_distance_m=1_500)
+    assert str(near) not in [p.facility_id for p in close] and close  # the router's margin would make it unreachable
+    assert str(near) in [p.facility_id for p in await relief_points(pool, [world["hazard"]], 15_000, 10)]
 
 
 async def test_city_population_is_scaled_by_its_mandal_and_suburbs_are_not_counted_twice(world):  # noqa: F811

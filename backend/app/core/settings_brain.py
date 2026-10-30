@@ -16,6 +16,7 @@ class BrainSettings(CommonSettings):
     planning_horizon_days_max: int = Field(default=3, ge=1, le=7)
     relief_points_per_plan: int = Field(default=5, ge=1, le=20)
     relief_search_radius_m: float = Field(default=15_000, gt=0)
+    relief_min_distance_m: float = Field(default=1_500, ge=0, description="Beyond the widest routing margin, or nothing can reach it")
     min_route_clearance_m: float = Field(default=100, ge=0)
     procurement_radius_m: float = Field(default=150_000, gt=0, description="suppliers farther than this are not asked")
     procurement_max_suppliers_per_item: int = Field(default=40, ge=1)

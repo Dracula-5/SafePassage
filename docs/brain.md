@@ -51,6 +51,10 @@ stateDiagram-v2
 
 **Population.** A city has one census figure at one point. Counting all of it for a zone that clips the city overstated demand by orders of magnitude, so a city or town is scaled by the zone's share of its mandal (OSM `admin_level` 6), assuming even density. Suburbs are skipped when their mandal's city is already counted, because the city's figure includes them. Villages count in full: they are small compared with a hazard. The audit trail records the unscaled total and the settlement coverage.
 
+**What closes a road.** Most active alerts don't. A forecast rain cell covers about 3,000 km² and can be for a date days away; treating every alert as a closure left nothing routable as soon as real weather arrived. Routes, relief points and the Monitor treat a hazard as blocking only if it's a drill, the hazard this plan responds to, or a severe or extreme flood, cyclone, landslide, tsunami, earthquake or wildfire. `routing/repository.py` holds the rule.
+
+**Relief points stay clear of the hazard.** A site must be at least `relief_min_distance_m` (1.5 km) from any road-closing hazard. The router keeps a margin of up to 1 km around hazards, so a hospital on the edge of the flood would be both unsafe and impossible to reach.
+
 **Waves.** Demand can be far larger than the fleet can move in a day. Each plan routes at most `max_trips_per_vehicle` vehicle loads, shared in rotation across orders so every destination gets something, and no route may exceed `max_shift_hours`. The rest is shown to the approver as "next wave".
 
 **Only carried goods are ordered.** An order with deferred parts is cut down to what a vehicle takes, so stock is not reserved for goods nothing will move.
@@ -66,7 +70,7 @@ stateDiagram-v2
 | `off_route` | Fixes stay farther from the route than the threshold or the GPS accuracy, several in a row | 500 m, 3 fixes |
 | `stalled` | No movement beyond GPS jitter, on an active route | 15 min |
 | `offline` | No fix on an active route | 5 min |
-| `hazard_on_route` | A new or changed hazard crosses the road still ahead | |
+| `hazard_on_route` | A new or changed road-closing hazard crosses the road still ahead | |
 
 GPS also moves the route along: reaching a stop (within 300 m) advances `routes.completed_stops`, and orders follow as `in_transit` and then `delivered`. A split order is delivered only when all its parts are. Fixes older than 5 minutes (a phone flushing its offline queue) update nothing.
 

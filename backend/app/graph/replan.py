@@ -17,7 +17,7 @@ from app.agents.procurement import order_key
 from app.agents.schemas import Allocation, OrderDraft, OrderLineDraft, OrderPart
 
 LOST_VEHICLE_KINDS = ("offline", "stalled")
-EPSILON = 1e-6
+EPSILON = 0.01  # order quantities are stored to 3 decimals, parts are not: a leftover this small is nothing
 
 
 @dataclass
@@ -61,6 +61,10 @@ def redraft(plan_id: str, order: OrderDraft, parts: list[OrderPart], onboard: bo
     })  # fmt: skip
 
 
+def _where(deviation: asyncpg.Record) -> str:
+    return f" ({deviation['lat']:.5f}, {deviation['lon']:.5f})" if deviation["lat"] is not None else ""
+
+
 def _by_order(parts: list[OrderPart]) -> dict[str, list[OrderPart]]:
     grouped: dict[str, list[OrderPart]] = defaultdict(list)
     for part in parts:
@@ -98,9 +102,10 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
             route_id)  # fmt: skip
         if route is None or route["status"] not in ("planned", "active"):
             return None
-        kind = await conn.fetchval(
-            """SELECT kind::text FROM route_deviations WHERE route_id = $1 AND resolved_at IS NULL
-               ORDER BY detected_at DESC LIMIT 1""", route_id)  # fmt: skip
+        deviation = await conn.fetchrow(
+            """SELECT kind::text, ST_Y(last_position) AS lat, ST_X(last_position) AS lon FROM route_deviations
+               WHERE route_id = $1 AND resolved_at IS NULL ORDER BY detected_at DESC LIMIT 1""", route_id)  # fmt: skip
+        kind = deviation["kind"] if deviation else None
         allocation = await conn.fetchval("SELECT allocation FROM plans WHERE id = $1", parent_plan_id)
         orders = {o.order_key: o for o in Allocation.model_validate(allocation).orders}
         waiting, loaded = split_remaining(route["stops"], route["completed_stops"],
@@ -113,7 +118,8 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
             for key, parts in _by_order(loaded).items():
                 lines, _ = _totals(parts)
                 stranded += [{"destination_facility_id": orders[key].destination_facility_id, "item_code": item.value,
-                              "quantity_short": qty, "reason": f"on a {kind} vehicle: recover it at its last known position"}
+                              "quantity_short": qty, "reason": f"still on the {kind} vehicle: recover it at its last known "
+                                                               f"position{_where(deviation)}"}
                              for item, qty in lines.items()]  # fmt: skip
         else:
             drafts = [redraft(plan_id, orders[key], parts, True) for key, parts in _by_order(loaded).items()] + drafts

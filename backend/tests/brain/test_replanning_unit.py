@@ -13,9 +13,10 @@ from app.agents.schemas import (
 )
 from app.graph.dispatcher import english_instructions, held_back_escalations
 from app.graph.nodes import _alternate_hub
-from app.graph.replan import redraft, split_remaining
+from app.graph.replan import _shrink_parent_order, redraft, split_remaining
 from app.graph.revalidate import carried_orders, shift_etas
 from app.llm.tracing import LangfuseTracer
+from app.routing.repository import blocks_roads
 from app.routing.valhalla import ValhallaError
 from app.solvers.deviation import distance_from_route_m, distance_m, remaining_route
 from app.solvers.vrp import VrpProblem, VrpStop, VrpVehicle, solve
@@ -43,6 +44,19 @@ def planned(order_keys: list[str], stops: list[RouteStop] | None = None, peak: f
     return PlannedRoute(vehicle_id="v1", vehicle_label="AP-T1", driver_language="te", order_keys=order_keys,
                         stops=stops or [], geometry=[(80.0, 16.0), (80.1, 16.1)], distance_m=15000, duration_s=1200,
                         load_kg=peak, peak_load_kg=peak, capacity_kg=6000)  # fmt: skip
+
+
+@pytest.mark.parametrize("hazard_type,severity,drill,expected", [
+    ("flood", "severe", False, True),
+    ("cyclone", "extreme", False, True),
+    ("flood", "moderate", False, False),
+    ("heavy_rain", "severe", False, False),
+    ("storm", "extreme", False, False),
+    ("heatwave", "extreme", False, False),
+    ("other", "minor", True, True),
+])
+def test_only_some_hazards_close_roads(hazard_type, severity, drill, expected):
+    assert blocks_roads(hazard_type, severity, drill) is expected
 
 
 def test_first_wave_shares_capacity_across_orders_instead_of_letting_one_fill_it():
@@ -91,6 +105,22 @@ def test_split_remaining_separates_goods_on_the_truck_from_goods_at_the_supplier
     assert waiting == [] and [p.part_key for p in loaded] == ["b"]
 
 
+async def test_a_rounding_residue_does_not_leave_a_zero_kilo_order_open():
+    class Conn:
+        def __init__(self):
+            self.sql = []
+
+        async def fetchval(self, query, *args):
+            return "order-1" if "FROM orders" in query else 4949.667  # stored rounded; the parts sum to 4949.6666...
+
+        async def execute(self, query, *args):
+            self.sql.append(query)
+
+    conn = Conn()
+    await _shrink_parent_order(conn, "plan", order("a", 4949.667), [part("a", "a", 4949 + 2 / 3)])
+    assert any(q.startswith("DELETE FROM order_lines") for q in conn.sql)  # not left as 0.0003 kg
+
+
 def test_goods_with_no_pickup_stop_were_loaded_before_the_route_began():
     waiting, loaded = split_remaining([stop("dropoff", ["a"])], 0, [part("a", "a", 100)])
     assert waiting == [] and [p.part_key for p in loaded] == ["a"]
@@ -108,6 +138,12 @@ def test_critic_accepts_a_dropoff_of_goods_already_on_board():
     assert any("before picking" in v for v in review(plain, [], 1, NOW, 3600, 100).violations)
     onboard = plain.model_copy(update={"onboard_part_keys": ["a"]})
     assert review(onboard, [], 1, NOW, 3600, 100).passed
+
+
+def test_driver_deadlines_are_in_local_time():
+    stops = [RouteStop(facility_id="f", name="Depot", kind="pickup", eta=NOW, order_keys=["a"], lon=80, lat=16)]
+    text = english_instructions(planned(["a"], stops), {"a": [OrderLineDraft(item_code=ItemCode.WATER_L, quantity=5)]}, drill=False)
+    assert "by 11:30 IST" in text and "UTC" not in text  # NOW is 06:00 UTC
 
 
 def test_replacement_instructions_say_they_replace_the_old_route():
@@ -188,7 +224,7 @@ def _hub_deps(monkeypatch, durations, candidates):
 
     monkeypatch.setattr(data, "relief_points", wider)
     return SimpleNamespace(valhalla=HubValhalla(durations), pool=None,
-                           settings=SimpleNamespace(relief_search_radius_m=15000))  # fmt: skip
+                           settings=SimpleNamespace(relief_search_radius_m=15000, relief_min_distance_m=1500))  # fmt: skip
 
 
 def _demand(points):
@@ -200,18 +236,33 @@ def _point(fid):
     return ReliefPoint(facility_id=fid, name=f"School {fid}", kind="school", lon=80.5, lat=16.5, distance_to_hazard_m=1000, share=0)
 
 
-async def test_alternate_hub_is_the_first_point_both_a_vehicle_and_a_supplier_can_reach(monkeypatch):
-    deps = _hub_deps(monkeypatch, [[None, 900], [None, None]], [_point("near"), _point("far")])
+async def test_alternate_hub_needs_a_vehicle_to_reach_the_supplier_and_the_supplier_to_reach_it(monkeypatch):
     allocation = Allocation(orders=[order("a", 10)], shortfalls=[])
-    assert await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, []) is None
-    deps = _hub_deps(monkeypatch, [[None, 900], [None, 1200]], [_point("near"), _point("far")])
+    points = [_point("near"), _point("far")]
+    # Rows: the vehicle, then the supplier. Columns: the supplier, then each candidate.
+    goods_can_reach_far = [[60, None, None], [None, None, 900]]
+    deps = _hub_deps(monkeypatch, goods_can_reach_far, points)
     hub = await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, [])
     assert hub["facility_id"] == "far" and hub["kind"] == "alternate_hub" and "School far" in hub["reason"]
 
 
+async def test_no_hub_is_proposed_when_the_supplier_itself_is_cut_off(monkeypatch):
+    allocation = Allocation(orders=[order("a", 10)], shortfalls=[])
+    # The vehicle reaches the hub, but nothing reaches the supplier, so moving the hub would not help.
+    deps = _hub_deps(monkeypatch, [[None, 900, 900], [None, 900, 900]], [_point("near"), _point("far")])
+    assert await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, []) is None
+
+
+async def test_goods_on_a_truck_only_need_the_truck_to_reach_the_hub(monkeypatch):
+    allocation = Allocation(orders=[order("a", 10).model_copy(update={"onboard": True})], shortfalls=[])
+    deps = _hub_deps(monkeypatch, [[None, 900]], [_point("near"), _point("far")])
+    hub = await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, [])
+    assert hub["facility_id"] == "far"
+
+
 async def test_alternate_hub_skips_points_already_tried_and_survives_a_router_outage(monkeypatch):
     allocation = Allocation(orders=[order("a", 10)], shortfalls=[])
-    deps = _hub_deps(monkeypatch, [[100], [100]], [_point("near")])
+    deps = _hub_deps(monkeypatch, [[60, 100], [None, 100]], [_point("near")])
     assert await _alternate_hub(deps, {"hazard_ids": []}, _demand([_point("near")]), [Vehicle], allocation, []) is None
     deps = _hub_deps(monkeypatch, None, [_point("far")])
     assert await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, []) is None

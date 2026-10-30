@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from app.agents import data
 from app.agents.critic import review
 from app.agents.schemas import Allocation, OrderDraft, OrderLineDraft, Routing
-from app.routing.repository import fetch_active_hazards
+from app.routing.repository import fetch_road_hazards
 
 MIN_DELAY = timedelta(minutes=1)  # shorter delays do not change anything a driver would notice
 
@@ -79,8 +79,8 @@ async def recheck(deps, state, now: datetime) -> tuple[list[str], Routing]:
     points = [pt for route in routing.routes for pt in route.geometry]
     margin = 0.5
     lons, lats = [p[0] for p in points], [p[1] for p in points]
-    hazards = await fetch_active_hazards(deps.pool, bbox=(min(lons) - margin, min(lats) - margin,
-                                                          max(lons) + margin, max(lats) + margin))  # fmt: skip
+    hazards = await fetch_road_hazards(deps.pool, (min(lons) - margin, min(lats) - margin, max(lons) + margin,
+                                                   max(lats) + margin), state["hazard_ids"])  # fmt: skip
     horizon_s = state["triage"]["planning_horizon_hours"] * 3600
     verdict = review(routing, hazards, state.get("attempt", 1), now, horizon_s, deps.settings.min_route_clearance_m)
     problems += verdict.violations

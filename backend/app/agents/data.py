@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncpg
 from shapely import MultiPolygon, from_wkb
 
+from app.routing.repository import ROAD_BLOCKING_SEVERITIES, ROAD_BLOCKING_TYPES
+
 from .schemas import HazardFact, PopulationEstimate, ReliefPoint
 
 Conn = asyncpg.Connection | asyncpg.Pool
@@ -72,23 +74,28 @@ async def population_in(conn: Conn, hazard_ids: list[str]) -> PopulationEstimate
                               places_scaled=row["scaled"], sources=sorted(row["sources"] or []))  # fmt: skip
 
 
-async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int) -> list[ReliefPoint]:
+async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int,
+                        min_distance_m: float = 0) -> list[ReliefPoint]:
     """Shelters/schools/hospitals OUTSIDE the hazard but within radius_m of it, nearest first.
 
-    Relief goes to safe sites next to the affected area; sites inside the hazard are excluded.
+    Relief goes to safe sites next to the affected area. Sites inside the hazard, or inside any
+    other hazard that closes roads, are excluded, and so are sites closer than min_distance_m: the
+    router keeps away from hazards by a margin, so it could never reach them.
     """
     rows = await conn.fetch(
-        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards)  -- all active hazards: never deliver into one
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards
+                         WHERE is_drill OR id = ANY($1::uuid[])
+                            OR (hazard_type::text = ANY($4) AND severity::text = ANY($5)))
            , target AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
            SELECT f.id::text AS facility_id, f.name, f.kind::text AS kind, ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
                   ST_Distance(f.geom::geography, target.g::geography) AS distance_to_hazard_m
            FROM v_facilities f, zone, target
            WHERE f.kind IN ('shelter', 'school', 'hospital')
              AND ST_DWithin(f.geom::geography, target.g::geography, $2)
-             AND NOT ST_Intersects(f.geom, zone.g)
+             AND NOT ST_DWithin(f.geom::geography, zone.g::geography, $6)
            ORDER BY (f.kind = 'shelter') DESC, distance_to_hazard_m
            LIMIT $3""",
-        hazard_ids, radius_m, limit,
+        hazard_ids, radius_m, limit, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES, min_distance_m,
     )  # fmt: skip
     return [ReliefPoint(**dict(r), share=0) for r in rows]
 

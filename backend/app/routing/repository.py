@@ -39,13 +39,43 @@ async def fetch_active_hazards(
         *(bbox or (None, None, None, None)),
         include_drill,
     )
-    hazards = []
-    for row in rows:
-        geom = from_geojson(row["geojson"])
-        if not isinstance(geom, Polygon | MultiPolygon):
-            raise TypeError(f"hazard {row['id']} geometry is {geom.geom_type}, expected (Multi)Polygon")
-        hazards.append(HazardShape(hazard_id=row["id"], geom=geom, severity=row["severity"]))
-    return hazards
+    return [_shape(row) for row in rows]
+
+
+def _shape(row: asyncpg.Record) -> HazardShape:
+    geom = from_geojson(row["geojson"])
+    if not isinstance(geom, Polygon | MultiPolygon):
+        raise TypeError(f"hazard {row['id']} geometry is {geom.geom_type}, expected (Multi)Polygon")
+    return HazardShape(hazard_id=row["id"], geom=geom, severity=row["severity"])
+
+
+# Most active alerts do not close a road. A rainfall forecast for next week or a lightning warning
+# covering 3,000 km2 is a risk to report; treating it as a closure leaves nothing routable.
+ROAD_BLOCKING_TYPES = ["flood", "cyclone", "landslide", "tsunami", "earthquake", "wildfire"]
+ROAD_BLOCKING_SEVERITIES = ["severe", "extreme"]
+
+
+def blocks_roads(hazard_type: str, severity: str, is_drill: bool) -> bool:
+    return is_drill or (hazard_type in ROAD_BLOCKING_TYPES and severity in ROAD_BLOCKING_SEVERITIES)
+
+
+async def fetch_road_hazards(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    bbox: tuple[float, float, float, float],
+    plan_hazard_ids: list[str],
+) -> list[HazardShape]:
+    """Hazards a route must stay out of: those that close roads, and those this plan responds to."""
+    rows = await conn.fetch(
+        """
+        SELECT id::text, severity::text, ST_AsGeoJSON(geom) AS geojson
+        FROM v_active_hazards
+        WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+          AND (is_drill OR id = ANY($5::uuid[])
+               OR (hazard_type::text = ANY($6) AND severity::text = ANY($7)))
+        """,
+        *bbox, plan_hazard_ids, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES,
+    )  # fmt: skip
+    return [_shape(row) for row in rows]
 
 
 async def fetch_vehicles(conn: asyncpg.Connection | asyncpg.Pool) -> list[VehicleSnapshot]:

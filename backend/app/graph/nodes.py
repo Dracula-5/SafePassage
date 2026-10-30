@@ -21,7 +21,7 @@ from app.core.resilience import SourceUnavailable
 from app.core.settings_brain import BrainSettings
 from app.dispatch.messaging import Messenger
 from app.llm.client import LLMClient, LLMOutputError
-from app.routing.repository import fetch_active_hazards
+from app.routing.repository import fetch_road_hazards
 from app.routing.valhalla import Location, ValhallaClient, ValhallaError
 from app.solvers.geometry import exclusion_rings
 
@@ -90,26 +90,32 @@ def _stop(state: PlanState, status: str, reason: str) -> dict:
 
 async def _alternate_hub(deps: Deps, state: PlanState, demand: Demand, vehicles: list[VehicleIn],
                          allocation: Allocation, hazards: list) -> dict | None:
-    """The nearest safe relief point beyond the normal search that a vehicle and a supplier can both
-    reach. Only a proposal: a human decides whether to move the relief effort there."""
+    """The nearest safe relief point beyond the normal search that goods can actually get to: a vehicle
+    reaches a supplier and that supplier reaches the hub, or for goods already on a truck, the truck
+    reaches the hub. Only a proposal: a human decides whether to move the relief effort there."""
     s = deps.settings
     known = {p.facility_id for p in demand.relief_points}
     wider = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m * ALTERNATE_HUB_RADIUS_FACTOR,
-                                     ALTERNATE_HUB_CANDIDATES)  # fmt: skip
+                                     ALTERNATE_HUB_CANDIDATES, s.relief_min_distance_m)  # fmt: skip
     candidates = [p for p in wider if p.facility_id not in known]
     if not candidates:
         return None
-    suppliers = sorted({(o.supplier_lon, o.supplier_lat) for o in allocation.orders})
+    suppliers = sorted({(o.supplier_lon, o.supplier_lat) for o in allocation.orders if not o.onboard})
+    on_truck = any(o.onboard for o in allocation.orders)
+    n_vehicles, n_suppliers = len(vehicles), len(suppliers)
     origins = [Location(lon=v.lon, lat=v.lat) for v in vehicles] + [Location(lon=lo, lat=la) for lo, la in suppliers]
-    targets = [Location(lon=p.lon, lat=p.lat) for p in candidates]
+    targets = [Location(lon=lo, lat=la) for lo, la in suppliers] + [Location(lon=p.lon, lat=p.lat) for p in candidates]
     try:
         matrix = await deps.valhalla.matrix(origins, targets, exclude=exclusion_rings(hazards))
     except (ValhallaError, SourceUnavailable):
         return None
+    durations = matrix.durations_s
     for j, point in enumerate(candidates):
-        from_vehicle = any(matrix.durations_s[i][j] is not None for i in range(len(vehicles)))
-        from_supplier = not suppliers or any(matrix.durations_s[i][j] is not None for i in range(len(vehicles), len(origins)))
-        if from_vehicle and from_supplier:
+        hub = n_suppliers + j
+        collected = any(durations[v][sup] is not None and durations[n_vehicles + sup][hub] is not None
+                        for v in range(n_vehicles) for sup in range(n_suppliers))  # fmt: skip
+        carried = on_truck and any(durations[v][hub] is not None for v in range(n_vehicles))
+        if collected or carried:
             return {"kind": "alternate_hub", "facility_id": point.facility_id, "name": point.name, "lon": point.lon,
                     "lat": point.lat, "reason": f"alternate hub: {point.name} ({point.kind}) is reachable by a safe road"}
     return None
@@ -183,7 +189,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         if not hazards:
             return _stop(state, "failed", "none of the requested hazards is still active")
         population = await data.population_in(deps.pool, state["hazard_ids"])
-        points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan)
+        points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan,
+                                          s.relief_min_distance_m)  # fmt: skip
         await audit("sentinel", "tool_result",
                     f"Census population {population.population_lower_bound:,} from "
                     f"{population.places_with_population}/{population.places_total} settlements in the zone that have a figure "
@@ -206,7 +213,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         audit = audit_for(state)
         triage = Triage.model_validate(state["triage"])
         population = await data.population_in(deps.pool, state["hazard_ids"])
-        points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan)
+        points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan,
+                                          s.relief_min_distance_m)  # fmt: skip
         horizon_days = min(triage.planning_horizon_hours / 24, s.planning_horizon_days_max)
         demand = compute_demand(population, points, horizon_days)
         await audit("needs", "decision",
@@ -240,7 +248,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         travel: dict[tuple[str, str], float | None] = {}
         if stock:
             suppliers = sorted({(x.supplier_id, x.lon, x.lat) for x in stock})
-            hazards = await fetch_active_hazards(deps.pool, bbox=_area([(lo, la) for _, lo, la in suppliers] + points))
+            hazards = await fetch_road_hazards(deps.pool, _area([(lo, la) for _, lo, la in suppliers] + points),
+                                               state["hazard_ids"])  # fmt: skip
             rings = exclusion_rings(hazards)
             targets = [Location(lon=p.lon, lat=p.lat) for p in demand.relief_points]
             chunk = max(1, 2500 // max(1, len(targets)) // 2)  # stay well under max_matrix_location_pairs
@@ -293,7 +302,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         for o in allocation.orders:
             sites[o.supplier_facility_id] = Site(o.supplier_facility_id, o.supplier_name, o.supplier_lon, o.supplier_lat)
         trip = [(v.lon, v.lat) for v in vehicles] + [(x.lon, x.lat) for x in sites.values()]
-        hazards = await fetch_active_hazards(deps.pool, bbox=_area(trip))
+        hazards = await fetch_road_hazards(deps.pool, _area(trip), state["hazard_ids"])
         triage = Triage.model_validate(state["triage"])
         try:
             routing = await plan_routes(deps.valhalla, allocation.orders, vehicles, sites, hazards,
@@ -326,7 +335,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         audit = audit_for(state)
         routing = Routing.model_validate(state["routing"])
         # Current hazards (not the planner's snapshot) near any route.
-        hazards = await fetch_active_hazards(deps.pool, bbox=_area([pt for r in routing.routes for pt in r.geometry]))
+        hazards = await fetch_road_hazards(deps.pool, _area([pt for r in routing.routes for pt in r.geometry]),
+                                           state["hazard_ids"])  # fmt: skip
         triage = Triage.model_validate(state["triage"])
         verdict = review(routing, hazards, state["attempt"], datetime.fromisoformat(state["started_at"]),
                          triage.planning_horizon_hours * 3600, s.min_route_clearance_m)

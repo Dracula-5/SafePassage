@@ -12,6 +12,7 @@ import json
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from shapely import LineString
 
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from .nodes import Deps, PlanState
 
 
+DRIVER_TZ = ZoneInfo("Asia/Kolkata")  # drivers work in local time; a UTC deadline would be 5.5 hours out
+
+
 def idempotency_key(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
@@ -43,7 +47,7 @@ def english_instructions(route: PlannedRoute, part_lines: dict[str, list], drill
                 goods[line.item_code.value] += line.quantity
         what = ", ".join(f"{qty:.0f} {code}" for code, qty in sorted(goods.items()))
         verb = "Pick up" if stop.kind == "pickup" else "Deliver"
-        lines.append(f"{i}. {verb} at {stop.name} by {stop.eta.astimezone(UTC):%H:%M} UTC: {what}.")
+        lines.append(f"{i}. {verb} at {stop.name} by {stop.eta.astimezone(DRIVER_TZ):%H:%M} IST: {what}.")
     lines.append(f"Total {route.distance_m / 1000:.0f} km. The route avoids active hazard zones; do not take shortcuts.")
     return "\n".join(lines)
 
