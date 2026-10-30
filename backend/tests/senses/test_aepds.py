@@ -8,7 +8,7 @@ from shapely import MultiPolygon, box
 
 from app.ingestion import area_names
 from app.ingestion.models import AdminArea
-from app.ingestion.sources.aepds import AepdsSource, afso_key, aggregate
+from app.ingestion.sources.aepds import AepdsSource, afso_keys, aggregate, match_offices, spelling_key
 from app.ingestion.store import upsert_admin_areas, upsert_supplier_stock
 from reliefroute_contracts.enums import ItemCode
 
@@ -24,8 +24,71 @@ def test_aggregate_sums_closing_balance_per_afso():
     assert all(g["shops"] for g in groups.values())
 
 
-def test_afso_key_normalizes_suffixes():
-    assert afso_key("Gudivada (R)") == "gudivada" and afso_key("Tuni") == "tuni"
+def test_office_names_try_the_urban_or_rural_mandal_first():
+    assert afso_keys("Tuni") == ["tuni"]
+    assert afso_keys("Vijayawada (U)")[:2] == ["vijayawada urban", "vijayawada"]
+    assert afso_keys("Gudivada (R)") == ["gudivada rural", "gudivada"]
+    assert afso_keys("Rajahmundry(Rural)")[0] == "rajahmundry rural" and afso_keys("Tirupati (Rural)-2")[0] == "tirupati rural"
+
+
+@pytest.mark.parametrize("office,district,expected", [
+    ("Eluru Urban", "Eluru", "eluru urban"),
+    ("Anantapur  Urban", "Ananthapur", "anantapur urban"),
+    ("Vijayawada  Urban-Ii", "Ntr", "vijayawada urban"),
+    ("Vijayawada Aso Office-I", "Ntr", "vijayawada urban"),
+])
+def test_town_offices_are_named_many_ways(office, district, expected):
+    assert afso_keys(office, district)[0] == expected
+
+
+def test_an_office_named_by_a_code_falls_back_to_its_district():
+    assert "guntur" in afso_keys("Gnt Urban", "Guntur")
+    assert "visakhapatnam urban" in afso_keys("Circle I Urban", "Visakhapatnam")
+
+
+# Real pairs: the first spelling is AePDS's, the second OSM's.
+@pytest.mark.parametrize("aepds,osm", [
+    ("tadepalli", "tadepalle"), ("kaikaluru", "kaikalur"), ("thallapudi", "tallapudi"), ("mandapet", "mandapeta"),
+    ("dwaraka tirumala", "dwarakatirumala"), ("yadamari", "yadamarri"), ("giddaluru", "giddalur"),
+    ("jangareddigudem", "jangareddygudem"), ("munchingiputtu", "munchingi puttu"),
+])
+def test_spelling_variants_of_one_place_get_one_key(aepds, osm):
+    assert spelling_key(aepds) == spelling_key(osm)
+
+
+@pytest.mark.parametrize("a,b", [("bogole", "ongole"), ("akiveedu", "galiveedu"), ("alluru", "valluru")])
+def test_different_places_with_similar_names_stay_apart(a, b):
+    assert spelling_key(a) != spelling_key(b)
+
+
+def _mandal(name, district):
+    return {"name_norm": name, "district": district, "source_ref": name, "lon": 80.0, "lat": 16.0}
+
+
+MANDALS = [_mandal("kavali", "nellore"), _mandal("kovvur", "east godavari"), _mandal("rajahmundry rural", "east godavari"),
+           _mandal("mylavaram", "ntr"), _mandal("mylavaram", "ysr"), _mandal("gollapudi", "ntr"), _mandal("pulivendla", "ysr"),
+           _mandal("proddatur", "ysr")]
+
+
+def test_a_similar_name_in_another_district_is_refused():
+    found = match_offices([("Nellore", "Kavali"), ("Nellore", "Kovur")], MANDALS)
+    assert ("Nellore", "Kavali") in found and ("Nellore", "Kovur") not in found
+
+
+def test_a_spelling_variant_in_the_right_district_is_accepted():
+    found = match_offices([("Kadapa", "Proddatur"), ("Kadapa", "Pulivendula")], MANDALS)
+    assert found[("Kadapa", "Proddatur")][1] == "exact name"
+    assert ("Kadapa", "Pulivendula") not in found or found[("Kadapa", "Pulivendula")][1].startswith("spelling")
+
+
+def test_a_name_in_two_districts_goes_to_the_one_this_office_is_in():
+    found = match_offices([("Ntr", "Gollapudi"), ("Ntr", "Mylavaram"), ("Kadapa", "Proddatur"), ("Kadapa", "Mylavaram")], MANDALS)
+    assert found[("Ntr", "Mylavaram")][0]["district"] == "ntr"
+    assert found[("Kadapa", "Mylavaram")][0]["district"] == "ysr"
+
+
+def test_with_no_way_to_tell_districts_a_shared_name_is_skipped():
+    assert match_offices([("Somewhere", "Mylavaram")], MANDALS) == {}
 
 
 def _area(ref, level, name, geom):
