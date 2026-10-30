@@ -22,6 +22,7 @@ from .sources.facilities import FacilitiesSource
 from .sources.firms import FirmsSource
 from .sources.gdacs import GdacsSource
 from .sources.open_meteo import OpenMeteoSource
+from .sources.osm_extract import OsmExtractSource
 from .sources.sachet import SachetSource
 from .store import expire_due_hazards, publish_hazard_events
 
@@ -31,6 +32,8 @@ EXPIRY_SWEEP_S = 60
 
 def build_sources(settings: SensesSettings) -> list[Source]:
     sources: list[Source] = [
+        # Boundaries first: the SACHET fallback resolves area names against them.
+        OsmExtractSource(settings.places_extract_path, settings.admin_extract_path, settings.osm_extract_poll_s),
         SachetSource(settings.sachet_rss_url, settings.sachet_poll_s),
         GdacsSource(settings.gdacs_country, settings.gdacs_lookback_days, settings.gdacs_poll_s),
         OpenMeteoSource(settings.region_bbox, settings.open_meteo_grid_deg, settings.open_meteo_poll_s),

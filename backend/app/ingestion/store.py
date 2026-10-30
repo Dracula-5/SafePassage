@@ -17,7 +17,7 @@ from reliefroute_contracts.streams import HAZARD_UPDATED
 from app.core import bus
 from app.core.logging import get_logger
 
-from .models import NormalizedFacility, NormalizedHazard
+from .models import AdminArea, NormalizedFacility, NormalizedHazard, NormalizedPlace
 
 log = get_logger(__name__)
 
@@ -95,27 +95,28 @@ async def upsert_facilities(conn: asyncpg.Connection, facilities: list[Normalize
     """Bulk upsert on (source, source_ref). Returns the number of rows written."""
     if not facilities:
         return 0
-    await conn.execute(
-        """CREATE TEMP TABLE IF NOT EXISTS facility_load (
-               source facility_source, source_ref text, kind facility_kind, name text, wkb bytea,
-               capacity_people integer, attributes text) ON COMMIT DROP"""
-    )
-    await conn.copy_records_to_table(
-        "facility_load",
-        records=[(f.source.value, f.source_ref, f.kind.value, f.name, f.geom.wkb, f.capacity_people, json.dumps(f.attributes))
-                 for f in facilities],  # fmt: skip
-    )
-    result = await conn.execute(
-        """INSERT INTO facilities (source, source_ref, kind, name, geom, capacity_people, attributes, fetched_at)
-           SELECT DISTINCT ON (source, source_ref) source, source_ref, kind, name,
-                  ST_SetSRID(ST_GeomFromWKB(wkb), 4326), capacity_people, attributes::jsonb, now()
-           FROM facility_load
-           ON CONFLICT (source, source_ref) DO UPDATE SET kind = EXCLUDED.kind, name = EXCLUDED.name,
-               geom = EXCLUDED.geom, capacity_people = EXCLUDED.capacity_people, attributes = EXCLUDED.attributes,
-               fetched_at = now(), updated_at = now()"""
-    )
-    return int(result.split()[-1])
-
+    # Own transaction (a savepoint when nested): the ON COMMIT DROP temp table must live until the INSERT.
+    async with conn.transaction():
+        await conn.execute(
+            """CREATE TEMP TABLE IF NOT EXISTS facility_load (
+                   source facility_source, source_ref text, kind facility_kind, name text, wkb bytea,
+                   capacity_people integer, attributes text) ON COMMIT DROP"""
+        )
+        await conn.copy_records_to_table(
+            "facility_load",
+            records=[(f.source.value, f.source_ref, f.kind.value, f.name, f.geom.wkb, f.capacity_people, json.dumps(f.attributes))
+                     for f in facilities],  # fmt: skip
+        )
+        result = await conn.execute(
+            """INSERT INTO facilities (source, source_ref, kind, name, geom, capacity_people, attributes, fetched_at)
+               SELECT DISTINCT ON (source, source_ref) source, source_ref, kind, name,
+                      ST_SetSRID(ST_GeomFromWKB(wkb), 4326), capacity_people, attributes::jsonb, now()
+               FROM facility_load
+               ON CONFLICT (source, source_ref) DO UPDATE SET kind = EXCLUDED.kind, name = EXCLUDED.name,
+                   geom = EXCLUDED.geom, capacity_people = EXCLUDED.capacity_people, attributes = EXCLUDED.attributes,
+                   fetched_at = now(), updated_at = now()"""
+        )
+        return int(result.split()[-1])
 
 async def record_source_health(
     conn: asyncpg.Connection | asyncpg.Pool,
@@ -139,3 +140,47 @@ async def record_source_health(
         source, breaker_state, now if ok else None, None if ok else now, error, ttl_seconds, fallback_source,
     )  # fmt: skip
     log.info("source_health", source=source, ok=ok, breaker=breaker_state, error=error, fallback=fallback_source)
+
+
+async def upsert_places(conn: asyncpg.Connection, places: list[NormalizedPlace]) -> int:
+    if not places:
+        return 0
+    # Own transaction (a savepoint when nested): the ON COMMIT DROP temp table must live until the INSERT.
+    async with conn.transaction():
+        await conn.execute(
+            """CREATE TEMP TABLE IF NOT EXISTS place_load (source text, source_ref text, place_type text, name text,
+                   wkb bytea, population integer, population_source text) ON COMMIT DROP"""
+        )
+        await conn.copy_records_to_table("place_load", records=[
+            (p.source, p.source_ref, p.place_type, p.name, p.geom.wkb, p.population, p.population_source) for p in places])
+        result = await conn.execute(
+            """INSERT INTO places (source, source_ref, place_type, name, geom, population, population_source, fetched_at)
+               SELECT DISTINCT ON (source, source_ref) source, source_ref, place_type, name,
+                      ST_SetSRID(ST_GeomFromWKB(wkb), 4326), population, population_source, now()
+               FROM place_load
+               ON CONFLICT (source, source_ref) DO UPDATE SET place_type = EXCLUDED.place_type, name = EXCLUDED.name,
+                   geom = EXCLUDED.geom, population = EXCLUDED.population,
+                   population_source = EXCLUDED.population_source, fetched_at = now(), updated_at = now()"""
+        )
+        return int(result.split()[-1])
+
+async def upsert_admin_areas(conn: asyncpg.Connection, areas: list[AdminArea]) -> int:
+    if not areas:
+        return 0
+    # Own transaction (a savepoint when nested): the ON COMMIT DROP temp table must live until the INSERT.
+    async with conn.transaction():
+        await conn.execute(
+            """CREATE TEMP TABLE IF NOT EXISTS admin_load (source_ref text, admin_level smallint, name text,
+                   name_norm text, wkb bytea) ON COMMIT DROP"""
+        )
+        await conn.copy_records_to_table("admin_load", records=[
+            (a.source_ref, a.admin_level, a.name, a.name_norm, a.geom.wkb) for a in areas])
+        result = await conn.execute(
+            """INSERT INTO admin_areas (source_ref, admin_level, name, name_norm, geom, fetched_at)
+               SELECT DISTINCT ON (source_ref) source_ref, admin_level, name, name_norm,
+                      ST_Multi(ST_SetSRID(ST_GeomFromWKB(wkb), 4326)), now()
+               FROM admin_load
+               ON CONFLICT (source_ref) DO UPDATE SET admin_level = EXCLUDED.admin_level, name = EXCLUDED.name,
+                   name_norm = EXCLUDED.name_norm, geom = EXCLUDED.geom, fetched_at = now()"""
+        )
+        return int(result.split()[-1])

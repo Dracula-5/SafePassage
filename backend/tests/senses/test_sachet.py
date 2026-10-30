@@ -81,7 +81,7 @@ async def test_fetch_is_bounded_and_dedupes():
 async def test_rate_limited_polygons_mark_source_degraded():
     source = SachetSource("https://sachet.example/rss.xml", poll_s=60, max_new_per_poll=3, pause_s=0)
     async with httpx.AsyncClient(transport=_transport(polygon_status=403)) as http:
-        with pytest.raises(SourceUnavailable, match="all 3 alert downloads failed.*HTTP 403"):
+        with pytest.raises(SourceUnavailable, match="all 3 alert downloads failed.*SACHET refused and no area name matched"):
             await source.fetch(http, NoKnownRows())
 
 

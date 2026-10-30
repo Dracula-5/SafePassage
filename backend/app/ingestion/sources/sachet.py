@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from datetime import datetime
 
 import asyncpg
@@ -23,12 +24,14 @@ from shapely.ops import unary_union
 from app.core.logging import get_logger
 from app.core.resilience import CircuitBreaker, SourceUnavailable, resilient_get
 
+from .. import area_names
 from ..base import FetchResult
 from ..models import NormalizedHazard
 
 log = get_logger(__name__)
 CAP_NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
 CAP_URL = "https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier={}"
+AREA_FALLBACK = "areaDesc_osm_admin"
 
 # Keyword -> hazard type, checked in order against the CAP <event> text.
 EVENT_TYPES: list[tuple[tuple[str, ...], HazardType]] = [
@@ -104,7 +107,10 @@ def parse_cap(xml_text: str) -> dict:
     }
 
 
-def to_hazard(guid: str, cap: dict, polygons: list[Polygon]) -> NormalizedHazard:
+def to_hazard(
+    guid: str, cap: dict, polygons: list[Polygon], geometry_source: str = "sachet_polygon",
+    area_match: area_names.AreaMatch | None = None,
+) -> NormalizedHazard:
     status = HazardStatus.CANCELLED if cap["msg_type"] == "Cancel" else HazardStatus.ACTIVE
     severity = cap["severity"] if cap["severity"] in HazardSeverity._value2member_map_ else "unknown"
     # Same sender + event + area + validity window = the same real-world alert, whatever its id.
@@ -113,11 +119,15 @@ def to_hazard(guid: str, cap: dict, polygons: list[Polygon]) -> NormalizedHazard
         source=HazardSource.SACHET, source_ref=guid,
         dedupe_key="sachet:" + hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
         hazard_type=classify_event(cap["event"]), severity=severity, status=status,
-        headline=cap["headline"] or cap["event"] or "SACHET alert", description=cap["description"],
+        headline=cap["headline"] or cap["event"] or "SACHET alert",
+        description=cap["description"] if geometry_source != AREA_FALLBACK else
+        f"{cap['description'] or ''} [Area placed from the alert's area names via OSM boundaries; "
+        f"SACHET polygon unavailable. Matched: {', '.join(area_match.matched)}"
+        f"{'; not matched: ' + ', '.join(area_match.unmatched + area_match.ambiguous) if area_match.unmatched or area_match.ambiguous else ''}]".strip(),
         area_desc=cap["area_desc"], geom=unary_union(polygons),  # adjacent areas share borders
         effective_at=cap["effective"], expires_at=cap["expires"], issued_at=cap["sent"],
         raw={k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in cap.items()
-             if k not in {"inline_polygons"}} | {"guid": guid, "rss_feed": "rss_india"},
+             if k not in {"inline_polygons"}} | {"guid": guid, "rss_feed": "rss_india", "geometry_source": geometry_source},
     )  # fmt: skip
 
 
@@ -128,33 +138,52 @@ class SachetSource:
     # SACHET rate-limits polygon downloads per IP (HTTP 403 after a burst), so new alerts are
     # fetched slowly and in bounded batches; the rest are picked up on the next polls.
     def __init__(self, rss_url: str, poll_s: int, concurrency: int = 2, max_new_per_poll: int = 25,
-                 pause_s: float = 0.5):
+                 pause_s: float = 0.5, polygon_cooldown_s: float = 1800):
         self.rss_url = rss_url
         self.poll_s = poll_s
         self.max_new_per_poll = max_new_per_poll
         self.pause_s = pause_s
+        self.polygon_cooldown_s = polygon_cooldown_s
+        self._polygon_blocked_until = 0.0
         self.breaker = CircuitBreaker("sachet", failure_threshold=3, reset_after_s=900)
         self._sem = asyncio.Semaphore(concurrency)
 
-    async def _alert(self, http: httpx.AsyncClient, guid: str) -> NormalizedHazard | None:
+    async def _download_polygons(self, http: httpx.AsyncClient, guid: str, url: str) -> list[Polygon] | None:
+        """Polygons from SACHET, or None if SACHET refused (rate limit) or is in cooldown."""
+        if time.monotonic() < self._polygon_blocked_until:
+            return None
+        await asyncio.sleep(self.pause_s)
+        resp = await resilient_get(http, url, self.breaker, timeout_s=30)
+        if resp.status_code == 403:
+            self._polygon_blocked_until = time.monotonic() + self.polygon_cooldown_s
+            log.warning("sachet_polygons_rate_limited", guid=guid, cooldown_s=self.polygon_cooldown_s)
+            return None
+        if resp.status_code != 200:
+            raise ValueError(f"polygon {guid}: HTTP {resp.status_code}")
+        return parse_polygon_file(resp.text)
+
+    async def _alert(self, http: httpx.AsyncClient, conn: asyncpg.Pool, guid: str) -> NormalizedHazard | None:
         async with self._sem:
             cap_resp = await resilient_get(http, CAP_URL.format(guid), self.breaker, timeout_s=20)
             if cap_resp.status_code != 200:
                 raise ValueError(f"CAP {guid}: HTTP {cap_resp.status_code}")
             cap = parse_cap(cap_resp.text)
-            polygons = list(cap["inline_polygons"])
+            polygons: list[Polygon] | None = list(cap["inline_polygons"])
             if not polygons and cap["polygon_url"]:
-                await asyncio.sleep(self.pause_s)
-                poly_resp = await resilient_get(http, cap["polygon_url"], self.breaker, timeout_s=30)
-                if poly_resp.status_code != 200:
-                    # Not "no polygon": the download failed (often a 403 rate limit). Retry next poll.
-                    raise ValueError(f"polygon {guid}: HTTP {poly_resp.status_code}")
-                polygons = parse_polygon_file(poly_resp.text)
+                polygons = await self._download_polygons(http, guid, cap["polygon_url"])
             await asyncio.sleep(self.pause_s)
-        if not polygons:
-            log.info("sachet_alert_without_polygon", guid=guid, alert_event=cap["event"], area=cap["area_desc"][:80])
-            return None
-        return to_hazard(guid, cap, polygons)
+        if polygons:
+            return to_hazard(guid, cap, polygons)
+        # Fallback: official boundaries of the areas the alert names.
+        match = await area_names.resolve(conn, cap["area_desc"], cap["sender"])
+        if match.geom is not None:
+            log.info("sachet_area_fallback", guid=guid, matched=match.matched, unmatched=match.unmatched,
+                     ambiguous=match.ambiguous)  # fmt: skip
+            return to_hazard(guid, cap, list(match.geom.geoms), geometry_source=AREA_FALLBACK, area_match=match)
+        if polygons is None:
+            raise ValueError(f"polygon {guid}: SACHET refused and no area name matched ({match.unmatched + match.ambiguous})")
+        log.info("sachet_alert_without_polygon", guid=guid, alert_event=cap["event"], area=cap["area_desc"][:80])
+        return None
 
     async def fetch(self, http: httpx.AsyncClient, conn: asyncpg.Pool) -> FetchResult:
         rss = await resilient_get(http, self.rss_url, self.breaker, timeout_s=20)
@@ -166,7 +195,7 @@ class SachetSource:
             "SELECT source_ref FROM hazards WHERE source = 'sachet' AND source_ref = ANY($1::text[])", guids)}
         backlog = [g for g in guids if g not in known]  # RSS is newest first
         new = backlog[: self.max_new_per_poll]
-        results = await asyncio.gather(*(self._alert(http, g) for g in new), return_exceptions=True)
+        results = await asyncio.gather(*(self._alert(http, conn, g) for g in new), return_exceptions=True)
         hazards, skipped = [], 0
         for guid, result in zip(new, results, strict=True):
             if isinstance(result, SourceUnavailable):
@@ -184,4 +213,5 @@ class SachetSource:
             first_error = next(str(r) for r in results if isinstance(r, Exception))
             self.breaker.record_failure()  # 3 such polls open the breaker and pause SACHET for 15 min
             raise SourceUnavailable(self.name, f"all {skipped} alert downloads failed, e.g. {first_error[:150]}")
-        return FetchResult(hazards=hazards, facilities=[], skipped=skipped)
+        fallback = AREA_FALLBACK if any(h.raw.get("geometry_source") == AREA_FALLBACK for h in hazards) else None
+        return FetchResult(hazards=hazards, facilities=[], skipped=skipped, used_fallback=fallback)

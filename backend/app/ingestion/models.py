@@ -71,3 +71,25 @@ class NormalizedFacility(BaseModel):
     geom: Point
     capacity_people: int | None = Field(default=None, ge=0)
     attributes: dict = Field(default_factory=dict)
+
+
+class NormalizedPlace(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    source: str
+    source_ref: str
+    place_type: str
+    name: str | None
+    geom: Point
+    population: int | None = Field(default=None, ge=0)
+    population_source: str | None = None
+
+
+class AdminArea(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    source_ref: str
+    admin_level: int
+    name: str
+    name_norm: str
+    geom: MultiPolygon

@@ -33,6 +33,10 @@ class SensesSettings(CommonSettings):
     facilities_poll_s: int = 24 * 3600
     # Fallback for facilities when every Overpass mirror fails (built by infra/osm/extract_facilities.sh).
     facilities_extract_path: Path = Path.home() / "reliefroute-data" / "osm" / "facilities.geojsonseq"
+    # Built by infra/osm/extract_places_admin.sh
+    places_extract_path: Path = Path.home() / "reliefroute-data" / "osm" / "places.geojsonseq"
+    admin_extract_path: Path = Path.home() / "reliefroute-data" / "osm" / "admin.geojsonseq"
+    osm_extract_poll_s: int = 24 * 3600
 
     @field_validator("region_bbox", mode="before")
     @classmethod

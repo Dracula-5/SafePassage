@@ -16,7 +16,9 @@ from app.core.logging import get_logger
 from app.core.resilience import SourceUnavailable
 
 from .base import Source
-from .store import publish_hazard_events, record_source_health, upsert_facilities, upsert_hazard
+from .store import (
+    publish_hazard_events, record_source_health, upsert_admin_areas, upsert_facilities, upsert_hazard, upsert_places,
+)
 
 log = get_logger(__name__)
 
@@ -50,6 +52,8 @@ async def poll_once(source: Source, http: httpx.AsyncClient, pool: asyncpg.Pool)
             if event:
                 events.append(event)
         written = await upsert_facilities(conn, result.facilities)
+        written += await upsert_places(conn, result.places)
+        written += await upsert_admin_areas(conn, result.admin_areas)
     await publish_hazard_events(events)
     await record_source_health(
         pool, source.name, ok=True, ttl_seconds=source.ttl_s, breaker_state=source.breaker.state.value,
