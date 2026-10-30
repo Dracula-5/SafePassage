@@ -1,0 +1,72 @@
+# The whole backend on one VM. Needs 8 GB of RAM and the data folder built by infra/valhalla/build.sh
+# and infra/osm/*.sh. Run from the repo root:
+#   cp infra/deploy/.env.example infra/deploy/.env   # then fill it in
+#   docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
+# Put HTTPS in front of port 8000 (Caddy, a tunnel or the host's proxy) before exposing it.
+name: reliefroute-prod
+
+x-backend: &backend
+  build: { context: ../.., dockerfile: infra/deploy/backend.Dockerfile }
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://reliefroute:${POSTGRES_PASSWORD}@db:5432/reliefroute
+    REDIS_URL: redis://redis:6379/0
+    VALHALLA_URL: http://valhalla:8002
+    FACILITIES_EXTRACT_PATH: /data/osm/facilities.geojsonseq
+    PLACES_EXTRACT_PATH: /data/osm/places.geojsonseq
+    ADMIN_EXTRACT_PATH: /data/osm/admin.geojsonseq
+    DOCUMENTS_DIR: /data/documents
+  volumes: ["${DATA_DIR}/osm:/data/osm:ro", "documents:/data/documents"]
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reliefroute
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: reliefroute
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U reliefroute"], interval: 5s, retries: 30 }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 30 }
+
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:latest
+    restart: unless-stopped
+    environment: { serve_tiles: "True", build_admins: "True", build_time_zones: "True", use_tiles_ignore_pbf: "True", server_threads: "4" }
+    volumes: ["${DATA_DIR}/valhalla:/custom_files"]
+
+  migrate:
+    <<: *backend
+    restart: "no"
+    command: ["python", "-m", "app.core.migrate"]
+
+  api:
+    <<: *backend
+    ports: ["8000:8000"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+
+  ingestion:
+    <<: *backend
+    command: ["python", "-m", "app.ingestion.worker"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+
+  brain:
+    <<: *backend
+    command: ["python", "-m", "app.graph.worker"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+
+volumes:
+  pgdata:
+  redisdata:
+  documents:

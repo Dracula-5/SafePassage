@@ -157,6 +157,34 @@ async def test_sse_streams_agent_events_and_resumes(live_env, monkeypatch):
     assert sum("event: agent_event" in c for c in resumed) == 2
 
 
+async def test_sse_emits_plan_status_changes_once_each(live_env, monkeypatch):
+    import json
+
+    from app.api_senses import stream as stream_mod
+
+    monkeypatch.setattr(stream_mod, "TICK_S", 0.05)
+    monkeypatch.setattr(stream_mod, "PLAN_EVERY_S", 0.01)
+    parent = await live_env.fetchval(
+        "INSERT INTO plans (thread_id, trigger_kind, requested_by) VALUES ('t-p', 'drill', 'test') RETURNING id")
+    child = await live_env.fetchval(
+        """INSERT INTO plans (thread_id, trigger_kind, requested_by, parent_plan_id, status)
+           VALUES ('t-c', 'replan', 'replanner', $1, 'planning') RETURNING id""", parent)
+
+    class Request:
+        polls = 4
+
+        async def is_disconnected(self):
+            Request.polls -= 1
+            if Request.polls == 1:  # a status change during the connection
+                await live_env.execute("UPDATE plans SET status = 'dispatched', updated_at = now() WHERE id = $1", child)
+            return Request.polls < 0
+
+    chunks = [c async for c in stream_mod.event_stream(Request(), None, None)]
+    plans = [json.loads(c.split("data: ", 1)[1]) for c in chunks if "event: plan" in c]
+    assert sorted(p["status"] for p in plans) == ["dispatched", "pending", "planning"]  # the unchanged parent only once
+    assert {p["parent_plan_id"] for p in plans} == {None, str(parent)}
+
+
 async def test_driver_app_is_served_without_path_traversal(api):
     assert "ReliefRoute Driver" in (await api.get("/driver/")).text
     assert (await api.get("/driver/sw.js")).headers["service-worker-allowed"] == "/driver/"

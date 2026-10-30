@@ -1,0 +1,9 @@
+# BuildKit reads <Dockerfile>.dockerignore; the image only needs the paths the Dockerfile copies.
+**
+!contracts
+!backend/requirements
+!backend/app
+!backend/migrations
+!driver-pwa
+**/__pycache__
+driver-pwa/tests
