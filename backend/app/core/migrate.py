@@ -1,7 +1,8 @@
-"""Apply SQL migrations from contracts/db and backend/migrations in file-name order.
+"""Apply the contract baseline, then each owner's additive migrations.
 
-Order is 000 (contract types) -> 1xx (A) -> 2xx (B) -> 900 (contract views/FKs).
-Each file runs once, in its own transaction, recorded in schema_migrations with a checksum;
+Order: contracts/db/schema.sql (frozen baseline: types, all tables, views), then
+backend/migrations/*.sql by file name (A: 1xx, B: 2xx). Each file runs once, in its own
+transaction, recorded in schema_migrations under its repo-relative path with a checksum;
 an applied file whose contents changed is an error (write a new migration instead).
 
 Usage: python -m app.core.migrate   (run from backend/, DATABASE_URL set)
@@ -21,45 +22,51 @@ from .logging import configure_logging, get_logger
 log = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MIGRATION_DIRS = (REPO_ROOT / "contracts" / "db", REPO_ROOT / "backend" / "migrations")
+BASELINE = REPO_ROOT / "contracts" / "db" / "schema.sql"
+MIGRATIONS_DIR = REPO_ROOT / "backend" / "migrations"
 
 
 class MigrationError(RuntimeError):
     pass
 
 
-def discover(dirs: tuple[Path, ...] = MIGRATION_DIRS) -> list[Path]:
-    files: dict[str, Path] = {}
-    for directory in dirs:
-        for path in directory.glob("*.sql"):
-            if path.name in files:
-                raise MigrationError(f"duplicate migration name {path.name}: {files[path.name]} and {path}")
-            files[path.name] = path
-    return [files[name] for name in sorted(files)]
+def discover(baseline: Path = BASELINE, migrations_dir: Path = MIGRATIONS_DIR) -> list[Path]:
+    owner_files = sorted(migrations_dir.glob("*.sql")) if migrations_dir.exists() else []
+    for path in owner_files:
+        if not path.name[:1] in {"1", "2"}:
+            raise MigrationError(f"{path.name}: owner migrations must start with 1 (A) or 2 (B)")
+    return [baseline, *owner_files]
 
 
 def checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-async def apply_all(conn: asyncpg.Connection, dirs: tuple[Path, ...] = MIGRATION_DIRS) -> list[str]:
+def _key(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:  # files outside the repo (tests)
+        return str(path)
+
+
+async def apply_all(conn: asyncpg.Connection, files: list[Path] | None = None) -> list[str]:
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS schema_migrations (
                filename text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"""
     )
     applied = {r["filename"]: r["checksum"] for r in await conn.fetch("SELECT filename, checksum FROM schema_migrations")}
     newly_applied = []
-    for path in discover(dirs):
-        digest = checksum(path)
-        if path.name in applied:
-            if applied[path.name] != digest:
-                raise MigrationError(f"{path.name} changed after it was applied")
+    for path in files if files is not None else discover():
+        key, digest = _key(path), checksum(path)
+        if key in applied:
+            if applied[key] != digest:
+                raise MigrationError(f"{key} changed after it was applied")
             continue
         async with conn.transaction():
             await conn.execute(path.read_text())
-            await conn.execute("INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", path.name, digest)
-        log.info("migration_applied", file=path.name)
-        newly_applied.append(path.name)
+            await conn.execute("INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", key, digest)
+        log.info("migration_applied", file=key)
+        newly_applied.append(key)
     return newly_applied
 
 

@@ -39,7 +39,7 @@ SQL_ENUMS = {
 
 
 def _sql_enums() -> dict[str, list[str]]:
-    sql = (CONTRACTS / "db" / "000_contract_types.sql").read_text()
+    sql = (CONTRACTS / "db" / "schema.sql").read_text()
     found = re.findall(r"CREATE TYPE (\w+) AS ENUM \(([^)]*)\)", sql)
     return {name: re.findall(r"'([^']*)'", values) for name, values in found}
 

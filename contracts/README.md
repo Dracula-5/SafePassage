@@ -8,8 +8,7 @@ the human decides and applies it.
 | File | What it fixes |
 |---|---|
 | `ownership.txt` | Which instance may touch which path |
-| `db/000_contract_types.sql` | Extensions + shared enum types |
-| `db/900_contract_views.sql` | Cross-owner FKs and the read views (`v_*`) |
+| `db/schema.sql` | The whole baseline: extensions, enum types, all 14 tables, read views (`v_*`) |
 | `db/SCHEMA.md` | Table ownership, column meaning, evolution rules |
 | `events.md` | Redis Streams catalog |
 | `events.schema.json` | JSON Schema generated from the Python models (do not hand-edit) |

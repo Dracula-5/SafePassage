@@ -1,12 +1,9 @@
 # Database contract — FROZEN after Gate 0
 
-Postgres 16 + PostGIS 3.4. All geometries are SRID 4326. Migrations apply in this order
-(lexical file name across both dirs, see `app.core.migrate`):
+Postgres 16 + PostGIS 3.4. All geometries are SRID 4326. `app.core.migrate` applies:
 
-1. `contracts/db/000_contract_types.sql` — extensions, enum types
-2. `backend/migrations/1xx_*.sql` — A tables
-3. `backend/migrations/2xx_*.sql` — B tables
-4. `contracts/db/900_contract_views.sql` — cross-owner FKs, views
+1. `contracts/db/schema.sql` — the frozen baseline (extensions, enums, every table, views)
+2. `backend/migrations/*.sql` by file name — owners' additive changes (A: `1xx_*`, B: `2xx_*`)
 
 ## Ownership
 | Owner | Tables |
@@ -15,8 +12,7 @@ Postgres 16 + PostGIS 3.4. All geometries are SRID 4326. Migrations apply in thi
 | B (Senses) | hazards, facilities, suppliers, stock, vehicles, telemetry, source_health |
 
 ## Contract columns
-Every column in `100_brain_tables.sql` and `200_senses_tables.sql` as of Gate 0 is a contract
-column: it may not be dropped, renamed or retyped. Owners may add nullable columns or columns
+Every column in `schema.sql` is a contract column: it may not be dropped, renamed or retyped. Owners may add nullable columns or columns
 with defaults, indexes, and private tables.
 
 ## Semantics worth knowing

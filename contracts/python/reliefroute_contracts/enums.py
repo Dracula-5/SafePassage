@@ -1,6 +1,6 @@
 """Enumerations shared by DB, events and REST.
 
-These must match the Postgres enum types in contracts/db/000_contract_types.sql;
+These must match the Postgres enum types in contracts/db/schema.sql;
 backend/tests/brain/test_contracts.py fails if they drift.
 """
 

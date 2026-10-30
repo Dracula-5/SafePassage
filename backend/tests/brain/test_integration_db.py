@@ -10,16 +10,24 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from app.core.migrate import apply_all, discover
+from app.core.migrate import MigrationError, _key, apply_all, discover
 
 pytestmark = pytest.mark.integration
 ADMIN_URL = os.environ.get("TEST_DATABASE_URL")
 
 
-def test_discover_orders_contract_around_owner_migrations():
-    names = [p.name for p in discover()]
-    assert names[0] == "000_contract_types.sql" and names[-1] == "900_contract_views.sql"
-    assert names == sorted(names)
+def test_discover_puts_baseline_first(tmp_path):
+    (tmp_path / "201_b.sql").write_text("")
+    (tmp_path / "101_a.sql").write_text("")
+    files = discover(migrations_dir=tmp_path)
+    assert files[0].name == "schema.sql"
+    assert [p.name for p in files[1:]] == ["101_a.sql", "201_b.sql"]
+
+
+def test_discover_rejects_unowned_prefix(tmp_path):
+    (tmp_path / "300_x.sql").write_text("")
+    with pytest.raises(MigrationError):
+        discover(migrations_dir=tmp_path)
 
 
 @pytest.fixture
@@ -41,7 +49,7 @@ async def scratch_db():
 
 async def test_migrations_apply_and_are_idempotent(scratch_db):
     first = await apply_all(scratch_db)
-    assert first == [p.name for p in discover()]
+    assert first == [_key(p) for p in discover()]
     assert await apply_all(scratch_db) == []
     views = {r["table_name"] for r in await scratch_db.fetch(
         "SELECT table_name FROM information_schema.views WHERE table_schema = 'public'")}

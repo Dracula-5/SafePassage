@@ -12,10 +12,10 @@ tags:
   - name: senses
   - name: brain
 paths:
-  /healthz:
+  /health:
     get:
       tags: [core]
-      operationId: healthz
+      operationId: health
       summary: Liveness plus DB/Redis reachability
       responses:
         "200":
