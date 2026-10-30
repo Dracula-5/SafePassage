@@ -4,6 +4,7 @@ info:
   version: 0.1.0
   description: |
     FROZEN after Gate 0. Changes go through contracts/requests/<A|B>-<topic>.md.
+    Patch 001 (approved 2026-10-30): POST /api/vehicles.
     Tags say which instance serves each path: `senses` = Instance B, `brain` = Instance A, `core` = shared app.
     All timestamps are RFC 3339 UTC. Geometries are GeoJSON in EPSG:4326 ([lon, lat] order).
     Errors use the Problem schema (RFC 9457 shape).
@@ -78,6 +79,29 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Vehicle" }
+    post:
+      tags: [senses]
+      operationId: registerVehicle
+      description: |
+        Patch 001. A driver registers a vehicle from the Driver PWA. The response carries the
+        device token exactly once (only its hash is stored); the PWA sends it as X-Device-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VehicleRegistration" }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vehicle, device_token]
+                properties:
+                  vehicle: { $ref: "#/components/schemas/Vehicle" }
+                  device_token: { type: string }
+        "422": { $ref: "#/components/responses/Problem" }
   /api/telemetry:
     post:
       tags: [senses]
@@ -461,6 +485,16 @@ components:
         last_seen_at: { type: [string, "null"], format: date-time }
         seconds_since_seen: { type: [number, "null"] }
         is_offline: { type: boolean }
+    VehicleRegistration:
+      type: object
+      required: [label, capacity_kg, driver_language]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 100 }
+        driver_name: { type: string, maxLength: 100 }
+        driver_phone: { type: string, maxLength: 20, description: "E.164, used for SMS/WhatsApp" }
+        driver_language: { type: string, description: "BCP-47 code for voice/text instructions, e.g. te, hi" }
+        capacity_kg: { type: number, exclusiveMinimum: 0 }
+        home_facility_id: { type: [string, "null"], format: uuid }
     TelemetryFix:
       type: object
       required: [lon, lat, recorded_at]

@@ -1,7 +1,8 @@
 """Apply the contract baseline, then each owner's additive migrations.
 
-Order: contracts/db/schema.sql (frozen baseline: types, all tables, views), then
-backend/migrations/*.sql by file name (A: 1xx, B: 2xx). Each file runs once, in its own
+Order: contracts/db/schema.sql (frozen baseline: types, all tables, views), then approved
+contract patches contracts/db/patches/*.sql, then backend/migrations/*.sql by file name
+(A: 1xx, B: 2xx). Each file runs once, in its own
 transaction, recorded in schema_migrations under its repo-relative path with a checksum;
 an applied file whose contents changed is an error (write a new migration instead).
 
@@ -23,6 +24,7 @@ log = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BASELINE = REPO_ROOT / "contracts" / "db" / "schema.sql"
+PATCHES_DIR = REPO_ROOT / "contracts" / "db" / "patches"
 MIGRATIONS_DIR = REPO_ROOT / "backend" / "migrations"
 
 
@@ -30,12 +32,15 @@ class MigrationError(RuntimeError):
     pass
 
 
-def discover(baseline: Path = BASELINE, migrations_dir: Path = MIGRATIONS_DIR) -> list[Path]:
+def discover(
+    baseline: Path = BASELINE, migrations_dir: Path = MIGRATIONS_DIR, patches_dir: Path = PATCHES_DIR
+) -> list[Path]:
+    patches = sorted(patches_dir.glob("*.sql")) if patches_dir.exists() else []
     owner_files = sorted(migrations_dir.glob("*.sql")) if migrations_dir.exists() else []
     for path in owner_files:
-        if not path.name[:1] in {"1", "2"}:
+        if path.name[:1] not in {"1", "2"}:
             raise MigrationError(f"{path.name}: owner migrations must start with 1 (A) or 2 (B)")
-    return [baseline, *owner_files]
+    return [baseline, *patches, *owner_files]
 
 
 def checksum(path: Path) -> str:

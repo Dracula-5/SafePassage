@@ -17,18 +17,21 @@ pytestmark = pytest.mark.integration
 ADMIN_URL = os.environ.get("TEST_DATABASE_URL")
 
 
-def test_discover_puts_baseline_first(tmp_path):
-    (tmp_path / "201_b.sql").write_text("")
-    (tmp_path / "101_a.sql").write_text("")
-    files = discover(migrations_dir=tmp_path)
-    assert files[0].name == "schema.sql"
-    assert [p.name for p in files[1:]] == ["101_a.sql", "201_b.sql"]
+def test_discover_orders_baseline_patches_then_owner_migrations(tmp_path):
+    owners, patches = tmp_path / "owners", tmp_path / "patches"
+    owners.mkdir(), patches.mkdir()
+    (owners / "201_b.sql").write_text("")
+    (owners / "101_a.sql").write_text("")
+    (patches / "002_y.sql").write_text("")
+    (patches / "001_x.sql").write_text("")
+    files = discover(migrations_dir=owners, patches_dir=patches)
+    assert [p.name for p in files] == ["schema.sql", "001_x.sql", "002_y.sql", "101_a.sql", "201_b.sql"]
 
 
 def test_discover_rejects_unowned_prefix(tmp_path):
     (tmp_path / "300_x.sql").write_text("")
     with pytest.raises(MigrationError):
-        discover(migrations_dir=tmp_path)
+        discover(migrations_dir=tmp_path, patches_dir=tmp_path / "none")
 
 
 @pytest.fixture
@@ -54,8 +57,8 @@ async def test_migrations_apply_and_are_idempotent(scratch_db):
     assert await apply_all(scratch_db) == []
     views = {r["table_name"] for r in await scratch_db.fetch(
         "SELECT table_name FROM information_schema.views WHERE table_schema = 'public'")}
-    assert {"v_active_hazards", "v_vehicle_status", "v_vehicle_assignment",
-            "v_available_stock", "v_source_freshness"} <= views
+    assert {"v_active_hazards", "v_vehicle_status", "v_vehicle_assignment", "v_available_stock",
+            "v_source_freshness", "v_facilities", "v_suppliers", "v_places"} <= views
 
 
 async def test_available_stock_subtracts_open_orders(scratch_db):
