@@ -3,6 +3,7 @@ labelled rule-based fallbacks)."""
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import httpx
@@ -48,7 +49,11 @@ async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClie
     if settings.llm_model:
         ranked = [settings.llm_model] + [m for m in ranked if m != settings.llm_model]
     # Order by what answers now; keep the rest as fallbacks for later outages.
-    healthy = [m for m in ranked[:6] if await backend.probe(m)]
+    candidates = ranked[:6]
+    backend.timeout_s = 15  # probes only; real calls get the full budget below
+    answers = await asyncio.gather(*(backend.probe(m) for m in candidates))
+    backend.timeout_s = 30
+    healthy = [m for m, ok in zip(candidates, answers, strict=True) if ok]
     backend.models = healthy + [m for m in ranked if m not in healthy]
     if not backend.models:
         raise RuntimeError("no Gemini flash model available for this key")
