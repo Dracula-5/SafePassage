@@ -29,6 +29,7 @@ from .store import expire_due_hazards, publish_hazard_events
 
 log = get_logger(__name__)
 EXPIRY_SWEEP_S = 60
+RETRY_AFTER_FAILURE_S = 120
 
 
 def build_sources(settings: SensesSettings) -> list[Source]:
@@ -58,13 +59,20 @@ async def sweep_expired() -> int:
     return len(events)
 
 
+def next_delay_s(source: Source, ok: bool) -> int:
+    """A failed poll retries soon: on a new database AePDS fails until the boundaries are loaded,
+    and waiting its full 6 h interval would leave the system without stock data."""
+    return source.poll_s if ok else min(source.poll_s, RETRY_AFTER_FAILURE_S)
+
+
 async def _loop(source: Source, http: httpx.AsyncClient) -> None:
     while True:
+        ok = False
         try:
-            await poll_once(source, http, await get_pool())
+            ok = (await poll_once(source, http, await get_pool())).ok
         except Exception:  # a bug in one source must not stop the others
             log.exception("poll_crashed", source=source.name)
-        await asyncio.sleep(source.poll_s)
+        await asyncio.sleep(next_delay_s(source, ok))
 
 
 async def _sweeper() -> None:

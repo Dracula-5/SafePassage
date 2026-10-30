@@ -120,7 +120,7 @@ async def post_telemetry(batch: TelemetryBatch, x_device_token: Annotated[str, H
                 batch.vehicle_id, latest.lon, latest.lat, latest.recorded_at,
             )  # fmt: skip
     for telemetry_id, fix in stored:
-        await bus.publish(VEHICLE_TELEMETRY, VehicleTelemetry(
+        await bus.try_publish(VEHICLE_TELEMETRY, VehicleTelemetry(
             telemetry_id=telemetry_id, vehicle_id=batch.vehicle_id, position=LonLat(lon=fix.lon, lat=fix.lat),
             recorded_at=fix.recorded_at, speed_mps=fix.speed_mps, heading_deg=fix.heading_deg, accuracy_m=fix.accuracy_m,
         ), dedupe_key=f"{batch.vehicle_id}:{fix.recorded_at.isoformat()}")  # fmt: skip

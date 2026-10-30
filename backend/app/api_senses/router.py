@@ -10,15 +10,18 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from redis.exceptions import RedisError
 from reliefroute_contracts.enums import FacilityKind, HazardSeverity, HazardType
 from shapely import Polygon
 from shapely.geometry import shape
 from shapely.validation import explain_validity
 
+from app.core.auth import require_operator
 from app.core.db import get_pool
+from app.core.logging import get_logger
 
 from ..suppliers.router import router as portal_router
 from ..telemetry.router import router as telemetry_router
@@ -26,7 +29,9 @@ from .driver_app import router as driver_router
 from .stream import router as stream_router
 from ..ingestion.store import publish_hazard_events, set_hazard_status, upsert_hazard
 from ..ingestion.models import NormalizedHazard
+from ..ingestion.settings import get_senses_settings
 
+log = get_logger(__name__)
 router = APIRouter(tags=["senses"])
 # Sub-routers live in their own packages; main.py only discovers this module's `router`.
 router.include_router(telemetry_router)
@@ -35,6 +40,8 @@ router.include_router(stream_router)
 router.include_router(driver_router)
 GEOJSON = "application/geo+json"
 MAX_DRILL_AREA_KM2 = 50_000  # larger than any district; stops accidental continent-sized drills
+MAX_DRILL_VERTICES = 1_000
+MAX_FACILITIES = 5_000       # the map asks by viewport; an unbounded call would return every row
 
 
 def _bbox(value: str | None) -> tuple[float, float, float, float] | None:
@@ -108,8 +115,9 @@ async def list_facilities(
                   EXISTS (SELECT 1 FROM suppliers s WHERE s.facility_id = f.id) AS is_supplier
            FROM facilities f
            WHERE ($1::text[] IS NULL OR f.kind::text = ANY($1))
-             AND ($2::float8 IS NULL OR f.geom && ST_MakeEnvelope($2, $3::float8, $4::float8, $5::float8, 4326))""",
-        kinds, *(box or (None, None, None, None)),
+             AND ($2::float8 IS NULL OR f.geom && ST_MakeEnvelope($2, $3::float8, $4::float8, $5::float8, 4326))
+           LIMIT $6""",
+        kinds, *(box or (None, None, None, None)), MAX_FACILITIES,
     )  # fmt: skip
     features = [{
         "type": "Feature", "id": str(r["id"]),
@@ -153,14 +161,27 @@ class DrillRequest(BaseModel):
             raise ValueError(f"invalid polygon: {exc}") from exc
         if not isinstance(poly, Polygon) or not poly.is_valid:
             raise ValueError(f"invalid polygon: {explain_validity(poly)}")
+        if poly.area == 0:
+            raise ValueError("polygon has no area")
+        if len(poly.exterior.coords) > MAX_DRILL_VERTICES:
+            raise ValueError(f"polygon has more than {MAX_DRILL_VERTICES} vertices")
         x0, y0, x1, y1 = poly.bounds
         if not (-180 <= x0 and x1 <= 180 and -90 <= y0 and y1 <= 90):
             raise ValueError("coordinates out of range")
         return value
 
 
-@router.post("/api/drill", status_code=201)
+def _in_region(geometry: dict) -> bool:
+    """Roads are only routable inside the region; a drill elsewhere could never produce a plan."""
+    x0, y0, x1, y1 = shape(geometry).bounds
+    rx0, ry0, rx1, ry1 = get_senses_settings().region_bbox
+    return x0 < rx1 and x1 > rx0 and y0 < ry1 and y1 > ry0
+
+
+@router.post("/api/drill", status_code=201, dependencies=[Depends(require_operator)])
 async def create_drill(body: DrillRequest) -> JSONResponse:
+    if not _in_region(body.geometry):
+        raise HTTPException(422, f"drill is outside the mapped region ({get_senses_settings().region_name})")
     ref = f"drill:{uuid4()}"
     now = datetime.now(UTC)
     hazard = NormalizedHazard(
@@ -176,11 +197,14 @@ async def create_drill(body: DrillRequest) -> JSONResponse:
             raise HTTPException(422, f"drill area {area:.0f} km2 exceeds {MAX_DRILL_AREA_KM2} km2")
         event = await upsert_hazard(conn, hazard)
         row = await conn.fetchrow(HAZARD_SELECT + " WHERE h.id = $1", event.hazard_id)
-    await publish_hazard_events([event])
+    try:
+        await publish_hazard_events([event])
+    except (RedisError, OSError) as exc:  # the drill is on the map; a plan can still be triggered by hand
+        log.warning("drill_event_not_published", hazard_id=str(event.hazard_id), error=str(exc))
     return JSONResponse(_hazard_feature(row), status_code=201, media_type=GEOJSON)
 
 
-@router.delete("/api/drill/{hazard_id}", status_code=204)
+@router.delete("/api/drill/{hazard_id}", status_code=204, dependencies=[Depends(require_operator)])
 async def cancel_drill(hazard_id: UUID) -> Response:
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
