@@ -1,68 +1,91 @@
-# Gate 0 — Contracts and skeleton
+# A-G0 — Contracts and skeleton (Instance A, Brain)
 
-Branch: `chore/gate0-contracts` (based on `main` @ `0501a28`). Author: the session that becomes Instance A after Gate 0.
+Branch `feat/brain`, tag `phase0-contracts`. **Not pushed: the repo has no git remote.**
 
 ## What was built
-**Contracts (`contracts/`, frozen from now on)**
-- `python/reliefroute_contracts/`: Pydantic enums, the 6 event payloads, a discriminated `EventEnvelope`, stream/group names, `VEHICLE_OFFLINE_AFTER_SECONDS = 120`. Both sides import this package; nobody redefines these types.
-- `db/000_contract_types.sql`: PostGIS, pgcrypto, 17 enum types.
-- `db/900_contract_views.sql`: cross-owner FKs and the read views `v_active_hazards`, `v_vehicle_status`, `v_vehicle_assignment`, `v_available_stock`, `v_source_freshness`.
-- `db/SCHEMA.md`, `events.md`, `events.schema.json` (generated), `openapi.yaml` (OpenAPI 3.1, tagged `senses`/`brain`/`core`).
-- `ownership.txt` plus `tools/check_ownership.py` (gate audit b) and `tools/audit_runtime.py` (gate audit a).
+**Contracts (`contracts/`, frozen from this tag)**
+- `db/schema.sql`: the whole database baseline. It contains PostGIS and pgcrypto, 17 enum types, and all 14 tables:
+  - B's 7 tables: hazards, facilities, suppliers, stock, vehicles, telemetry, source_health.
+  - A's 7 tables: plans, routes, orders, order_lines, approvals, notifications, agent_events.
 
-**Baseline migrations**
-- `backend/migrations/100_brain_tables.sql` (A): plans, routes, orders, order_lines, approvals, notifications, agent_events.
-- `backend/migrations/200_senses_tables.sql` (B): hazards, facilities, suppliers, stock, vehicles, telemetry, source_health. Written here as the contract baseline; **B owns it from now on**.
-- The A→B foreign keys are in contract file 900, so 1xx never depends on 2xx.
+  It also has GIST indexes on every geometry column, and 5 read views: `v_vehicle_assignment`, `v_active_hazards`, `v_vehicle_status`, `v_available_stock` (stock minus open orders) and `v_source_freshness`. `db/SCHEMA.md` explains the semantics and the evolution rules.
+- `events.md`: the 6 Redis Streams with envelope, payloads, consumer groups and dedupe keys. The source of truth is `python/reliefroute_contracts/` (Pydantic enums plus a discriminated `EventEnvelope`), and `events.schema.json` is generated from it.
+- `openapi.yaml`: OpenAPI 3.1 covering every B path (`senses` tag) and every A path (`brain` tag), plus `/health`.
+- `ownership.txt`, `tools/check_ownership.py` (gate audit b), `tools/audit_runtime.py` (gate audit a).
+- `docs/MASTER_PROMPT.md`: the master prompt as you gave it, saved because the instance prompts tell both instances to read it.
 
-**Backend skeleton (A-owned; its public API is stable for B)**
-- `app/main.py`: auto-registers `app.api_brain.router` and `app.api_senses.router`. A missing package is skipped with a warning. A package that fails to import crashes startup. `/healthz` reports Postgres/Redis and returns 503 when either is down. Connections are lazy, so the app boots without them.
-- `app/core/`: `config.CommonSettings`, `db.get_pool`, `bus.publish/consume` (validated envelopes, ack after the handler, re-claim after 60 s, dead-letter stream for invalid entries), `resilience.CircuitBreaker/resilient_get` (timeout, jittered retry, breaker), `migrate` (checksummed, ordered 000→1xx→2xx→900).
-- `app/api_brain/router.py`: every brain path from the contract is registered. Each one returns **501 Not Implemented** at Gate 0, so the API serves no invented data.
-- `docker-compose.yml` skeleton: PostGIS 16, Redis 7, and Valhalla behind the `routing` profile. **B owns it from now on.**
+**Migrations**
+- `app.core.migrate` applies `contracts/db/schema.sql` once, then `backend/migrations/1xx_*` (A) and `2xx_*` (B) in name order. Migrations are checksummed; editing an applied file is an error, and other prefixes are rejected. There are no owner migrations yet.
+
+**Backend skeleton (A)**
+- `app/main.py`:
+  - Routers are discovered automatically from `app.api_brain.router` and `app.api_senses.router`.
+  - A missing package is tolerated, so either side runs alone. A package that fails to import crashes startup loudly.
+  - `GET /health` checks Postgres and Redis and returns 503 when either is down. Connections are lazy, so the app boots without them.
+- `app/core/`:
+  - `config` (pydantic-settings) and `logging` (structlog JSON).
+  - `db`: an asyncpg pool.
+  - `bus`: validated publish; ack after the handler finishes; re-claim pending entries after 60 s; invalid entries go to a dead-letter stream.
+  - `resilience`: timeout, jittered retry and circuit breaker.
+  - `migrate`.
+- `app/api_brain/router.py`: every brain path is registered, and each returns **501** until its gate lands. No endpoint returns invented data.
+
+**Removed so I stay in my area:** the first Gate 0 draft included `docker-compose.yml` and a `200_senses_tables.sql`, both B's files. Both are deleted; B's tables now live in the contract. A suggested compose setup for B is below.
 
 ## Commands run (real output)
 ```
-$ cd backend && .venv/bin/python -m pytest -v -rs
-36 passed, 4 skipped, 1 warning in 0.91s
-SKIPPED tests/brain/test_integration_bus.py:30: TEST_REDIS_URL not set
-SKIPPED tests/brain/test_integration_db.py:42: TEST_DATABASE_URL not set
-SKIPPED tests/brain/test_integration_db.py:52: TEST_DATABASE_URL not set
-SKIPPED tests/brain/test_integration_db.py:77: TEST_DATABASE_URL not set
+$ cd backend && .venv/bin/python -m pytest -q -rs
+SKIPPED [1] tests/brain/test_integration_bus.py:30: TEST_REDIS_URL not set
+SKIPPED [1] tests/brain/test_integration_db.py:50: TEST_DATABASE_URL not set
+SKIPPED [1] tests/brain/test_integration_db.py:60: TEST_DATABASE_URL not set
+SKIPPED [1] tests/brain/test_integration_db.py:85: TEST_DATABASE_URL not set
+37 passed, 4 skipped, 1 warning in 1.06s
+
+$ pglast.parse_sql(contracts/db/schema.sql)     # real Postgres parser, syntax only
+48 statements parsed OK; Counter({'CreateEnumStmt': 17, 'CreateStmt': 14, 'IndexStmt': 10,
+                                  'ViewStmt': 5, 'CreateExtensionStmt': 2})
 
 $ python contracts/tools/audit_runtime.py
-0 finding(s)
-# Sanity check: a probe file containing "(85.8245, 20.2961)  # mock" produced 2 findings and was then deleted.
+0 finding(s)        # a planted "(85.8245, 20.2961)  # mock" probe produced 2 findings, then was removed
 
-$ uvicorn app.main:app  (DATABASE_URL/REDIS_URL pointed at closed ports)
-GET  /healthz            -> 503 {"status":"degraded","checks":{"postgres":"error","redis":"error"}}
-POST /api/plans/trigger  -> 501 {"title":"Not Implemented","status":501,...}
+$ uvicorn app.main:app   (DB/Redis URLs pointed at closed ports)
+GET  /health            -> 503 {"status":"degraded","checks":{"postgres":"error","redis":"error"}}
+POST /api/plans/trigger -> 501 {"title":"Not Implemented","status":501,...}
 
-secret scan (sk-*, Twilio AC*, key/token/secret literals): no matches
-git check-ignore: backend/.venv and backend/.env are ignored
+secret scan: no matches; backend/.venv and backend/.env are git-ignored
 ```
-The tests check that the Python enums, the SQL enums and the OpenAPI enums are identical, that `events.schema.json` is current, that the OpenAPI spec is valid, that every brain path in the contract is served, how router registration fails, and how the breaker and retry behave.
+The tests cover:
+- Python, SQL and OpenAPI enums are identical.
+- `events.schema.json` is current.
+- The OpenAPI spec is valid.
+- Every brain path in the contract is served.
+- Router discovery fails the right way.
+- The breaker and retry behave as designed.
+- Ownership globs resolve correctly.
+
+## Self-audit
+- (a) No mock words, coordinate pairs or GeoJSON literals in runtime code.
+- (b) Files written outside A's list are Gate 0 shared files only: `contracts/*`, `.gitignore`, `docs/MASTER_PROMPT.md`, `backend/requirements/{base,dev}.txt`, `backend/pytest.ini`, `backend/tests/__init__.py`. Nothing under B's paths.
+- (c) No secrets; `.env` is ignored.
+- (d) `resilience.resilient_request` gives every outbound call a timeout, retry and breaker. Redis and Postgres calls have timeouts.
+- (e) There are no agent outputs yet. Every event is validated by Pydantic both when published and when consumed.
 
 ## Known gaps (not verified)
-- **Migrations have never run against PostGIS, and the bus has never run against Redis.** Docker is not installed and the local Postgres 14 has no PostGIS. The 4 integration tests are written and skip until `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set. Treat the SQL as unverified until they pass.
-- `docker-compose.yml` has not been started. `postgis/postgis` may need amd64 emulation on Apple Silicon (OrbStack and Docker Desktop handle this).
-- Live sources were only checked for reachability: the SACHET RSS returned HTTP 200. Ingestion is Gate 1.
-- No README or architecture diagram yet. That is B's work at Gate 4.
-- No remote exists, so nothing was pushed.
+- **The schema has never been executed on PostGIS, and the bus has never run on Redis.** Docker isn't installed and the local Postgres 14 has no PostGIS. The 4 integration tests skip until `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set. The SQL is only syntax-checked.
+- Not pushed and no tag on a remote, because there is no remote.
 
-## Risks
-- The Valhalla tile build for an Indian region takes a long time and a lot of RAM. Start it as early as possible once the region is chosen.
-- `bus.consume` re-claims a handler failure indefinitely. A will add a delivery-count cap at Gate 1.
+## For B (suggested; B owns `docker-compose.yml`)
+Services A needs locally:
+- `postgis/postgis:16-3.4` with user, password and db all `reliefroute`, on port 5432.
+- `redis:7-alpine` on port 6379.
+- `ghcr.io/valhalla/valhalla-scripted` on port 8002, with `tile_urls` set to the demo region's Geofabrik `.osm.pbf`.
+
+Set up the Python environment with:
+`uv venv backend/.venv --python 3.12 && uv pip install -e contracts/python -r backend/requirements/senses.txt -r backend/requirements/dev.txt`
+(`senses.txt` should start with `-r base.txt`.)
 
 ## Questions for the human
-1. **Demo region?** It sets `VALHALLA_PBF_URL` (e.g. Geofabrik `asia/india/eastern-zone` for Odisha/WB cyclones, or the `southern-zone`), the Overpass bbox and the FCI godown filter.
-2. **LLM provider and key** for the agents (Gate 1/2)?
-3. Please create a GitHub remote. To start both instances: merge this branch into `main`, then branch `feat/brain` and `feat/senses-face` from it.
-
-## To run the integration tests once Docker is installed
-```
-docker compose up -d db redis
-cd backend
-TEST_DATABASE_URL=postgresql://reliefroute:reliefroute@localhost:5432/postgres \
-TEST_REDIS_URL=redis://localhost:6379/15 .venv/bin/python -m pytest -v -rs
-```
+1. **Git remote:** please add one, then I'll push `feat/brain` and the tag. B also needs the contracts, either by merging `feat/brain` up to `phase0-contracts` into `main` or by branching from the tag.
+2. **Demo region:** it sets the Valhalla extract. Building the tiles for an Indian zone takes hours, so this blocks the real-Valhalla test in Gate 1.
+3. **LLM provider and API key** for Gate 2.
+4. **Docker or OrbStack:** needed for PostGIS, Redis and Valhalla before Gate 1 can be verified.
