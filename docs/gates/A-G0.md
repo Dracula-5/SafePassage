@@ -1,6 +1,6 @@
 # A-G0 — Contracts and skeleton (Instance A, Brain)
 
-Branch `feat/brain`, tag `phase0-contracts`. **Not pushed: the repo has no git remote.**
+Branch `feat/brain`, tag `phase0-contracts`, both pushed to https://github.com/Dracula-5/SafePassage.
 
 ## What was built
 **Contracts (`contracts/`, frozen from this tag)**
@@ -70,9 +70,22 @@ The tests cover:
 - (d) `resilience.resilient_request` gives every outbound call a timeout, retry and breaker. Redis and Postgres calls have timeouts.
 - (e) There are no agent outputs yet. Every event is validated by Pydantic both when published and when consumed.
 
-## Known gaps (not verified)
-- **The schema has never been executed on PostGIS, and the bus has never run on Redis.** Docker isn't installed and the local Postgres 14 has no PostGIS. The 4 integration tests skip until `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set. The SQL is only syntax-checked.
-- Not pushed and no tag on a remote, because there is no remote.
+## Update after Docker became available (integration tests now run)
+```
+$ docker run postgis/postgis:16-3.4 (port 55432, amd64 image under emulation) ; docker run redis:7-alpine (port 6380)
+$ TEST_DATABASE_URL=postgresql://reliefroute:reliefroute@localhost:55432/postgres \
+  TEST_REDIS_URL=redis://localhost:6380/15 .venv/bin/python -m pytest -q -rs
+41 passed, 1 warning in 5.12s
+```
+`schema.sql` applies on real PostGIS, and re-running it is a no-op. All 5 views exist. `v_available_stock` subtracts open orders (1000 - 300 = 700; the cancelled order is ignored), and the drill CHECK rejects bad rows. The Redis bus round trip works, including dead-lettering of an invalid entry.
+
+## Known gaps
+- Host port 5432 is taken by a local Homebrew Postgres 14 and 5433 is also in use. B's compose should map PostGIS to a free host port (A's local `.env` uses 55432).
+- The remote has no `main` branch yet (A must not push to main).
+
+## Decisions taken
+- **Demo region: Andhra Pradesh.** Live check on 2026-10-30: 46 of the last 100 SACHET alerts (about 17 h) came from Andhra Pradesh SDMA, and 3 more from IMD Visakhapatnam. That is far more than any other state. October to December is the Bay of Bengal cyclone and north-east monsoon season, so real alerts should keep arriving during the demo. Valhalla will use Geofabrik `asia/india/southern-zone`, clipped to Andhra Pradesh (Docker has about 3.8 GB RAM; the full zone may not build).
+- **LLM provider: Gemini.** The key goes in `backend/.env` (git-ignored). `env/brain.env.example` has the slots.
 
 ## For B (suggested; B owns `docker-compose.yml`)
 Services A needs locally:
