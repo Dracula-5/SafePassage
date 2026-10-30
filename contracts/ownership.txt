@@ -1,0 +1,44 @@
+# Path ownership. Format: <role> <glob>. Globs are fnmatch-style against repo-relative paths.
+# Used by contracts/tools/check_ownership.py. FROZEN after Gate 0.
+A backend/app/main.py
+A backend/app/__init__.py
+A backend/app/core/*
+A backend/app/graph/*
+A backend/app/agents/*
+A backend/app/solvers/*
+A backend/app/routing/*
+A backend/app/dispatch/*
+A backend/app/llm/*
+A backend/app/api_brain/*
+A backend/migrations/1*.sql
+A backend/tests/brain/*
+A backend/requirements/brain.txt
+A env/brain.env.example
+A docs/brain.md
+A docs/gates/A-*.md
+B backend/app/ingestion/*
+B backend/app/telemetry/*
+B backend/app/suppliers/*
+B backend/app/api_senses/*
+B backend/migrations/2*.sql
+B backend/tests/senses/*
+B backend/requirements/senses.txt
+B env/senses.env.example
+B frontend/*
+B driver-pwa/*
+B infra/*
+B docker-compose.yml
+B README.md
+B docs/senses.md
+B docs/demo-script.md
+B docs/gates/B-*.md
+# Either side may add a change request file (and nothing else under contracts/).
+A contracts/requests/A-*.md
+B contracts/requests/B-*.md
+# Gate 0 shared skeleton: frozen like contracts/, changed only via a contract request.
+G0 .gitignore
+G0 contracts/*
+G0 backend/requirements/base.txt
+G0 backend/requirements/dev.txt
+G0 backend/pytest.ini
+G0 docs/gates/G0.md

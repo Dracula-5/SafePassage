@@ -1,0 +1,671 @@
+openapi: 3.1.0
+info:
+  title: ReliefRoute API
+  version: 0.1.0
+  description: |
+    FROZEN after Gate 0. Changes go through contracts/requests/<A|B>-<topic>.md.
+    Tags say which instance serves each path: `senses` = Instance B, `brain` = Instance A, `core` = shared app.
+    All timestamps are RFC 3339 UTC. Geometries are GeoJSON in EPSG:4326 ([lon, lat] order).
+    Errors use the Problem schema (RFC 9457 shape).
+tags:
+  - name: core
+  - name: senses
+  - name: brain
+paths:
+  /healthz:
+    get:
+      tags: [core]
+      operationId: healthz
+      summary: Liveness plus DB/Redis reachability
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: A dependency is down
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  # ------------------------------------------------------------------ senses (B)
+  /api/hazards:
+    get:
+      tags: [senses]
+      operationId: listHazards
+      parameters:
+        - { name: active, in: query, schema: { type: boolean, default: true } }
+        - { name: include_drill, in: query, schema: { type: boolean, default: true } }
+        - name: bbox
+          in: query
+          description: min_lon,min_lat,max_lon,max_lat
+          schema: { type: string, pattern: "^-?\\d+(\\.\\d+)?(,-?\\d+(\\.\\d+)?){3}$" }
+      responses:
+        "200":
+          description: Hazard polygons
+          content:
+            application/geo+json:
+              schema: { $ref: "#/components/schemas/HazardCollection" }
+  /api/facilities:
+    get:
+      tags: [senses]
+      operationId: listFacilities
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/FacilityKind" }
+          style: form
+          explode: false
+        - { name: bbox, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Facility points
+          content:
+            application/geo+json:
+              schema: { $ref: "#/components/schemas/FacilityCollection" }
+  /api/vehicles:
+    get:
+      tags: [senses]
+      operationId: listVehicles
+      responses:
+        "200":
+          description: Vehicles with derived liveness
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Vehicle" }
+  /api/telemetry:
+    post:
+      tags: [senses]
+      operationId: postTelemetry
+      description: |
+        Driver PWA uploads real phone GPS fixes. Accepts a batch so the PWA can flush an
+        offline buffer; duplicates (same vehicle_id + recorded_at) are ignored.
+      parameters:
+        - { name: X-Device-Token, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TelemetryBatch" }
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, duplicates]
+                properties:
+                  accepted: { type: integer }
+                  duplicates: { type: integer }
+        "401": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/drill:
+    post:
+      tags: [senses]
+      operationId: createDrill
+      description: |
+        Inserts a judge-drawn what-if hazard as a real hazards row with source=drill,
+        source_ref "drill:<uuid>", and emits hazard.updated. Always shown labelled DRILL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DrillRequest" }
+      responses:
+        "201":
+          description: Drill hazard created
+          content:
+            application/geo+json:
+              schema: { $ref: "#/components/schemas/HazardFeature" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/drill/{hazard_id}:
+    delete:
+      tags: [senses]
+      operationId: cancelDrill
+      parameters:
+        - { name: hazard_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: "Drill cancelled (status=cancelled; hazard.updated emitted)" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/sources/health:
+    get:
+      tags: [senses]
+      operationId: listSourceHealth
+      responses:
+        "200":
+          description: Freshness of every ingestion source
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SourceHealth" }
+  /api/stream:
+    get:
+      tags: [senses]
+      operationId: stream
+      description: |
+        Server-Sent Events. Event names and data:
+        `agent_event` -> AgentEvent (tails agent_events by id),
+        `hazard` -> HazardUpdated event payload,
+        `vehicle` -> Vehicle,
+        `source_health` -> SourceHealth,
+        `plan` -> PlanSummary (status changes).
+        Supports `Last-Event-ID` (agent_event ids) for resume.
+      parameters:
+        - { name: plan_id, in: query, schema: { type: string, format: uuid } }
+        - { name: Last-Event-ID, in: header, schema: { type: string } }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /portal/api/stock:
+    post:
+      tags: [senses]
+      operationId: portalReportStock
+      description: |
+        Supplier check-in. The HTML form pages under /portal/* and the WhatsApp webhook
+        both end up here. Upserts stock and emits supplier.stock.updated.
+      parameters:
+        - { name: X-Supplier-Token, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StockReport" }
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StockLevel" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  # ------------------------------------------------------------------ brain (A)
+  /api/plans/trigger:
+    post:
+      tags: [brain]
+      operationId: triggerPlan
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Same key returns the original plan instead of starting a new one.
+          schema: { type: string, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlanTrigger" }
+      responses:
+        "202":
+          description: Plan started (or existing plan for a repeated Idempotency-Key)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanSummary" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/plans:
+    get:
+      tags: [brain]
+      operationId: listPlans
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/PlanStatus" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PlanSummary" }
+  /api/plans/{plan_id}:
+    get:
+      tags: [brain]
+      operationId: getPlan
+      parameters:
+        - { name: plan_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Full plan
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanDetail" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/plans/{plan_id}/approve:
+    post:
+      tags: [brain]
+      operationId: decidePlan
+      description: Human approval gate. Resumes the paused graph. A second decision returns 409.
+      parameters:
+        - { name: plan_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalRequest" }
+      responses:
+        "200":
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Approval" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/orders:
+    get:
+      tags: [brain]
+      operationId: listOrders
+      parameters:
+        - { name: plan_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/OrderStatus" } }
+      responses:
+        "200":
+          description: Orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Order" }
+  /api/vehicles/{vehicle_id}/assignment:
+    get:
+      tags: [brain]
+      operationId: getVehicleAssignment
+      description: What the Driver PWA shows. 404 when the vehicle has no current assignment.
+      parameters:
+        - { name: vehicle_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current assignment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VehicleAssignment" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/brain/health:
+    get:
+      tags: [brain]
+      operationId: brainHealth
+      description: Freshness of A-side dependencies (Valhalla, LLM provider, Twilio).
+      responses:
+        "200":
+          description: Dependency status
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SourceHealth" }
+
+components:
+  responses:
+    Problem:
+      description: Error
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+    Health:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks:
+          type: object
+          additionalProperties: { type: string, enum: [ok, error] }
+
+    # ---- enums (mirror contracts/python/reliefroute_contracts/enums.py)
+    HazardSource: { type: string, enum: [sachet, imd, open_meteo, gdacs, firms, cwc, drill] }
+    HazardType: { type: string, enum: [flood, heavy_rain, cyclone, storm, landslide, wildfire, heatwave, earthquake, tsunami, other] }
+    HazardSeverity: { type: string, enum: [minor, moderate, severe, extreme, unknown] }
+    HazardStatus: { type: string, enum: [active, expired, cancelled] }
+    FacilityKind: { type: string, enum: [hospital, shelter, warehouse, godown, school, fuel, depot, other] }
+    FacilitySource: { type: string, enum: [osm, datagov, portal] }
+    ItemCode: { type: string, enum: [WATER_L, RICE_KG, PULSES_KG, RTE_MEAL, TARPAULIN, BLANKET, HYGIENE_KIT, MEDICAL_KIT, ORS_SACHET] }
+    StockReportChannel: { type: string, enum: [portal, whatsapp, api] }
+    VehicleStatus: { type: string, enum: [available, assigned, en_route, maintenance] }
+    PlanTriggerKind: { type: string, enum: [hazard, manual, replan, drill] }
+    PlanStatus: { type: string, enum: [pending, planning, awaiting_approval, approved, rejected, dispatched, superseded, unreachable, failed] }
+    RouteStatus: { type: string, enum: [planned, active, completed, abandoned] }
+    OrderStatus: { type: string, enum: [draft, approved, dispatched, in_transit, delivered, cancelled] }
+    ApprovalDecision: { type: string, enum: [approved, rejected] }
+    AgentNode: { type: string, enum: [supervisor, sentinel, needs, procurement, route_planner, critic, dispatcher, replanner, human] }
+    DeviationKind: { type: string, enum: [off_route, stalled, offline, hazard_on_route] }
+    AgentEventType: { type: string, enum: [node_started, node_finished, tool_call, tool_result, decision, critic_rejection, approval_requested, approval_decided, dispatch, data_stale, error] }
+
+    # ---- GeoJSON
+    Point:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { const: Point }
+        coordinates:
+          type: array
+          prefixItems: [{ type: number, minimum: -180, maximum: 180 }, { type: number, minimum: -90, maximum: 90 }]
+          minItems: 2
+          maxItems: 2
+    Polygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { const: Polygon }
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 4
+            items: { type: array, minItems: 2, maxItems: 2, items: { type: number } }
+    MultiPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { const: MultiPolygon }
+        coordinates:
+          type: array
+          items: { type: array, items: { type: array, items: { type: array, items: { type: number } } } }
+    LineString:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { const: LineString }
+        coordinates:
+          type: array
+          minItems: 2
+          items: { type: array, minItems: 2, maxItems: 2, items: { type: number } }
+
+    # ---- senses
+    HazardProperties:
+      type: object
+      required: [id, source, source_ref, hazard_type, severity, status, headline, fetched_at, version, is_drill]
+      properties:
+        id: { type: string, format: uuid }
+        source: { $ref: "#/components/schemas/HazardSource" }
+        source_ref: { type: string }
+        hazard_type: { $ref: "#/components/schemas/HazardType" }
+        severity: { $ref: "#/components/schemas/HazardSeverity" }
+        status: { $ref: "#/components/schemas/HazardStatus" }
+        headline: { type: string }
+        description: { type: [string, "null"] }
+        area_desc: { type: [string, "null"] }
+        effective_at: { type: [string, "null"], format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        issued_at: { type: [string, "null"], format: date-time }
+        fetched_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        is_drill: { type: boolean }
+        is_stale: { type: boolean, description: "True when the source's last success is older than its TTL" }
+    HazardFeature:
+      type: object
+      required: [type, id, geometry, properties]
+      properties:
+        type: { const: Feature }
+        id: { type: string, format: uuid }
+        geometry: { $ref: "#/components/schemas/MultiPolygon" }
+        properties: { $ref: "#/components/schemas/HazardProperties" }
+    HazardCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { const: FeatureCollection }
+        features: { type: array, items: { $ref: "#/components/schemas/HazardFeature" } }
+    FacilityFeature:
+      type: object
+      required: [type, id, geometry, properties]
+      properties:
+        type: { const: Feature }
+        id: { type: string, format: uuid }
+        geometry: { $ref: "#/components/schemas/Point" }
+        properties:
+          type: object
+          required: [id, source, source_ref, kind, name]
+          properties:
+            id: { type: string, format: uuid }
+            source: { $ref: "#/components/schemas/FacilitySource" }
+            source_ref: { type: string }
+            kind: { $ref: "#/components/schemas/FacilityKind" }
+            name: { type: string }
+            capacity_people: { type: [integer, "null"] }
+            is_supplier: { type: boolean }
+    FacilityCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type: { const: FeatureCollection }
+        features: { type: array, items: { $ref: "#/components/schemas/FacilityFeature" } }
+    Vehicle:
+      type: object
+      required: [id, label, capacity_kg, status, is_offline]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        driver_name: { type: [string, "null"] }
+        driver_language: { type: string }
+        capacity_kg: { type: number }
+        status: { $ref: "#/components/schemas/VehicleStatus" }
+        position: { oneOf: [{ $ref: "#/components/schemas/Point" }, { type: "null" }] }
+        last_seen_at: { type: [string, "null"], format: date-time }
+        seconds_since_seen: { type: [number, "null"] }
+        is_offline: { type: boolean }
+    TelemetryFix:
+      type: object
+      required: [lon, lat, recorded_at]
+      properties:
+        lon: { type: number, minimum: -180, maximum: 180 }
+        lat: { type: number, minimum: -90, maximum: 90 }
+        recorded_at: { type: string, format: date-time }
+        speed_mps: { type: [number, "null"], minimum: 0 }
+        heading_deg: { type: [number, "null"], minimum: 0, exclusiveMaximum: 360 }
+        accuracy_m: { type: [number, "null"], minimum: 0 }
+    TelemetryBatch:
+      type: object
+      required: [vehicle_id, fixes]
+      properties:
+        vehicle_id: { type: string, format: uuid }
+        fixes:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: "#/components/schemas/TelemetryFix" }
+    DrillRequest:
+      type: object
+      required: [geometry, hazard_type, severity, label]
+      properties:
+        geometry: { $ref: "#/components/schemas/Polygon" }
+        hazard_type: { $ref: "#/components/schemas/HazardType" }
+        severity: { $ref: "#/components/schemas/HazardSeverity" }
+        label: { type: string, maxLength: 200 }
+        ttl_minutes: { type: integer, minimum: 5, maximum: 1440, default: 120 }
+    SourceHealth:
+      type: object
+      required: [source, breaker_state, is_stale, ttl_seconds]
+      properties:
+        source: { type: string }
+        breaker_state: { type: string, enum: [closed, open, half_open] }
+        last_success_at: { type: [string, "null"], format: date-time }
+        last_failure_at: { type: [string, "null"], format: date-time }
+        last_error: { type: [string, "null"] }
+        ttl_seconds: { type: integer }
+        fallback_source: { type: [string, "null"] }
+        is_stale: { type: boolean }
+    StockReport:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [item_code, quantity, unit_weight_kg]
+            properties:
+              item_code: { $ref: "#/components/schemas/ItemCode" }
+              quantity: { type: number, minimum: 0 }
+              unit_weight_kg: { type: number, exclusiveMinimum: 0 }
+    StockLevel:
+      type: object
+      required: [supplier_id, item_code, quantity, reserved, available, unit_weight_kg, reported_at]
+      properties:
+        supplier_id: { type: string, format: uuid }
+        item_code: { $ref: "#/components/schemas/ItemCode" }
+        quantity: { type: number }
+        reserved: { type: number }
+        available: { type: number }
+        unit_weight_kg: { type: number }
+        reported_at: { type: string, format: date-time }
+
+    # ---- brain
+    PlanTrigger:
+      type: object
+      required: [requested_by]
+      properties:
+        hazard_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Empty means "all active hazards".
+        reason: { type: string, maxLength: 500 }
+        requested_by: { type: string, maxLength: 100 }
+    PlanSummary:
+      type: object
+      required: [id, status, trigger_kind, hazard_ids, is_drill, requires_approval, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        parent_plan_id: { type: [string, "null"], format: uuid }
+        status: { $ref: "#/components/schemas/PlanStatus" }
+        trigger_kind: { $ref: "#/components/schemas/PlanTriggerKind" }
+        hazard_ids: { type: array, items: { type: string, format: uuid } }
+        is_drill: { type: boolean }
+        requires_approval: { type: boolean }
+        summary: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DemandLine:
+      type: object
+      required: [destination_facility_id, item_code, quantity, basis]
+      properties:
+        destination_facility_id: { type: string, format: uuid }
+        item_code: { $ref: "#/components/schemas/ItemCode" }
+        quantity: { type: number, minimum: 0 }
+        basis: { type: string, description: "How it was computed, e.g. population source x standard" }
+    Route:
+      type: object
+      required: [id, vehicle_id, status, geometry, distance_m, duration_s, load_kg, stops]
+      properties:
+        id: { type: string, format: uuid }
+        vehicle_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/RouteStatus" }
+        geometry: { $ref: "#/components/schemas/LineString" }
+        distance_m: { type: number }
+        duration_s: { type: number }
+        load_kg: { type: number }
+        min_hazard_clearance_m: { type: [number, "null"] }
+        stops:
+          type: array
+          items:
+            type: object
+            required: [facility_id, kind, eta]
+            properties:
+              facility_id: { type: string, format: uuid }
+              kind: { type: string, enum: [pickup, dropoff] }
+              eta: { type: string, format: date-time }
+              order_ids: { type: array, items: { type: string, format: uuid } }
+    CriticVerdict:
+      type: object
+      required: [attempt, passed, violations, created_at]
+      properties:
+        attempt: { type: integer, minimum: 1 }
+        passed: { type: boolean }
+        violations: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+    PlanDetail:
+      allOf:
+        - { $ref: "#/components/schemas/PlanSummary" }
+        - type: object
+          required: [demand, routes, orders, critic, approval]
+          properties:
+            demand: { type: array, items: { $ref: "#/components/schemas/DemandLine" } }
+            routes: { type: array, items: { $ref: "#/components/schemas/Route" } }
+            orders: { type: array, items: { $ref: "#/components/schemas/Order" } }
+            critic: { type: array, items: { $ref: "#/components/schemas/CriticVerdict" } }
+            approval: { oneOf: [{ $ref: "#/components/schemas/Approval" }, { type: "null" }] }
+            unreachable_reason: { type: [string, "null"] }
+    ApprovalRequest:
+      type: object
+      required: [decision, decided_by]
+      properties:
+        decision: { $ref: "#/components/schemas/ApprovalDecision" }
+        decided_by: { type: string, maxLength: 100 }
+        reason: { type: string, maxLength: 1000 }
+    Approval:
+      type: object
+      required: [id, plan_id, decision, decided_by, decided_at]
+      properties:
+        id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        decision: { $ref: "#/components/schemas/ApprovalDecision" }
+        decided_by: { type: string }
+        reason: { type: [string, "null"] }
+        decided_at: { type: string, format: date-time }
+    Order:
+      type: object
+      required: [id, plan_id, supplier_id, destination_facility_id, status, idempotency_key, lines, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        route_id: { type: [string, "null"], format: uuid }
+        supplier_id: { type: string, format: uuid }
+        destination_facility_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        idempotency_key: { type: string }
+        lines:
+          type: array
+          items:
+            type: object
+            required: [item_code, quantity]
+            properties:
+              item_code: { $ref: "#/components/schemas/ItemCode" }
+              quantity: { type: number, exclusiveMinimum: 0 }
+        dispatched_at: { type: [string, "null"], format: date-time }
+        delivered_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+    VehicleAssignment:
+      type: object
+      required: [vehicle_id, route, plan_id, is_drill, instructions]
+      properties:
+        vehicle_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        is_drill: { type: boolean }
+        route: { $ref: "#/components/schemas/Route" }
+        instructions:
+          type: object
+          required: [language, text]
+          properties:
+            language: { type: string, description: "BCP-47, e.g. hi, or, bn, ta" }
+            text: { type: string }
+            audio_url: { type: [string, "null"] }
+    AgentEvent:
+      type: object
+      required: [id, node, event_type, message, payload, source_ids, created_at]
+      properties:
+        id: { type: integer }
+        plan_id: { type: [string, "null"], format: uuid }
+        node: { $ref: "#/components/schemas/AgentNode" }
+        event_type: { $ref: "#/components/schemas/AgentEventType" }
+        message: { type: string }
+        payload: { type: object }
+        source_ids: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }

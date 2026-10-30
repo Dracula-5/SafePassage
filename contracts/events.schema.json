@@ -1,0 +1,838 @@
+{
+  "$defs": {
+    "DeviationKind": {
+      "enum": [
+        "off_route",
+        "stalled",
+        "offline",
+        "hazard_on_route"
+      ],
+      "title": "DeviationKind",
+      "type": "string"
+    },
+    "HazardSeverity": {
+      "description": "CAP 1.2 severity values (lower-cased).",
+      "enum": [
+        "minor",
+        "moderate",
+        "severe",
+        "extreme",
+        "unknown"
+      ],
+      "title": "HazardSeverity",
+      "type": "string"
+    },
+    "HazardSource": {
+      "enum": [
+        "sachet",
+        "imd",
+        "open_meteo",
+        "gdacs",
+        "firms",
+        "cwc",
+        "drill"
+      ],
+      "title": "HazardSource",
+      "type": "string"
+    },
+    "HazardType": {
+      "enum": [
+        "flood",
+        "heavy_rain",
+        "cyclone",
+        "storm",
+        "landslide",
+        "wildfire",
+        "heatwave",
+        "earthquake",
+        "tsunami",
+        "other"
+      ],
+      "title": "HazardType",
+      "type": "string"
+    },
+    "HazardUpdated": {
+      "additionalProperties": false,
+      "properties": {
+        "area_km2": {
+          "minimum": 0,
+          "title": "Area Km2",
+          "type": "number"
+        },
+        "bbox": {
+          "description": "min_lon, min_lat, max_lon, max_lat",
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "change": {
+          "enum": [
+            "created",
+            "updated",
+            "expired",
+            "cancelled"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "hazard_id": {
+          "format": "uuid",
+          "title": "Hazard Id",
+          "type": "string"
+        },
+        "hazard_type": {
+          "$ref": "#/$defs/HazardType"
+        },
+        "is_drill": {
+          "title": "Is Drill",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/HazardSeverity"
+        },
+        "source": {
+          "$ref": "#/$defs/HazardSource"
+        },
+        "version": {
+          "description": "Increments on every change to the hazard row",
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hazard_id",
+        "change",
+        "source",
+        "hazard_type",
+        "severity",
+        "version",
+        "bbox",
+        "area_km2",
+        "is_drill"
+      ],
+      "title": "HazardUpdated",
+      "type": "object"
+    },
+    "HazardUpdatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "hazard.updated",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/HazardUpdated"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "HazardUpdatedEvent",
+      "type": "object"
+    },
+    "ItemCode": {
+      "description": "Relief items. Units are fixed per code; quantities are always in this unit.",
+      "enum": [
+        "WATER_L",
+        "RICE_KG",
+        "PULSES_KG",
+        "RTE_MEAL",
+        "TARPAULIN",
+        "BLANKET",
+        "HYGIENE_KIT",
+        "MEDICAL_KIT",
+        "ORS_SACHET"
+      ],
+      "title": "ItemCode",
+      "type": "string"
+    },
+    "LonLat": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "maximum": 90,
+          "minimum": -90,
+          "title": "Lat",
+          "type": "number"
+        },
+        "lon": {
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Lon",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lon",
+        "lat"
+      ],
+      "title": "LonLat",
+      "type": "object"
+    },
+    "PlanApproved": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_id": {
+          "format": "uuid",
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decided_by": {
+          "title": "Decided By",
+          "type": "string"
+        },
+        "plan_id": {
+          "format": "uuid",
+          "title": "Plan Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_id",
+        "approval_id",
+        "decided_by",
+        "decided_at"
+      ],
+      "title": "PlanApproved",
+      "type": "object"
+    },
+    "PlanApprovedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "plan.approved",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PlanApproved"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "PlanApprovedEvent",
+      "type": "object"
+    },
+    "PlanRequested": {
+      "additionalProperties": false,
+      "properties": {
+        "hazard_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Hazard Ids",
+          "type": "array"
+        },
+        "parent_plan_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Plan Id"
+        },
+        "plan_id": {
+          "format": "uuid",
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "requested_by": {
+          "description": "'system' or the operator's name",
+          "title": "Requested By",
+          "type": "string"
+        },
+        "trigger_kind": {
+          "$ref": "#/$defs/PlanTriggerKind"
+        },
+        "trigger_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "hazard id, event id or free text",
+          "title": "Trigger Ref"
+        }
+      },
+      "required": [
+        "plan_id",
+        "trigger_kind",
+        "requested_by"
+      ],
+      "title": "PlanRequested",
+      "type": "object"
+    },
+    "PlanRequestedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "plan.requested",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PlanRequested"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "PlanRequestedEvent",
+      "type": "object"
+    },
+    "PlanTriggerKind": {
+      "enum": [
+        "hazard",
+        "manual",
+        "replan",
+        "drill"
+      ],
+      "title": "PlanTriggerKind",
+      "type": "string"
+    },
+    "Producer": {
+      "enum": [
+        "brain",
+        "senses"
+      ],
+      "title": "Producer",
+      "type": "string"
+    },
+    "StockReportChannel": {
+      "enum": [
+        "portal",
+        "whatsapp",
+        "api"
+      ],
+      "title": "StockReportChannel",
+      "type": "string"
+    },
+    "SupplierStockUpdated": {
+      "additionalProperties": false,
+      "properties": {
+        "item_code": {
+          "$ref": "#/$defs/ItemCode"
+        },
+        "previous_quantity": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Quantity"
+        },
+        "quantity": {
+          "minimum": 0,
+          "title": "Quantity",
+          "type": "number"
+        },
+        "reported_at": {
+          "format": "date-time",
+          "title": "Reported At",
+          "type": "string"
+        },
+        "reported_via": {
+          "$ref": "#/$defs/StockReportChannel"
+        },
+        "supplier_id": {
+          "format": "uuid",
+          "title": "Supplier Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "supplier_id",
+        "item_code",
+        "quantity",
+        "reported_at",
+        "reported_via"
+      ],
+      "title": "SupplierStockUpdated",
+      "type": "object"
+    },
+    "SupplierStockUpdatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "supplier.stock.updated",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SupplierStockUpdated"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "SupplierStockUpdatedEvent",
+      "type": "object"
+    },
+    "VehicleDeviation": {
+      "additionalProperties": false,
+      "properties": {
+        "detected_at": {
+          "format": "date-time",
+          "title": "Detected At",
+          "type": "string"
+        },
+        "distance_from_route_m": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance From Route M"
+        },
+        "hazard_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hazard Id"
+        },
+        "kind": {
+          "$ref": "#/$defs/DeviationKind"
+        },
+        "last_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LonLat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plan_id": {
+          "format": "uuid",
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "route_id": {
+          "format": "uuid",
+          "title": "Route Id",
+          "type": "string"
+        },
+        "vehicle_id": {
+          "format": "uuid",
+          "title": "Vehicle Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vehicle_id",
+        "plan_id",
+        "route_id",
+        "kind",
+        "detected_at"
+      ],
+      "title": "VehicleDeviation",
+      "type": "object"
+    },
+    "VehicleDeviationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "vehicle.deviation",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/VehicleDeviation"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "VehicleDeviationEvent",
+      "type": "object"
+    },
+    "VehicleTelemetry": {
+      "additionalProperties": false,
+      "properties": {
+        "accuracy_m": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accuracy M"
+        },
+        "heading_deg": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 360,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heading Deg"
+        },
+        "position": {
+          "$ref": "#/$defs/LonLat"
+        },
+        "recorded_at": {
+          "description": "Device clock, UTC",
+          "format": "date-time",
+          "title": "Recorded At",
+          "type": "string"
+        },
+        "speed_mps": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speed Mps"
+        },
+        "telemetry_id": {
+          "title": "Telemetry Id",
+          "type": "integer"
+        },
+        "vehicle_id": {
+          "format": "uuid",
+          "title": "Vehicle Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "telemetry_id",
+        "vehicle_id",
+        "position",
+        "recorded_at"
+      ],
+      "title": "VehicleTelemetry",
+      "type": "object"
+    },
+    "VehicleTelemetryEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "dedupe_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable key for semantically identical events (e.g. hazard_id:version)",
+          "title": "Dedupe Key"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "vehicle.telemetry",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/VehicleTelemetry"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "emitted_at",
+        "producer",
+        "event_type",
+        "payload"
+      ],
+      "title": "VehicleTelemetryEvent",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "hazard.updated": "#/$defs/HazardUpdatedEvent",
+      "plan.approved": "#/$defs/PlanApprovedEvent",
+      "plan.requested": "#/$defs/PlanRequestedEvent",
+      "supplier.stock.updated": "#/$defs/SupplierStockUpdatedEvent",
+      "vehicle.deviation": "#/$defs/VehicleDeviationEvent",
+      "vehicle.telemetry": "#/$defs/VehicleTelemetryEvent"
+    },
+    "propertyName": "event_type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/HazardUpdatedEvent"
+    },
+    {
+      "$ref": "#/$defs/VehicleTelemetryEvent"
+    },
+    {
+      "$ref": "#/$defs/SupplierStockUpdatedEvent"
+    },
+    {
+      "$ref": "#/$defs/PlanRequestedEvent"
+    },
+    {
+      "$ref": "#/$defs/PlanApprovedEvent"
+    },
+    {
+      "$ref": "#/$defs/VehicleDeviationEvent"
+    }
+  ]
+}
