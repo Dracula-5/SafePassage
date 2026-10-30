@@ -41,4 +41,5 @@ G0 contracts/*
 G0 backend/requirements/base.txt
 G0 backend/requirements/dev.txt
 G0 backend/pytest.ini
+G0 backend/tests/__init__.py
 G0 docs/gates/G0.md
