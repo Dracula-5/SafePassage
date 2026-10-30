@@ -12,9 +12,11 @@ import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core.bus import close_redis, get_redis
 from .core.config import get_common_settings
@@ -43,6 +45,25 @@ def load_router(module_name: str) -> APIRouter | None:
     return router
 
 
+def problem(status: int, title: str, detail: object = None) -> JSONResponse:
+    """RFC 9457-style error body, the contract's Problem schema."""
+    body: dict = {"type": "about:blank", "title": title, "status": status}
+    if detail is not None:
+        body["detail"] = detail if isinstance(detail, str) else str(detail)
+    return JSONResponse(body, status_code=status, media_type="application/problem+json")
+
+
+def install_problem_handlers(app: FastAPI) -> None:
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        return problem(exc.status_code, exc.__class__.__name__ if exc.status_code >= 500 else "Request error", exc.detail)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
+        return problem(422, "Validation error", errors)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Connections are lazy; the API starts even when Postgres/Redis are down and /health says so.
@@ -55,6 +76,7 @@ def create_app(router_modules: tuple[str, ...] = ROUTER_MODULES) -> FastAPI:
     settings = get_common_settings()
     configure_logging(settings.log_level)
     app = FastAPI(title="ReliefRoute API", version="0.1.0", lifespan=lifespan)
+    install_problem_handlers(app)
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
