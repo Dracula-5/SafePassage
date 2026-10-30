@@ -184,3 +184,45 @@ async def upsert_admin_areas(conn: asyncpg.Connection, areas: list[AdminArea]) -
                    name_norm = EXCLUDED.name_norm, geom = EXCLUDED.geom, fetched_at = now()"""
         )
         return int(result.split()[-1])
+
+
+async def upsert_supplier_stock(conn: asyncpg.Connection, rows: list) -> list:
+    """External stock (e.g. AePDS): site facility (source datagov) -> supplier -> stock row.
+
+    Returns SupplierStockUpdated events for rows whose quantity changed (publish after commit).
+    """
+    from reliefroute_contracts.events import SupplierStockUpdated
+
+    events = []
+    async with conn.transaction():
+        for r in rows:
+            facility_id = await conn.fetchval(
+                """INSERT INTO facilities (source, source_ref, kind, name, geom, attributes, fetched_at)
+                   VALUES ('datagov', $1, 'godown', $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $5, now())
+                   ON CONFLICT (source, source_ref) DO UPDATE SET name = EXCLUDED.name, geom = EXCLUDED.geom,
+                       attributes = EXCLUDED.attributes, fetched_at = now(), updated_at = now()
+                   RETURNING id""",
+                r.external_ref, r.site_name, r.lon, r.lat, r.attributes,
+            )  # fmt: skip
+            supplier_id = await conn.fetchval("SELECT id FROM suppliers WHERE facility_id = $1 ORDER BY created_at LIMIT 1",
+                                              facility_id)
+            if supplier_id is None:
+                # Government system of record: identity is verified by definition.
+                supplier_id = await conn.fetchval(
+                    "INSERT INTO suppliers (facility_id, name, preferred_language, verified) VALUES ($1, $2, 'te', true) RETURNING id",
+                    facility_id, r.supplier_name)
+            previous = await conn.fetchval("SELECT quantity FROM stock WHERE supplier_id = $1 AND item_code = $2",
+                                           supplier_id, r.item.value)
+            await conn.execute(
+                """INSERT INTO stock (supplier_id, item_code, quantity, unit_weight_kg, reported_at, reported_via)
+                   VALUES ($1, $2, $3, $4, $5, 'api')
+                   ON CONFLICT (supplier_id, item_code) DO UPDATE SET quantity = EXCLUDED.quantity,
+                       unit_weight_kg = EXCLUDED.unit_weight_kg, reported_at = EXCLUDED.reported_at,
+                       reported_via = 'api', updated_at = now()""",
+                supplier_id, r.item.value, r.quantity, r.unit_weight_kg, r.reported_at,
+            )  # fmt: skip
+            if previous != r.quantity:
+                events.append(SupplierStockUpdated(supplier_id=supplier_id, item_code=r.item, quantity=r.quantity,
+                                                   previous_quantity=previous, reported_at=r.reported_at,
+                                                   reported_via="api"))  # fmt: skip
+    return events

@@ -18,7 +18,9 @@ from app.core.resilience import SourceUnavailable
 from .base import Source
 from .store import (
     publish_hazard_events, record_source_health, upsert_admin_areas, upsert_facilities, upsert_hazard, upsert_places,
+    upsert_supplier_stock,
 )
+from ..suppliers.service import publish_stock_events
 
 log = get_logger(__name__)
 
@@ -54,7 +56,10 @@ async def poll_once(source: Source, http: httpx.AsyncClient, pool: asyncpg.Pool)
         written = await upsert_facilities(conn, result.facilities)
         written += await upsert_places(conn, result.places)
         written += await upsert_admin_areas(conn, result.admin_areas)
+        stock_events = await upsert_supplier_stock(conn, result.supplier_stock)
+        written += len(result.supplier_stock)
     await publish_hazard_events(events)
+    await publish_stock_events(stock_events)
     await record_source_health(
         pool, source.name, ok=True, ttl_seconds=source.ttl_s, breaker_state=source.breaker.state.value,
         error=f"used fallback {result.used_fallback}" if result.used_fallback else None,

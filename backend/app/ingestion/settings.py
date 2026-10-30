@@ -37,6 +37,8 @@ class SensesSettings(CommonSettings):
     places_extract_path: Path = Path.home() / "reliefroute-data" / "osm" / "places.geojsonseq"
     admin_extract_path: Path = Path.home() / "reliefroute-data" / "osm" / "admin.geojsonseq"
     osm_extract_poll_s: int = 24 * 3600
+    aepds_enabled: bool = True
+    aepds_poll_s: int = 6 * 3600
 
     @field_validator("region_bbox", mode="before")
     @classmethod

@@ -18,6 +18,7 @@ from app.core.logging import configure_logging, get_logger
 from .base import Source
 from .runner import poll_once
 from .settings import SensesSettings, get_senses_settings
+from .sources.aepds import AepdsSource
 from .sources.facilities import FacilitiesSource
 from .sources.firms import FirmsSource
 from .sources.gdacs import GdacsSource
@@ -40,6 +41,8 @@ def build_sources(settings: SensesSettings) -> list[Source]:
         FacilitiesSource(settings.overpass_urls, settings.region_bbox, settings.facilities_extract_path,
                          settings.facilities_poll_s),
     ]  # fmt: skip
+    if settings.aepds_enabled:
+        sources.append(AepdsSource(settings.aepds_poll_s))  # after osm_extract: needs mandal boundaries
     if settings.firms_map_key:
         sources.append(FirmsSource(settings.firms_map_key, settings.region_bbox, settings.firms_poll_s))
     else:
