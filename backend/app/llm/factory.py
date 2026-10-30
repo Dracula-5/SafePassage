@@ -16,14 +16,25 @@ log = get_logger(__name__)
 EXCLUDE = ("lite", "image", "tts", "audio", "live", "embedding", "thinking", "exp", "preview", "learnlm", "gemma")
 
 
-def pick_gemini_model(available: list[str]) -> str | None:
-    """Newest stable 'flash' model: fast and cheap enough for per-plan reasoning."""
-    def version(name: str) -> float:
-        m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
-        return float(m.group(1)) if m else 0.0
+def _version(name: str) -> float:
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    return float(m.group(1)) if m else 0.0
 
-    candidates = [m for m in available if "flash" in m and not any(x in m for x in EXCLUDE)]
-    return max(candidates, key=lambda m: (version(m), -len(m)), default=None)
+
+def rank_gemini_models(available: list[str]) -> list[str]:
+    """Flash models for per-plan reasoning, best first: stable before preview, newest first, lite last."""
+    flash = [m for m in available if "flash" in m and not any(x in m for x in EXCLUDE)]
+    lite = [m for m in available if "flash-lite" in m and not any(x in m for x in EXCLUDE if x != "lite")]
+    preview = [m for m in available if "flash" in m and "preview" in m
+               and not any(x in m for x in EXCLUDE if x not in ("preview",))]  # fmt: skip
+    ordered = sorted(flash, key=lambda m: (-_version(m), len(m))) + sorted(preview, key=lambda m: -_version(m)) \
+        + sorted(lite, key=lambda m: -_version(m))
+    return list(dict.fromkeys(ordered))
+
+
+def pick_gemini_model(available: list[str]) -> str | None:
+    ranked = rank_gemini_models(available)
+    return ranked[0] if ranked else None
 
 
 async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClient | None:
@@ -32,12 +43,14 @@ async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClie
     if not settings.gemini_api_key:
         log.warning("llm_not_configured", provider="gemini")
         return None
-    backend = GeminiBackend(settings.gemini_api_key, settings.llm_model or "", http)
-    if not settings.llm_model:
-        available = await backend.list_models()
-        model = pick_gemini_model(available)
-        if model is None:
-            raise RuntimeError(f"no suitable Gemini flash model among {available}")
-        backend.model = model
-        log.info("llm_model_selected", model=model, from_available=len(available))
+    backend = GeminiBackend(settings.gemini_api_key, [], http)
+    ranked = rank_gemini_models(await backend.list_models())
+    if settings.llm_model:
+        ranked = [settings.llm_model] + [m for m in ranked if m != settings.llm_model]
+    # Order by what answers now; keep the rest as fallbacks for later outages.
+    healthy = [m for m in ranked[:6] if await backend.probe(m)]
+    backend.models = healthy + [m for m in ranked if m not in healthy]
+    if not backend.models:
+        raise RuntimeError("no Gemini flash model available for this key")
+    log.info("llm_models_ranked", healthy=healthy, fallback=backend.models[len(healthy):][:5])
     return LLMClient(backend)
