@@ -147,3 +147,11 @@ async def test_gemini_backend_falls_through_unavailable_models():
     backend = GeminiBackend("k", ["busy", "gone", "good"], httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     assert await backend.complete("s", [("user", "p")]) == '{"ok": true}'
     assert backend.model == "good" and backend.models[0] == "good"
+
+
+def test_nearby_candidates_limits_radius_and_count():
+    from app.agents.procurement import nearby_candidates
+    rows = [stock(f"s{i}", "RICE_KG", 100) for i in range(5)]
+    rows = [r.__class__(**{**r.__dict__, "lon": 80 + i * 0.5}) for i, r in enumerate(rows)]  # ~53 km apart
+    picked = nearby_candidates(rows, [(80.0, 16.0)], radius_m=120_000, per_item=2)
+    assert [r.supplier_id for r in picked] == ["s0", "s1"]

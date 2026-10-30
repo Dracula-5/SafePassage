@@ -6,12 +6,13 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.routing.valhalla import Location, LocationNotRoutableError, NoRouteError, ValhallaClient
+from app.routing.valhalla import Location, LocationNotRoutableError, NoRouteError, RouteResult, ValhallaClient
 from app.solvers.geometry import HazardShape, exclusion_rings
 from app.solvers.vrp import VrpProblem, VrpStop, VrpVehicle, solve
 
 from .schemas import OrderDraft, OrderPart, PlannedRoute, RouteStop, Routing
 
+MAX_ROUTE_LOCATIONS = 20   # Valhalla service_limits.truck.max_locations
 SERVICE_S = 20 * 60          # loading / unloading time at each stop
 MARGINS_M = (250.0, 500.0, 1000.0)  # exclusion margin grows with each Critic rejection
 
@@ -47,6 +48,16 @@ def split_order(order: OrderDraft, max_kg: float) -> list[tuple[str, OrderDraft]
         })  # fmt: skip
         out.append((f"{order.order_key}#{i + 1}", part))
     return out
+
+
+async def route_in_chunks(valhalla: ValhallaClient, waypoints: list[Location], rings) -> RouteResult:
+    """Valhalla caps locations per route; chain overlapping chunks and join their geometry."""
+    step = MAX_ROUTE_LOCATIONS - 1
+    parts = [await valhalla.route(waypoints[i : i + MAX_ROUTE_LOCATIONS], exclude=rings)
+             for i in range(0, len(waypoints) - 1, step)]  # fmt: skip
+    shape = [pt for i, p in enumerate(parts) for pt in (p.shape if i == 0 else p.shape[1:])]
+    return RouteResult(distance_m=sum(p.distance_m for p in parts), duration_s=sum(p.duration_s for p in parts),
+                       shape=shape, legs=[leg for p in parts for leg in p.legs])
 
 
 async def plan_routes(
@@ -99,7 +110,7 @@ async def plan_routes(
             if loc != waypoints[-1]:
                 waypoints.append(loc)
         try:
-            geo = await valhalla.route(waypoints, exclude=rings) if len(waypoints) > 1 else None
+            geo = await route_in_chunks(valhalla, waypoints, rings) if len(waypoints) > 1 else None
         except (NoRouteError, LocationNotRoutableError):
             geo = None
         if geo is None:

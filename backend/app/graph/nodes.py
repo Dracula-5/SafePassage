@@ -14,7 +14,7 @@ from app.agents import data, reasoning
 from app.agents.critic import review
 from app.agents.needs import compute_demand
 from app.agents.planner import Site, VehicleIn, plan_routes
-from app.agents.procurement import StockRow, allocate
+from app.agents.procurement import StockRow, allocate, haversine_m, nearby_candidates
 from app.agents.reasoning import PlanBrief
 from app.agents.schemas import Allocation, Demand, HazardFact, Routing, Triage
 from app.core.resilience import SourceUnavailable
@@ -22,7 +22,7 @@ from app.core.settings_brain import BrainSettings
 from app.dispatch.messaging import Messenger
 from app.llm.client import LLMClient, LLMOutputError
 from app.routing.repository import fetch_active_hazards
-from app.routing.valhalla import Location, ValhallaClient
+from app.routing.valhalla import Location, ValhallaClient, ValhallaError
 from app.solvers.geometry import exclusion_rings
 
 from . import fallbacks, plans
@@ -147,18 +147,32 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                           available=r["available"], unit_weight_kg=r["unit_weight_kg"]) for r in rows]  # fmt: skip
         await audit("procurement", "tool_result", f"{len(stock)} stock rows with availability from v_available_stock",
                     {"stock": [dict(r) for r in rows]}, _ids("stock", [r["stock_id"] for r in rows]))
+        points = [(p.lon, p.lat) for p in demand.relief_points]
+        nearby = nearby_candidates(stock, points, s.procurement_radius_m, s.procurement_max_suppliers_per_item)
+        if len(nearby) < len(stock):
+            await audit("procurement", "decision", f"Considering {len(nearby)} of {len(stock)} stock rows: nearest "
+                        f"{s.procurement_max_suppliers_per_item} per item within {s.procurement_radius_m / 1000:.0f} km")
+        stock = nearby
         travel: dict[tuple[str, str], float | None] = {}
         if stock:
             hazards = await fetch_active_hazards(deps.pool)
             rings = exclusion_rings(hazards)
             suppliers = sorted({(x.supplier_id, x.lon, x.lat) for x in stock})
-            matrix = await deps.valhalla.matrix([Location(lon=lo, lat=la) for _, lo, la in suppliers],
-                                                [Location(lon=p.lon, lat=p.lat) for p in demand.relief_points], exclude=rings)
-            for i, (sid, _, _) in enumerate(suppliers):
-                for j, p in enumerate(demand.relief_points):
-                    travel[(sid, p.facility_id)] = matrix.durations_s[i][j]
-            await audit("procurement", "tool_call", f"Valhalla matrix {len(suppliers)}x{len(demand.relief_points)} around "
-                        f"{len(hazards)} active hazard(s)", {"durations_s": matrix.durations_s},
+            targets = [Location(lon=p.lon, lat=p.lat) for p in demand.relief_points]
+            chunk = max(1, 2500 // max(1, len(targets)) // 2)  # stay well under max_matrix_location_pairs
+            for start_i in range(0, len(suppliers), chunk):
+                part = suppliers[start_i : start_i + chunk]
+                try:
+                    matrix = await deps.valhalla.matrix([Location(lon=lo, lat=la) for _, lo, la in part], targets, exclude=rings)
+                    rows = matrix.durations_s
+                except ValhallaError as exc:
+                    await audit("procurement", "error", f"Valhalla matrix chunk failed ({exc}); those suppliers count as unreachable")
+                    rows = [[None] * len(targets) for _ in part]
+                for i, (sid, _, _) in enumerate(part):
+                    for j, p in enumerate(demand.relief_points):
+                        travel[(sid, p.facility_id)] = rows[i][j]
+            await audit("procurement", "tool_call", f"Valhalla matrix {len(suppliers)}x{len(targets)} around "
+                        f"{len(hazards)} active hazard(s)", {"reachable_pairs": sum(v is not None for v in travel.values())},
                         _ids("hazard", [h.hazard_id for h in hazards]))
         allocation = allocate(state["plan_id"], demand.lines, stock, travel)
         escalations = [x.model_dump(mode="json") for x in allocation.shortfalls]
@@ -182,6 +196,10 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                     {"vehicles": [dict(r) for r in rows]}, _ids("vehicle", [r["id"] for r in rows]))
         if not rows:
             return _stop(state, "failed", f"no online vehicle with a GPS fix ({offline} offline): escalated to humans")
+        centre = demand.relief_points[0]
+        rows = [r for r in rows if haversine_m(r["lon"], r["lat"], centre.lon, centre.lat) <= s.vehicle_radius_m]
+        if not rows:
+            return _stop(state, "failed", f"no online vehicle within {s.vehicle_radius_m / 1000:.0f} km: escalated to humans")
         vehicles = [VehicleIn(vehicle_id=r["id"], label=r["label"], capacity_kg=r["capacity_kg"],
                               driver_language=r["driver_language"], lon=r["lon"], lat=r["lat"]) for r in rows]  # fmt: skip
         sites = {p.facility_id: Site(p.facility_id, p.name, p.lon, p.lat) for p in demand.relief_points}
