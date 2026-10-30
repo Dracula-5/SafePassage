@@ -133,7 +133,7 @@ class SachetSource:
         self.poll_s = poll_s
         self.max_new_per_poll = max_new_per_poll
         self.pause_s = pause_s
-        self.breaker = CircuitBreaker("sachet", failure_threshold=3, reset_after_s=120)
+        self.breaker = CircuitBreaker("sachet", failure_threshold=3, reset_after_s=900)
         self._sem = asyncio.Semaphore(concurrency)
 
     async def _alert(self, http: httpx.AsyncClient, guid: str) -> NormalizedHazard | None:
@@ -182,5 +182,6 @@ class SachetSource:
             # Every download failed (e.g. SACHET's per-IP 403 rate limit): the source is degraded,
             # not "fine with no alerts". Existing rows stay; freshness goes stale after the TTL.
             first_error = next(str(r) for r in results if isinstance(r, Exception))
+            self.breaker.record_failure()  # 3 such polls open the breaker and pause SACHET for 15 min
             raise SourceUnavailable(self.name, f"all {skipped} alert downloads failed, e.g. {first_error[:150]}")
         return FetchResult(hazards=hazards, facilities=[], skipped=skipped)

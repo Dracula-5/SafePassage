@@ -28,6 +28,9 @@ EVENTS_URL = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
 TYPES = {"TC": HazardType.CYCLONE, "FL": HazardType.FLOOD, "EQ": HazardType.EARTHQUAKE,
          "WF": HazardType.WILDFIRE, "TS": HazardType.TSUNAMI, "DR": HazardType.OTHER, "VO": HazardType.OTHER}  # fmt: skip
 LEVELS = {"red": HazardSeverity.EXTREME, "orange": HazardSeverity.SEVERE, "green": HazardSeverity.MODERATE}
+# GDACS leaves `iscurrent=true` for days after the last advisory. An event counts as over this
+# long after its last advisory (`todate`); the expiry sweep then closes it.
+ADVISORY_GRACE = timedelta(hours=24)
 
 
 def _level(label: str) -> str | None:
@@ -40,6 +43,13 @@ def _dt(text: str | None) -> datetime | None:
         return None
     value = datetime.fromisoformat(text)
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _expiry(props: dict, current: bool) -> datetime | None:
+    last_advisory = _dt(props.get("todate"))
+    if last_advisory is None:
+        return None
+    return last_advisory + ADVISORY_GRACE if current else last_advisory
 
 
 def event_hazards(event: dict, geometry: dict) -> list[NormalizedHazard]:
@@ -64,7 +74,7 @@ def event_hazards(event: dict, geometry: dict) -> list[NormalizedHazard]:
             headline=f"{props.get('name') or props.get('eventname') or props['eventtype']} ({level} zone)",
             description=props.get("description") or props.get("htmldescription"),
             area_desc=props.get("country"), geom=unary_union(geoms),
-            effective_at=_dt(props.get("fromdate")), expires_at=None if current else _dt(props.get("todate")),
+            effective_at=_dt(props.get("fromdate")), expires_at=_expiry(props, current),
             issued_at=_dt(props.get("datemodified")),
             raw={k: props.get(k) for k in ("eventtype", "eventid", "episodeid", "alertlevel", "alertscore", "name",
                                             "fromdate", "todate", "iscurrent", "severitydata", "url")},

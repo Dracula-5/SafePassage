@@ -19,6 +19,13 @@ def test_gdacs_real_cyclone_levels():
     assert len({h.dedupe_key for h in hazards}) == 3
 
 
+def test_gdacs_current_event_expires_after_last_advisory_grace():
+    event = json.loads(fixture_text("gdacs_events_india.json"))["features"][0]
+    hazards = event_hazards(event, json.loads(fixture_text("gdacs_geometry_tc.json")))
+    assert all(h.status == "active" for h in hazards)
+    assert {h.expires_at.isoformat() for h in hazards} == {"2026-10-29T06:00:00+00:00"}  # todate + 24 h
+
+
 def test_gdacs_past_event_is_expired():
     event = json.loads(fixture_text("gdacs_events_india.json"))["features"][0]
     event["properties"]["iscurrent"] = "false"
