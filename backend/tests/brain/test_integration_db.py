@@ -5,6 +5,7 @@ e.g. postgresql://reliefroute:reliefroute@localhost:5432/postgres (docker compos
 """
 
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import asyncpg
@@ -89,3 +90,30 @@ async def test_drill_check_constraint(scratch_db):
             """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, headline, geom, fetched_at)
                VALUES ('drill', 'not-prefixed', 'd1', 'flood', 'severe', 'x',
                        ST_Multi(ST_MakeEnvelope(0, 0, 1, 1, 4326)), now())""")
+
+
+async def test_repository_reads_hazards_and_vehicles_via_views(scratch_db):
+    """Rows are created inside the test DB; runtime code only reads them through the views."""
+    from app.routing.repository import fetch_active_hazards, fetch_vehicles
+
+    await apply_all(scratch_db)
+    insert = """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, status, headline,
+                                     geom, fetched_at, expires_at)
+                VALUES ($1, $2, $2, 'flood', 'severe', $3, 'h', ST_Multi(ST_MakeEnvelope($4::float8, 0, $4::float8 + 1, 1, 4326)),
+                        now(), $5)"""
+    await scratch_db.execute(insert, "gdacs", "active", "active", 0, None)
+    await scratch_db.execute(insert, "drill", "drill:1", "active", 2, None)
+    await scratch_db.execute(insert, "gdacs", "expired", "active", 4, datetime(2000, 1, 1, tzinfo=UTC))
+    await scratch_db.execute(insert, "gdacs", "cancelled", "cancelled", 6, None)
+    await scratch_db.execute(
+        """INSERT INTO vehicles (label, capacity_kg, last_position, last_seen_at)
+           VALUES ('T1', 5000, ST_SetSRID(ST_MakePoint(1, 2), 4326), now()), ('T2', 3000, NULL, NULL)""")
+
+    hazards = await fetch_active_hazards(scratch_db)
+    assert len(hazards) == 2  # expired and cancelled excluded
+    assert len(await fetch_active_hazards(scratch_db, include_drill=False)) == 1
+    assert len(await fetch_active_hazards(scratch_db, bbox=(1.5, 0.0, 3.5, 1.0))) == 1
+
+    vehicles = {v.label: v for v in await fetch_vehicles(scratch_db)}
+    assert vehicles["T1"].position.lon == 1 and not vehicles["T1"].is_offline
+    assert vehicles["T2"].position is None and vehicles["T2"].is_offline
