@@ -1,0 +1,87 @@
+"""Reads of B-owned data, through contract views only (v_active_hazards, v_places,
+v_facilities, v_available_stock, v_suppliers, v_vehicle_status)."""
+
+from __future__ import annotations
+
+import asyncpg
+from shapely import MultiPolygon, from_wkb
+
+from .schemas import HazardFact, PopulationEstimate, ReliefPoint
+
+Conn = asyncpg.Connection | asyncpg.Pool
+
+
+async def hazard_facts(conn: Conn, hazard_ids: list[str]) -> list[HazardFact]:
+    rows = await conn.fetch(
+        """SELECT h.id::text AS hazard_id, h.source::text, h.hazard_type::text, h.severity::text, h.headline, h.area_desc,
+                  ST_Area(h.geom::geography) / 1e6 AS area_km2, h.is_drill, h.expires_at,
+                  COALESCE(f.is_stale, false) AS is_stale
+           FROM v_active_hazards h LEFT JOIN v_source_freshness f ON f.source = h.source::text
+           WHERE h.id = ANY($1::uuid[])""",
+        hazard_ids,
+    )
+    return [HazardFact(**dict(r)) for r in rows]
+
+
+async def hazard_union(conn: Conn, hazard_ids: list[str]) -> MultiPolygon | None:
+    wkb = await conn.fetchval(
+        "SELECT ST_AsBinary(ST_Multi(ST_Union(geom))) FROM v_active_hazards WHERE id = ANY($1::uuid[])", hazard_ids)
+    return None if wkb is None else from_wkb(wkb)
+
+
+async def population_in(conn: Conn, hazard_ids: list[str]) -> PopulationEstimate:
+    row = await conn.fetchrow(
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
+           SELECT count(*) AS total, count(p.population) AS with_pop, COALESCE(sum(p.population), 0) AS pop,
+                  array_remove(array_agg(DISTINCT p.population_source), NULL) AS sources
+           FROM v_places p, zone WHERE ST_Intersects(p.geom, zone.g)""",
+        hazard_ids,
+    )
+    return PopulationEstimate(population_lower_bound=row["pop"], places_with_population=row["with_pop"],
+                              places_total=row["total"], sources=sorted(row["sources"] or []))  # fmt: skip
+
+
+async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int) -> list[ReliefPoint]:
+    """Shelters/schools/hospitals OUTSIDE the hazard but within radius_m of it, nearest first.
+
+    Relief goes to safe sites next to the affected area; sites inside the hazard are excluded.
+    """
+    rows = await conn.fetch(
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards)  -- all active hazards: never deliver into one
+           , target AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
+           SELECT f.id::text AS facility_id, f.name, f.kind::text AS kind, ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
+                  ST_Distance(f.geom::geography, target.g::geography) AS distance_to_hazard_m
+           FROM v_facilities f, zone, target
+           WHERE f.kind IN ('shelter', 'school', 'hospital')
+             AND ST_DWithin(f.geom::geography, target.g::geography, $2)
+             AND NOT ST_Intersects(f.geom, zone.g)
+           ORDER BY (f.kind = 'shelter') DESC, distance_to_hazard_m
+           LIMIT $3""",
+        hazard_ids, radius_m, limit,
+    )  # fmt: skip
+    return [ReliefPoint(**dict(r), share=0) for r in rows]
+
+
+async def available_stock(conn: Conn, item_codes: list[str]) -> list[asyncpg.Record]:
+    return await conn.fetch(
+        """SELECT s.stock_id::text, s.supplier_id::text, s.item_code::text, s.available, s.unit_weight_kg, s.reported_at,
+                  sp.name AS supplier_name, sp.verified, sp.facility_id::text, ST_X(sp.geom) AS lon, ST_Y(sp.geom) AS lat
+           FROM v_available_stock s JOIN v_suppliers sp ON sp.id = s.supplier_id
+           WHERE s.item_code::text = ANY($1) AND s.available > 0""",
+        item_codes,
+    )
+
+
+async def usable_vehicles(conn: Conn) -> list[asyncpg.Record]:
+    """Online vehicles with a known position that are not already on an active assignment."""
+    return await conn.fetch(
+        """SELECT v.id::text, v.label, v.capacity_kg, v.driver_language, v.driver_phone,
+                  ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat, v.last_seen_at
+           FROM v_vehicle_status v
+           WHERE NOT v.is_offline AND v.last_position IS NOT NULL AND v.status <> 'maintenance'
+             AND NOT EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v.id)"""
+    )
+
+
+async def offline_vehicle_count(conn: Conn) -> int:
+    return await conn.fetchval("SELECT count(*) FROM v_vehicle_status WHERE is_offline")
