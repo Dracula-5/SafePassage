@@ -119,17 +119,11 @@ async def plan_routes(
                 locations.append(Location(lon=sites[fid].lon, lat=sites[fid].lat))
     matrix = await valhalla.matrix(locations, locations, exclude=rings)
 
-    def onboard_on(v: VehicleIn) -> float:
-        return onboard_kg if v.vehicle_id == onboard_vehicle_id else 0.0
-
-    def free_capacity(v: VehicleIn) -> float:
-        return max(v.capacity_kg - onboard_on(v), 1.0)
-
     stops, pairs = [], []
     for key, o in parts:
-        if o.onboard:  # counted by lowering that vehicle's free capacity below, not as a load change
-            stops.append(VrpStop(stop_id=f"D:{key}", node=node_of_site[o.destination_facility_id], demand_kg=0,
-                                 kind="deliver", window_end_s=horizon_s, service_s=SERVICE_S,
+        if o.onboard:
+            stops.append(VrpStop(stop_id=f"D:{key}", node=node_of_site[o.destination_facility_id], demand_kg=o.weight_kg,
+                                 kind="unload", window_end_s=horizon_s, service_s=SERVICE_S,
                                  vehicle_id=onboard_vehicle_id))  # fmt: skip
             continue
         stops.append(VrpStop(stop_id=f"P:{key}", node=node_of_site[o.supplier_facility_id], demand_kg=o.weight_kg,
@@ -139,7 +133,7 @@ async def plan_routes(
         pairs.append((f"P:{key}", f"D:{key}"))
     solution = solve(VrpProblem(
         durations_s=matrix.durations_s, stops=stops, pairs=pairs, horizon_s=horizon_s, time_limit_s=5,
-        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=free_capacity(v),
+        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=v.capacity_kg,
                              available_until_s=shift_s) for i, v in enumerate(vehicles)],
     ))  # fmt: skip
 
@@ -175,7 +169,7 @@ async def plan_routes(
             vehicle_id=v.vehicle_id, vehicle_label=v.label, driver_language=v.driver_language,
             order_keys=sorted({s.stop_id.split(":", 1)[1] for s in r.visits}), stops=merged,
             geometry=geo.shape, distance_m=geo.distance_m, duration_s=geo.duration_s,
-            load_kg=r.load_kg + onboard_on(v), peak_load_kg=r.peak_load_kg + onboard_on(v), capacity_kg=v.capacity_kg,
+            load_kg=r.load_kg, peak_load_kg=r.peak_load_kg, capacity_kg=v.capacity_kg,
         ))  # fmt: skip
     routed = {k for route in routes for k in route.order_keys}
     unserved = sorted({key for key, _ in parts} - routed)

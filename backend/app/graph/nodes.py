@@ -27,7 +27,7 @@ from app.solvers.geometry import exclusion_rings
 
 from . import fallbacks, plans
 from .audit import Audit
-from .dispatcher import deferred_escalations, dispatch
+from .dispatcher import dispatch, held_back_escalations
 from .replan import take_over_route
 from .revalidate import recheck
 
@@ -40,6 +40,7 @@ class PlanState(TypedDict, total=False):
     replan_route_id: str        # set when this plan replaces one route of its parent
     onboard_vehicle_id: str
     excluded_vehicle_id: str
+    stranded: list[dict]        # goods on a lost truck; kept with the plan's other escalations
     is_drill: bool
     started_at: str
     hazards: list[dict]
@@ -114,6 +115,17 @@ async def _alternate_hub(deps: Deps, state: PlanState, demand: Demand, vehicles:
     return None
 
 
+async def _escalate_unplaced_goods(deps: Deps, state: PlanState, reason: str) -> None:
+    """A failed replan already took these goods off their old route: a human must see them."""
+    allocation = Allocation.model_validate(state["allocation"])
+    stranded = await deps.pool.fetchval("SELECT escalations FROM plans WHERE id = $1", state["plan_id"])
+    unplaced = [{"destination_facility_id": o.destination_facility_id, "item_code": line.item_code.value,
+                 "quantity_short": line.quantity, "reason": f"no longer on a route: {reason}"}
+                for o in allocation.orders for line in o.lines]  # fmt: skip
+    await deps.pool.execute("UPDATE plans SET escalations = $2, updated_at = now() WHERE id = $1", state["plan_id"],
+                            [*stranded, *unplaced])  # fmt: skip
+
+
 async def _llm_or_fallback(audit: Audit, node: str, what: str, call, fallback):
     """Run an LLM step; on missing key/outage/invalid output use the labelled rule-based fallback."""
     deps_llm_missing = call is None
@@ -160,7 +172,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         return {"allocation": allocation.model_dump(mode="json"), "demand": parent["demand"], "triage": parent["triage"],
                 "hazards": [h.model_dump(mode="json") for h in hazards], "is_drill": parent["is_drill"], "attempt": 1,
                 "verdicts": [], "onboard_vehicle_id": seed.onboard_vehicle_id,
-                "excluded_vehicle_id": seed.excluded_vehicle_id}  # fmt: skip
+                "excluded_vehicle_id": seed.excluded_vehicle_id, "stranded": seed.stranded}  # fmt: skip
 
     async def sentinel(state: PlanState) -> dict:
         audit = audit_for(state)
@@ -306,7 +318,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                 await audit("route_planner", "decision", f"Proposed alternate hub {hub['name']}", hub, [f"facility:{hub['facility_id']}"])
             return _stop(state, "unreachable", reason)
         await plans.set_status(deps.pool, state["plan_id"], "planning", escalations=[
-            *[x.model_dump(mode="json") for x in allocation.shortfalls], *deferred_escalations(routing, allocation)])
+            *state.get("stranded", []), *[x.model_dump(mode="json") for x in allocation.shortfalls],
+            *held_back_escalations(routing, allocation)])
         return {"routing": routing.model_dump(mode="json")}
 
     async def critic(state: PlanState) -> dict:
@@ -354,8 +367,10 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             audit, "supervisor", "plan brief",
             (lambda: reasoning.plan_brief(deps.llm, hazards, triage, demand, allocation, routing)) if deps.llm else None,
             lambda reason: fallbacks.brief(allocation, routing, reason))
-        if state.get("replan_route_id"):  # these goods were approved already; only new problems need a human
-            reasons = ["orders left unserved"] if routing.unserved_order_keys else []
+        if state.get("replan_route_id"):
+            # A truck on the road cannot wait: these goods were approved already, so it gets its route
+            # now, and anything it cannot carry is an escalation.
+            reasons = []
         await plans.set_status(deps.pool, state["plan_id"], "awaiting_approval" if reasons else "approved",
                                summary=plan_brief.summary, requires_approval=bool(reasons))
         await audit("supervisor", "approval_requested" if reasons else "decision",
@@ -397,6 +412,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             await plans.set_status(deps.pool, state["plan_id"], status,
                                    **({"unreachable_reason": reason} if status in STOPPED_WITH_REASON else {}))
         await audit("supervisor", "node_finished", f"Plan {status}: {reason}", {"status": status})
+        if status in ("failed", "unreachable") and state.get("replan_route_id") and state.get("allocation"):
+            await _escalate_unplaced_goods(deps, state, reason)
         if status == "superseded" and not state.get("replan_route_id") and (
                 still_active := await data.hazard_facts(deps.pool, state["hazard_ids"])):
             summary, created = await plans.request_plan(

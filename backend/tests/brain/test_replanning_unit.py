@@ -11,7 +11,7 @@ from app.agents.planner import first_wave
 from app.agents.schemas import (
     Allocation, Demand, OrderDraft, OrderLineDraft, OrderPart, PlannedRoute, PopulationEstimate, ReliefPoint, RouteStop, Routing,
 )
-from app.graph.dispatcher import deferred_escalations, english_instructions
+from app.graph.dispatcher import english_instructions, held_back_escalations
 from app.graph.nodes import _alternate_hub
 from app.graph.replan import redraft, split_remaining
 from app.graph.revalidate import carried_orders, shift_etas
@@ -67,13 +67,13 @@ def test_carried_orders_only_cover_parts_a_vehicle_takes():
     assert carried[0].weight_kg == 2000 and carried[0].lines[0].quantity == 2000
 
 
-def test_deferred_goods_are_shown_per_destination_and_item():
+def test_goods_held_back_are_shown_per_destination_and_item_with_the_reason():
     allocation = Allocation(orders=[order("a", 3000)], shortfalls=[])
-    routing = Routing(routes=[], unserved_order_keys=[], margin_m=250, vehicles_considered=1, deferred_part_keys=["a#2", "a#3"],
+    routing = Routing(routes=[], unserved_order_keys=["a#1"], margin_m=250, vehicles_considered=1, deferred_part_keys=["a#2", "a#3"],
                       parts=[part("a#1", "a", 1000), part("a#2", "a", 1000), part("a#3", "a", 1000)])  # fmt: skip
-    held = deferred_escalations(routing, allocation)
-    assert len(held) == 1 and held[0]["quantity_short"] == 2000 and held[0]["item_code"] == "WATER_L"
-    assert "next wave" in held[0]["reason"]
+    deferred, unserved = held_back_escalations(routing, allocation)
+    assert deferred["quantity_short"] == 2000 and deferred["item_code"] == "WATER_L" and "next wave" in deferred["reason"]
+    assert unserved["quantity_short"] == 1000 and "not reachable" in unserved["reason"]
 
 
 def test_etas_move_with_the_approval_delay():
@@ -115,20 +115,38 @@ def test_replacement_instructions_say_they_replace_the_old_route():
     assert "NEW ROUTE" not in english_instructions(planned([]), {}, drill=False)
 
 
-def test_a_stop_tied_to_a_vehicle_is_only_served_by_it():
-    durations = [[0, 10, 500], [10, 0, 500], [500, 500, 0]]  # node 2 is far, but tied to the far vehicle
+def test_goods_on_a_truck_are_only_unloaded_by_that_truck():
+    durations = [[0, 10, 500], [10, 0, 500], [500, 500, 0]]  # node 2 is nearer "near", but the goods are on "far"
     problem = VrpProblem(
         durations_s=durations, horizon_s=3600,
         vehicles=[VrpVehicle(vehicle_id="near", start_node=0, end_node=0, capacity_kg=100),
                   VrpVehicle(vehicle_id="far", start_node=1, end_node=1, capacity_kg=100)],
-        stops=[VrpStop(stop_id="D:x", node=2, demand_kg=0, kind="deliver", vehicle_id="far")],
+        stops=[VrpStop(stop_id="D:x", node=2, demand_kg=40, kind="unload", vehicle_id="far")],
     )  # fmt: skip
-    assert [r.vehicle_id for r in solve(problem).routes] == ["far"]
+    routes = solve(problem).routes
+    assert [r.vehicle_id for r in routes] == ["far"] and routes[0].load_kg == 40 and routes[0].peak_load_kg == 40
 
 
-def test_a_stop_cannot_be_tied_to_a_vehicle_outside_the_fleet():
-    with pytest.raises(ValueError, match="not in the fleet"):
-        VrpProblem(durations_s=[[0]], horizon_s=60, stops=[VrpStop(stop_id="s", node=0, demand_kg=0, vehicle_id="gone")],
+def test_a_truck_gets_its_room_back_after_unloading():
+    # Full truck, and a pickup that only fits once its load is off: nodes are start, destination, supplier, far site.
+    durations = [[0, 60, 60, 60], [60, 0, 60, 60], [60, 60, 0, 60], [60, 60, 60, 0]]
+    problem = VrpProblem(
+        durations_s=durations, horizon_s=3600,
+        vehicles=[VrpVehicle(vehicle_id="v", start_node=0, end_node=0, capacity_kg=100)],
+        stops=[VrpStop(stop_id="D:on", node=1, demand_kg=100, kind="unload", vehicle_id="v"),
+               VrpStop(stop_id="P:new", node=2, demand_kg=80, kind="pickup"),
+               VrpStop(stop_id="D:new", node=3, demand_kg=80, kind="dropoff")],
+        pairs=[("P:new", "D:new")],
+    )  # fmt: skip
+    solution = solve(problem)
+    assert solution.unserved == []
+    assert [v.stop_id for v in solution.routes[0].visits] == ["D:on", "P:new", "D:new"]  # the load must come off first
+    assert solution.routes[0].peak_load_kg == 100 and solution.routes[0].load_kg == 180
+
+
+def test_an_unload_stop_needs_a_vehicle_in_the_fleet():
+    with pytest.raises(ValueError, match="fleet"):
+        VrpProblem(durations_s=[[0]], horizon_s=60, stops=[VrpStop(stop_id="s", node=0, demand_kg=1, kind="unload", vehicle_id="gone")],
                    vehicles=[VrpVehicle(vehicle_id="v", start_node=0, end_node=0, capacity_kg=1)])  # fmt: skip
 
 

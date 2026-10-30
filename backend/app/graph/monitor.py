@@ -195,15 +195,21 @@ class RouteMonitor:
         await self._retry_unhandled_deviations()
         now = datetime.now(UTC)
         for route in await self._active():
-            if route.status != "active" or route.next_stop is None:
+            if route.next_stop is None:
                 continue
             silent = route.seconds_since_seen or 0
-            if route.is_offline and silent >= self.s.offline_grace_s:
+            if route.is_offline and silent >= self.s.offline_grace_s:  # also a phone that died before the first fix
                 await self._deviate(route, "offline", route.position)
                 continue
             anchor = self.anchor.get(route.vehicle_id)
-            if anchor and (now - anchor[1]).total_seconds() >= self.s.stalled_after_s:
+            parked_too_long = anchor and (now - anchor[1]).total_seconds() >= self.s.stalled_after_s
+            if route.status == "active" and parked_too_long and not self._at_a_stop(route, anchor[0]):
                 await self._deviate(route, "stalled", anchor[0])
+
+    def _at_a_stop(self, route: Tracked, point: Point) -> bool:
+        """Loading takes longer than the stall limit, so a truck parked at the stop it just reached is fine."""
+        nearby = route.stops[max(route.completed - 1, 0) : route.completed + 1]
+        return any(distance_m((s["lon"], s["lat"]), point) <= self.s.arrival_radius_m for s in nearby)
 
     async def _retry_unhandled_deviations(self) -> None:
         """A deviation whose event was lost to a Redis outage still gets its replan."""

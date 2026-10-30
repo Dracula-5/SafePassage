@@ -187,11 +187,15 @@ async def test_off_route_truck_keeps_its_load_and_gets_a_new_route(world, publis
     assert await pool.fetchval("SELECT status::text FROM routes WHERE id = $1", route["id"]) == "abandoned"
     new = await pool.fetchrow("SELECT vehicle_id, stops, instructions FROM routes WHERE plan_id = $1", child)
     assert new["vehicle_id"] == route["vehicle_id"]
-    assert all(s["kind"] == "dropoff" for s in new["stops"])  # everything is already on board
+    picked = {k for s in new["stops"] if s["kind"] == "pickup" for k in s["order_keys"]}
+    assert any(k not in picked for s in new["stops"] if s["kind"] == "dropoff" for k in s["order_keys"])  # delivered from the truck
     assert "NEW ROUTE" in new["instructions"]["source_text"]
-    assert await pool.fetchval("SELECT count(*) FROM orders WHERE plan_id = $1 AND status <> 'in_transit'", child) == 0
+    assert await pool.fetchval("SELECT count(*) FROM orders WHERE plan_id = $1 AND status = 'in_transit'", child) >= 1
     assert await pool.fetchval("SELECT count(*) FROM orders WHERE plan_id = $1 AND status <> 'cancelled'", plan) == 0
-    assert await pool.fetchval("SELECT sum(reserved) FROM v_available_stock") == pytest.approx(reserved_before)
+    # Every unit moved is either reserved by the new plan or shown to a human: never lost, never counted twice.
+    held_back = await pool.fetchval("SELECT escalations FROM plans WHERE id = $1", child)
+    reserved_after = await pool.fetchval("SELECT sum(reserved) FROM v_available_stock")
+    assert reserved_after + sum(e["quantity_short"] for e in held_back) == pytest.approx(reserved_before)
     assert await pool.fetchval("SELECT count(*) FROM route_deviations WHERE resolved_at IS NULL") == 0
     assert await pool.fetchval("SELECT replan_id::text FROM route_deviations") == child
     nodes = [e["node"] for e in await events(pool, child)]
@@ -229,9 +233,12 @@ async def test_goods_on_a_lost_truck_are_escalated_not_replanned(world, publishe
     await RouteMonitor(world["deps"]).sweep()
     child = await replan_from(world, published)
 
+    # This truck was the only vehicle, so goods still at the supplier have no carrier either. Both kinds are
+    # shown to a human, with different instructions.
     row = await pool.fetchrow("SELECT status::text, unreachable_reason, escalations FROM plans WHERE id = $1", child)
-    assert row["status"] == "failed" and "cannot move" in row["unreachable_reason"]
-    assert row["escalations"] and all("last known position" in e["reason"] for e in row["escalations"])
+    assert row["status"] == "failed" and "no online vehicle" in row["unreachable_reason"]
+    reasons = [e["reason"] for e in row["escalations"]]
+    assert any("last known position" in r for r in reasons) and any("no longer on a route" in r for r in reasons)
     # The goods stay on the parent's orders: they are still on that truck.
     assert await pool.fetchval("SELECT count(*) FROM orders WHERE status = 'in_transit' AND plan_id = $1", world["plan"]) >= 1
 
@@ -262,6 +269,37 @@ async def test_hazard_growing_across_the_road_ahead_reroutes_around_it(world, pu
         "SELECT count(*) FROM routes r, hazards h WHERE r.plan_id = $1 AND h.id = $2 AND ST_Intersects(r.geom, h.geom)",
         child, new_hazard)
     assert crossing == 0 and UUID(str(new_hazard)) in await pool.fetchval("SELECT hazard_ids FROM plans WHERE id = $1", child)
+
+
+async def test_loading_at_a_stop_is_not_stalling_but_stopping_on_the_road_is(world, published):  # noqa: F811
+    pool = world["pool"]
+    await run_to_dispatch(world)
+    route = await active_route(pool)
+    monitor = RouteMonitor(world["deps"])
+    first = (route["stops"][0]["lon"], route["stops"][0]["lat"])
+    await monitor.on_telemetry(await fix(pool, route["vehicle_id"], first))
+    long_ago = datetime.now(UTC) - timedelta(hours=1)
+
+    monitor.anchor[str(route["vehicle_id"])] = (first, long_ago)
+    await monitor.sweep()
+    assert not published  # parked at the depot, loading
+
+    mid = await pool.fetchrow(
+        "SELECT ST_X(p) AS lon, ST_Y(p) AS lat FROM (SELECT ST_LineInterpolatePoint(geom, 0.5) AS p FROM routes WHERE id = $1) x",
+        route["id"])
+    monitor.anchor[str(route["vehicle_id"])] = ((mid["lon"], mid["lat"]), long_ago)
+    await monitor.sweep()
+    assert [p.kind.value for t, p in published if t == VEHICLE_DEVIATION] == ["stalled"]
+
+
+async def test_a_phone_that_dies_before_its_first_fix_is_still_noticed(world, published):  # noqa: F811
+    pool = world["pool"]
+    await run_to_dispatch(world)
+    route = await active_route(pool)
+    assert route["status"] == "planned"
+    await pool.execute("UPDATE vehicles SET last_seen_at = now() - interval '1 hour' WHERE id = $1", route["vehicle_id"])
+    await RouteMonitor(world["deps"]).sweep()
+    assert [p.kind.value for t, p in published if t == VEHICLE_DEVIATION] == ["offline"]
 
 
 async def test_old_replayed_fixes_never_raise_a_deviation(world, published):  # noqa: F811

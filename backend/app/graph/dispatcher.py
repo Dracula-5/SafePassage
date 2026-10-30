@@ -48,17 +48,21 @@ def english_instructions(route: PlannedRoute, part_lines: dict[str, list], drill
     return "\n".join(lines)
 
 
-def deferred_escalations(routing: Routing, allocation: Allocation) -> list[dict]:
-    """Goods held back for the next wave, per destination and item, in the Shortfall shape."""
+def held_back_escalations(routing: Routing, allocation: Allocation) -> list[dict]:
+    """Goods no vehicle takes in this plan, per destination and item, in the Shortfall shape."""
     destination = {o.order_key: o.destination_facility_id for o in allocation.orders}
     parts = {p.part_key: p for p in routing.parts}
-    held: dict[tuple[str, str], float] = defaultdict(float)
-    for key in routing.deferred_part_keys:
-        for line in parts[key].lines:
-            held[(destination[parts[key].order_key], line.item_code.value)] += line.quantity
-    return [{"destination_facility_id": dest, "item_code": item, "quantity_short": qty,
-             "reason": "next wave: beyond what the available vehicles can carry in this one"}
-            for (dest, item), qty in sorted(held.items())]  # fmt: skip
+    reasons = (("next wave: beyond what the available vehicles can carry in this one", routing.deferred_part_keys),
+               ("not reachable by any vehicle within a shift and the planning horizon", routing.unserved_order_keys))  # fmt: skip
+    out = []
+    for reason, keys in reasons:
+        held: dict[tuple[str, str], float] = defaultdict(float)
+        for key in keys:
+            for line in parts[key].lines:
+                held[(destination[parts[key].order_key], line.item_code.value)] += line.quantity
+        out += [{"destination_facility_id": dest, "item_code": item, "quantity_short": qty, "reason": reason}
+                for (dest, item), qty in sorted(held.items())]  # fmt: skip
+    return out
 
 
 async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:

@@ -147,6 +147,10 @@ async def test_translation_failure_sends_english_rather_than_nothing(world, publ
     assert instructions["language"] == "en" and "Vehicle AP-T1" in instructions["text"]
 
 
+class WorkerKilled(Exception):
+    pass
+
+
 class CrashOnce:
     """Valhalla stand-in that dies once in Procurement, like a worker killed between nodes."""
 
@@ -160,7 +164,7 @@ class CrashOnce:
     async def matrix(self, *args, **kwargs):
         if self.crash:
             self.crash = False
-            raise KeyboardInterrupt  # not caught by any node, like the process dying
+            raise WorkerKilled  # no node catches this, so the run stops here like a dead process
         return await self.real.matrix(*args, **kwargs)
 
 
@@ -174,7 +178,7 @@ async def test_worker_killed_mid_plan_continues_from_its_checkpoint(world):  # n
     world["deps"].valhalla = CrashOnce(world["deps"].valhalla)
     await pool.execute("UPDATE plans SET status = 'planning' WHERE id = $1", plan)  # as the first delivery does
     thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(WorkerKilled):
         await runner.start(plan, thread, [world["hazard"]])
     assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "planning"
     llm_calls = len(world["backend"].calls)
@@ -206,10 +210,10 @@ async def test_worker_killed_during_dispatch_finishes_it_without_duplicates(worl
     original = dispatcher.purchase_order_pdf
 
     def dies(*args, **kwargs):
-        raise KeyboardInterrupt
+        raise WorkerKilled
 
     dispatcher.purchase_order_pdf = dies
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(WorkerKilled):
         await runner.resume(thread, {"decision": "approved", "decided_by": "officer", "reason": None})
     dispatcher.purchase_order_pdf = original
     orders = await pool.fetchval("SELECT count(*) FROM orders")
@@ -273,8 +277,9 @@ async def test_replan_that_finds_no_other_vehicle_tells_a_human(world, published
     await pool.execute("UPDATE vehicles SET last_seen_at = now() - interval '1 hour'")
     await RouteMonitor(world["deps"]).sweep()
     child = await replan_from(world, published)
-    row = await pool.fetchrow("SELECT status::text, unreachable_reason FROM plans WHERE id = $1", child)
+    row = await pool.fetchrow("SELECT status::text, unreachable_reason, escalations FROM plans WHERE id = $1", child)
     assert row["status"] == "failed" and "no online vehicle" in row["unreachable_reason"]
+    assert row["escalations"] and all("no longer on a route" in e["reason"] for e in row["escalations"])
 
 
 def test_chaos_module_uses_the_real_consumer_group_name():
