@@ -73,3 +73,15 @@ def test_overlapping_hazards_merge(hazard):
 def test_simplify_must_be_below_margin(hazard):
     with pytest.raises(ValueError):
         exclusion_rings([hazard[1]], margin_m=100, simplify_tolerance_m=100)
+
+
+def test_vertex_budget_is_respected_and_still_covers():
+    at = _frame()
+    # A jagged 1000-vertex star around the origin.
+    import math
+    pts = [at(math.cos(t) * (800 + 200 * (k % 2)), math.sin(t) * (800 + 200 * (k % 2)))
+           for k, t in enumerate(math.tau * i / 1000 for i in range(1000))]
+    h = HazardShape("star", Polygon(pts))
+    rings = exclusion_rings([h], margin_m=250, simplify_tolerance_m=10, max_vertices=40)
+    assert sum(len(r) for r in rings) <= 40
+    assert all(Polygon(r).contains(h.geom) for r in rings)

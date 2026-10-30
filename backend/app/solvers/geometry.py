@@ -83,13 +83,18 @@ def _polygons(geom: Geometry) -> list[Polygon]:
 
 
 def exclusion_rings(
-    hazards: Sequence[HazardShape], margin_m: float = 250.0, simplify_tolerance_m: float = 100.0
+    hazards: Sequence[HazardShape],
+    margin_m: float = 250.0,
+    simplify_tolerance_m: float = 100.0,
+    max_vertices: int = 2000,
 ) -> list[list[list[float]]]:
     """Polygons to pass to Valhalla `exclude_polygons`, as rings of [lon, lat].
 
     Each hazard is grown by `margin_m` and then simplified with a tolerance smaller than the
-    margin, so the result always still contains the original hazard while staying small
-    enough for the router. Overlapping hazards are merged.
+    margin, so the result always still contains the original hazard. Overlapping hazards
+    are merged. If the rings exceed `max_vertices` (the router's limit), the tolerance is
+    raised towards the margin; as a last resort each part is replaced by its convex hull,
+    which is coarser but still covers the hazard.
     """
     if not hazards:
         return []
@@ -97,12 +102,21 @@ def exclusion_rings(
         raise ValueError("simplify tolerance must be smaller than the margin to keep hazards covered")
     fwd, inv = local_projection([h.geom for h in hazards])
     merged = unary_union([make_valid(_project(h.geom, fwd)).buffer(margin_m) for h in hazards])
-    rings = []
-    for poly in _polygons(merged):
-        simple = Polygon(poly.exterior).simplify(simplify_tolerance_m, preserve_topology=True)
-        lonlat = _project(simple, inv)
-        rings.append([[round(x, 6), round(y, 6)] for x, y in lonlat.exterior.coords])
-    return rings
+    parts = [Polygon(p.exterior) for p in _polygons(merged)]
+
+    tolerance = simplify_tolerance_m
+    while True:
+        simple = [p.simplify(tolerance, preserve_topology=True) for p in parts]
+        if sum(len(p.exterior.coords) for p in simple) <= max_vertices:
+            break
+        if tolerance >= 0.9 * margin_m:
+            simple = [p.convex_hull for p in parts]
+            break
+        tolerance = min(tolerance * 2, 0.9 * margin_m)
+    return [
+        [[round(x, 6), round(y, 6)] for x, y in _project(p, inv).exterior.coords]
+        for p in simple
+    ]
 
 
 def verify_route(
