@@ -11,7 +11,10 @@ import httpx
 from app.core.logging import get_logger
 from app.core.settings_brain import BrainSettings
 
+from app.core.resilience import SourceUnavailable
+
 from .client import GeminiBackend, LLMClient
+from .tracing import LangfuseTracer
 
 log = get_logger(__name__)
 EXCLUDE = ("lite", "image", "tts", "audio", "live", "embedding", "thinking", "exp", "preview", "learnlm", "gemma")
@@ -45,7 +48,14 @@ async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClie
         log.warning("llm_not_configured", provider="gemini")
         return None
     backend = GeminiBackend(settings.gemini_api_key, [], http)
-    ranked = rank_gemini_models(await backend.list_models())
+    try:
+        ranked = rank_gemini_models(await backend.list_models())
+    except SourceUnavailable as exc:
+        # A Gemini outage at startup must not stop the worker: plans use the labelled fallbacks.
+        log.warning("llm_unavailable_at_startup", reason=exc.reason)
+        if not settings.llm_model:
+            return None
+        ranked = []
     if settings.llm_model:
         ranked = [settings.llm_model] + [m for m in ranked if m != settings.llm_model]
     # Order by what answers now; keep the rest as fallbacks for later outages.
@@ -56,6 +66,10 @@ async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClie
     healthy = [m for m, ok in zip(candidates, answers, strict=True) if ok]
     backend.models = healthy + [m for m in ranked if m not in healthy]
     if not backend.models:
-        raise RuntimeError("no Gemini flash model available for this key")
+        log.warning("llm_no_flash_model", provider="gemini")
+        return None
     log.info("llm_models_ranked", healthy=healthy, fallback=backend.models[len(healthy):][:5])
-    return LLMClient(backend)
+    tracer = None
+    if settings.langfuse_public_key and settings.langfuse_secret_key:
+        tracer = LangfuseTracer(settings.langfuse_public_key, settings.langfuse_secret_key, settings.langfuse_host, http)
+    return LLMClient(backend, tracer=tracer)

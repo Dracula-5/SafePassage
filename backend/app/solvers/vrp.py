@@ -3,7 +3,8 @@
 Inputs are indices into a travel-time matrix from Valhalla (already hazard-aware). Each
 vehicle starts and ends at its own matrix node. Stops reference matrix nodes too; several
 stops may share a node (one supplier filling several orders). Stop kinds:
-  deliver  - goods preloaded at the vehicle's start; load counts up as they are delivered
+  deliver  - goods preloaded at the vehicle's start; load counts up as they are delivered.
+             `vehicle_id` ties a stop to the one vehicle already carrying its goods.
   pickup   - goods loaded here (+demand)
   dropoff  - goods unloaded here (-demand); always paired with a pickup via `pairs`
 A pair is served by one vehicle, pickup first, or dropped together.
@@ -49,6 +50,7 @@ class VrpStop(BaseModel):
     window_start_s: int = Field(default=0, ge=0)
     window_end_s: int | None = Field(default=None, ge=0)
     service_s: int = Field(default=0, ge=0)
+    vehicle_id: str | None = None
 
 
 class VrpProblem(BaseModel):
@@ -82,6 +84,9 @@ class VrpProblem(BaseModel):
                 raise ValueError(f"pair {pickup}->{dropoff} must be pickup -> dropoff")
             if by_id[pickup].demand_kg != by_id[dropoff].demand_kg:
                 raise ValueError(f"pair {pickup}->{dropoff} must carry the same load")
+        fleet = {v.vehicle_id for v in self.vehicles}
+        if any(s.vehicle_id is not None and s.vehicle_id not in fleet for s in self.stops):
+            raise ValueError("a stop is tied to a vehicle that is not in the fleet")
         unpaired = {s.stop_id for s in self.stops if s.kind != "deliver"} - set(paired)
         if unpaired:
             raise ValueError(f"pickup/dropoff stops without a pair: {sorted(unpaired)}")
@@ -167,8 +172,12 @@ def solve(problem: VrpProblem) -> VrpSolution:
     routing.AddDimensionWithVehicleCapacity(demand_cb, 0, [math.floor(v.capacity_kg) for v in problem.vehicles], True, "load")
     load_dim = routing.GetDimensionOrDie("load")
 
+    vehicle_index = {v.vehicle_id: i for i, v in enumerate(problem.vehicles)}
     for stop in problem.stops:
-        routing.AddDisjunction([manager.NodeToIndex(model_of_stop[stop.stop_id])], DROP_PENALTY)
+        index = manager.NodeToIndex(model_of_stop[stop.stop_id])
+        routing.AddDisjunction([index], DROP_PENALTY)
+        if stop.vehicle_id is not None:
+            routing.VehicleVar(index).SetValues([-1, vehicle_index[stop.vehicle_id]])  # -1: dropped
     for pickup, dropoff in problem.pairs:
         p, d = manager.NodeToIndex(model_of_stop[pickup]), manager.NodeToIndex(model_of_stop[dropoff])
         routing.AddPickupAndDelivery(p, d)

@@ -27,7 +27,8 @@ def brief(allocation: Allocation, routing: Routing, reason: str) -> PlanBrief:
     return PlanBrief(
         summary=f"RULE-BASED SUMMARY ({reason}): {len(allocation.orders)} orders, {tons:.1f} t, "
                 f"{len(routing.routes)} vehicle routes, {len(allocation.shortfalls)} shortfalls, "
-                f"{len(routing.unserved_order_keys)} unserved order parts.",
+                f"{len(routing.unserved_order_keys)} unserved order parts, "
+                f"{len(routing.deferred_part_keys)} deferred to the next wave.",
         risks=[s.reason for s in allocation.shortfalls][:6],
         approval_notes="LLM brief unavailable; review orders and routes directly.",
     )  # fmt: skip

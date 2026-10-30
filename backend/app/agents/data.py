@@ -1,4 +1,4 @@
-"""Reads of B-owned data, through contract views only (v_active_hazards, v_places,
+"""Reads of B-owned data, through contract views only (v_active_hazards, v_places, v_admin_areas,
 v_facilities, v_available_stock, v_suppliers, v_vehicle_status)."""
 
 from __future__ import annotations
@@ -30,15 +30,46 @@ async def hazard_union(conn: Conn, hazard_ids: list[str]) -> MultiPolygon | None
 
 
 async def population_in(conn: Conn, hazard_ids: list[str]) -> PopulationEstimate:
+    """Census figures of settlements in the zone, without counting a whole city for a partial hit.
+
+    A city or town has one figure at its centre point, so it is scaled by the share of its mandal
+    (OSM admin_level 6) inside the zone, assuming even density across the mandal. Suburbs are
+    skipped when their mandal's city is already counted: its figure includes them.
+    """
     row = await conn.fetchrow(
-        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
-           SELECT count(*) AS total, count(p.population) AS with_pop, COALESCE(sum(p.population), 0) AS pop,
-                  array_remove(array_agg(DISTINCT p.population_source), NULL) AS sources
-           FROM v_places p, zone WHERE ST_Intersects(p.geom, zone.g)""",
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[])),
+           inside AS (
+               SELECT p.place_type, p.population, p.population_source, m.mandal_id, m.share
+               FROM v_places p CROSS JOIN zone
+               LEFT JOIN LATERAL (
+                   SELECT a.id AS mandal_id,
+                          ST_Area(ST_CollectionExtract(ST_Intersection(ST_MakeValid(a.geom), zone.g), 3)::geography)
+                              / NULLIF(ST_Area(a.geom::geography), 0) AS share
+                   FROM v_admin_areas a
+                   WHERE a.admin_level = 6 AND ST_Contains(a.geom, p.geom)
+                   ORDER BY ST_Area(a.geom) LIMIT 1
+               ) m ON p.place_type IN ('city', 'town', 'suburb', 'neighbourhood')
+               WHERE ST_Intersects(p.geom, zone.g)
+           ),
+           city_mandals AS (
+               SELECT DISTINCT mandal_id FROM inside
+               WHERE place_type IN ('city', 'town') AND population IS NOT NULL AND mandal_id IS NOT NULL
+           )
+           SELECT count(*) AS total, count(population) AS with_pop, COALESCE(sum(population), 0) AS unscaled,
+                  round(COALESCE(sum(CASE
+                      WHEN place_type IN ('city', 'town') THEN population * COALESCE(share, 1)
+                      WHEN place_type IN ('suburb', 'neighbourhood')
+                           AND mandal_id IN (SELECT mandal_id FROM city_mandals) THEN 0
+                      ELSE population END), 0))::bigint AS pop,
+                  count(*) FILTER (WHERE place_type IN ('city', 'town') AND population IS NOT NULL
+                                     AND share < 1) AS scaled,
+                  array_remove(array_agg(DISTINCT population_source), NULL) AS sources
+           FROM inside""",
         hazard_ids,
     )
-    return PopulationEstimate(population_lower_bound=row["pop"], places_with_population=row["with_pop"],
-                              places_total=row["total"], sources=sorted(row["sources"] or []))  # fmt: skip
+    return PopulationEstimate(population_lower_bound=row["pop"], population_unscaled=row["unscaled"],
+                              places_with_population=row["with_pop"], places_total=row["total"],
+                              places_scaled=row["scaled"], sources=sorted(row["sources"] or []))  # fmt: skip
 
 
 async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int) -> list[ReliefPoint]:

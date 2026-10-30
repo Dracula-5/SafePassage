@@ -20,10 +20,21 @@ class BrainSettings(CommonSettings):
     procurement_radius_m: float = Field(default=150_000, gt=0, description="suppliers farther than this are not asked")
     procurement_max_suppliers_per_item: int = Field(default=40, ge=1)
     vehicle_radius_m: float = Field(default=200_000, gt=0, description="vehicles farther than this are not planned")
+    max_trips_per_vehicle: int = Field(default=3, ge=1, le=10, description="Goods planned per wave, in vehicle loads")
+    max_shift_hours: float = Field(default=12, gt=0, le=72, description="Longest single route for one driver")
+    off_route_m: float = Field(default=500, gt=0, description="Farther than this from the route counts as off route")
+    off_route_fixes: int = Field(default=3, ge=1, description="Consecutive fixes before it is a deviation")
+    arrival_radius_m: float = Field(default=300, gt=0, description="Within this of a stop counts as reached")
+    offline_grace_s: int = Field(default=300, gt=0, description="Silence tolerated on a route before reassigning")
+    stalled_after_s: int = Field(default=900, gt=0, description="No real movement for this long away from a stop")
+    monitor_sweep_s: int = Field(default=30, gt=0)
     critic_max_attempts: int = Field(default=3, ge=1, le=5)
     auto_plan_severities: list[str] = Field(default_factory=lambda: ["severe", "extreme"])
     approval_weight_kg: float = Field(default=5_000, description="plans heavier than this always need approval")
     documents_dir: Path = Path.home() / "reliefroute-data" / "documents"
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_from_number: str | None = None

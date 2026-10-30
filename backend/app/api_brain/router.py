@@ -6,17 +6,17 @@ import json
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from reliefroute_contracts.enums import OrderStatus, PlanStatus
 from reliefroute_contracts.events import PlanApproved
 from reliefroute_contracts.streams import PLAN_APPROVED
 
 from app.core import bus
+from app.core.auth import require_operator
 from app.core.db import get_pool
 from app.core.settings_brain import get_brain_settings
 from app.graph import plans
-from app.graph.worker import request_plan
 
 router = APIRouter(tags=["brain"])
 
@@ -27,7 +27,7 @@ class PlanTrigger(BaseModel):
     requested_by: str = Field(min_length=1, max_length=100)
 
 
-@router.post("/api/plans/trigger", status_code=202)
+@router.post("/api/plans/trigger", status_code=202, dependencies=[Depends(require_operator)])
 async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None, Header(max_length=200)] = None) -> dict:
     pool = await get_pool()
     hazard_ids = [str(h) for h in body.hazard_ids] or [
@@ -37,9 +37,9 @@ async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None,
     active = await pool.fetchval("SELECT count(*) FROM v_active_hazards WHERE id = ANY($1::uuid[])", hazard_ids)
     if active != len(hazard_ids):
         raise HTTPException(422, "some hazard_ids are not active hazards")
-    summary, _ = await request_plan(pool, trigger_kind="manual", trigger_ref=body.reason, hazard_ids=hazard_ids,
-                                    requested_by=body.requested_by,
-                                    idempotency_key=f"manual:{idempotency_key}" if idempotency_key else None)  # fmt: skip
+    summary, _ = await plans.request_plan(pool, trigger_kind="manual", trigger_ref=body.reason, hazard_ids=hazard_ids,
+                                          requested_by=body.requested_by,
+                                          idempotency_key=f"manual:{idempotency_key}" if idempotency_key else None)  # fmt: skip
     return summary
 
 
@@ -75,11 +75,12 @@ async def _orders(pool, plan_id: UUID | None = None, status: str | None = None) 
 def _route_out(r) -> dict:
     return {"id": str(r["id"]), "vehicle_id": str(r["vehicle_id"]), "status": r["status"],
             "geometry": json.loads(r["geojson"]), "distance_m": r["distance_m"], "duration_s": r["duration_s"],
-            "load_kg": r["load_kg"], "min_hazard_clearance_m": r["min_hazard_clearance_m"], "stops": r["stops"]}
+            "load_kg": r["load_kg"], "min_hazard_clearance_m": r["min_hazard_clearance_m"], "stops": r["stops"],
+            "completed_stops": r["completed_stops"]}
 
 
 ROUTE_SQL = """SELECT id, vehicle_id, status::text, ST_AsGeoJSON(geom, 6) AS geojson, distance_m, duration_s, load_kg,
-                      min_hazard_clearance_m, stops, instructions FROM routes"""
+                      min_hazard_clearance_m, stops, completed_stops, instructions FROM routes"""
 
 
 @router.get("/api/plans/{plan_id}")
@@ -116,9 +117,20 @@ class ApprovalRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
-@router.post("/api/plans/{plan_id}/approve")
+async def _close_expired(conn, plan_id: UUID, decided_by: str) -> None:
+    reason = "every hazard of this plan ended before approval"
+    await conn.execute("""UPDATE plans SET status = 'superseded', unreachable_reason = $2, updated_at = now()
+                          WHERE id = $1""", plan_id, reason)
+    await conn.execute(
+        """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
+           SELECT id, thread_id, 'human', 'approval_decided', $2, $3 FROM plans WHERE id = $1""",
+        plan_id, f"Approval by {decided_by} refused: {reason}", {"decided_by": decided_by})  # fmt: skip
+
+
+@router.post("/api/plans/{plan_id}/approve", dependencies=[Depends(require_operator)])
 async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
     pool = await get_pool()
+    expired = False
     async with pool.acquire() as conn, conn.transaction():
         status = await conn.fetchval("SELECT status::text FROM plans WHERE id = $1 FOR UPDATE", plan_id)
         if status is None:
@@ -127,22 +139,33 @@ async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
             raise HTTPException(409, "this plan already has a decision")
         if status != "awaiting_approval":
             raise HTTPException(409, f"plan is {status}, not awaiting approval")
-        row = await conn.fetchrow(
-            """INSERT INTO approvals (plan_id, decision, decided_by, reason) VALUES ($1, $2, $3, $4) RETURNING *""",
-            plan_id, body.decision, body.decided_by, body.reason)
-        await conn.execute("UPDATE plans SET status = $2::plan_status, updated_at = now() WHERE id = $1", plan_id, body.decision)
-        thread_id = await conn.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan_id)
-        await conn.execute(
-            """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
-               VALUES ($1, $2, 'human', 'approval_decided', $3, $4)""",
-            plan_id, thread_id, f"{body.decision.upper()} by {body.decided_by}" + (f": {body.reason}" if body.reason else ""),
-            {"decision": body.decision, "decided_by": body.decided_by},
-        )  # fmt: skip
+        expired = body.decision == "approved" and await conn.fetchval(
+            """SELECT cardinality(p.hazard_ids) > 0
+                      AND NOT EXISTS (SELECT 1 FROM v_active_hazards h WHERE h.id = ANY(p.hazard_ids))
+               FROM plans p WHERE p.id = $1""", plan_id)  # fmt: skip
+        if expired:
+            await _close_expired(conn, plan_id, body.decided_by)
+        else:
+            row = await conn.fetchrow(
+                """INSERT INTO approvals (plan_id, decision, decided_by, reason) VALUES ($1, $2, $3, $4) RETURNING *""",
+                plan_id, body.decision, body.decided_by, body.reason)
+            await conn.execute("UPDATE plans SET status = $2::plan_status, updated_at = now() WHERE id = $1",
+                               plan_id, body.decision)  # fmt: skip
+            thread_id = await conn.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan_id)
+            await conn.execute(
+                """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
+                   VALUES ($1, $2, 'human', 'approval_decided', $3, $4)""",
+                plan_id, thread_id,
+                f"{body.decision.upper()} by {body.decided_by}" + (f": {body.reason}" if body.reason else ""),
+                {"decision": body.decision, "decided_by": body.decided_by},
+            )  # fmt: skip
+    if expired:  # raised here so the transaction above commits the closed plan
+        raise HTTPException(409, "every hazard of this plan has ended; it was closed without dispatching")
     # The paused graph resumes on plan.approved. A rejection ends the plan here; the paused
     # thread is simply never resumed.
     if body.decision == "approved":
-        await bus.publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=body.decided_by,
-                                                      decided_at=row["decided_at"]), dedupe_key=str(plan_id))  # fmt: skip
+        await bus.try_publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=body.decided_by,
+                                                          decided_at=row["decided_at"]), dedupe_key=str(plan_id))  # fmt: skip
     return {"id": str(row["id"]), "plan_id": str(plan_id), "decision": body.decision, "decided_by": body.decided_by,
             "reason": body.reason, "decided_at": row["decided_at"].isoformat()}
 

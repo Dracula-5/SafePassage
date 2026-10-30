@@ -62,6 +62,7 @@ async def plan_brief(llm: LLMClient, hazards: list[HazardFact], triage_out: Tria
         "routes": [{"vehicle": r.vehicle_label, "km": round(r.distance_m / 1000, 1), "hours": round(r.duration_s / 3600, 1),
                     "stops": [f"{s.kind} {s.name}" for s in r.stops]} for r in routing.routes],
         "unserved_orders": routing.unserved_order_keys,
+        "order_parts_deferred_to_next_wave": len(routing.deferred_part_keys),
     }  # fmt: skip
     return await llm.generate(BRIEF_SYSTEM, "Plan facts:\n" + json.dumps(facts, indent=1, default=str), PlanBrief)
 

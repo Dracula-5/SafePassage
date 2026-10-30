@@ -70,6 +70,17 @@ async def publish(event_type: str, payload: BaseModel, dedupe_key: str | None = 
     return envelope
 
 
+async def try_publish(event_type: str, payload: BaseModel, dedupe_key: str | None = None) -> bool:
+    """Publish when the database row is already committed and something else will catch up if this
+    fails (the worker's sweeps). A Redis outage must not turn a recorded decision into an API error."""
+    try:
+        await publish(event_type, payload, dedupe_key)
+        return True
+    except (redis.RedisError, OSError) as exc:
+        log.warning("event_not_published", event_type=event_type, error=str(exc))
+        return False
+
+
 async def ensure_group(stream: str, group: str) -> None:
     try:
         await get_redis().xgroup_create(stream, group, id="$", mkstream=True)

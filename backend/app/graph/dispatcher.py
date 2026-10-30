@@ -23,6 +23,7 @@ from app.llm.client import LLMOutputError
 
 from . import plans
 from .audit import Audit
+from .revalidate import carried_orders
 
 if TYPE_CHECKING:
     from .nodes import Deps, PlanState
@@ -32,8 +33,9 @@ def idempotency_key(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def english_instructions(route: PlannedRoute, part_lines: dict[str, list], drill: bool) -> str:
-    lines = [("DRILL - NOT A REAL DISPATCH. " if drill else "") + f"Vehicle {route.vehicle_label}."]
+def english_instructions(route: PlannedRoute, part_lines: dict[str, list], drill: bool, updated: bool = False) -> str:
+    lines = [("DRILL - NOT A REAL DISPATCH. " if drill else "") + ("NEW ROUTE, replaces your earlier one. " if updated else "")
+             + f"Vehicle {route.vehicle_label}."]  # fmt: skip
     for i, stop in enumerate(route.stops, 1):
         goods = defaultdict(float)
         for key in stop.order_keys:
@@ -46,6 +48,19 @@ def english_instructions(route: PlannedRoute, part_lines: dict[str, list], drill
     return "\n".join(lines)
 
 
+def deferred_escalations(routing: Routing, allocation: Allocation) -> list[dict]:
+    """Goods held back for the next wave, per destination and item, in the Shortfall shape."""
+    destination = {o.order_key: o.destination_facility_id for o in allocation.orders}
+    parts = {p.part_key: p for p in routing.parts}
+    held: dict[tuple[str, str], float] = defaultdict(float)
+    for key in routing.deferred_part_keys:
+        for line in parts[key].lines:
+            held[(destination[parts[key].order_key], line.item_code.value)] += line.quantity
+    return [{"destination_facility_id": dest, "item_code": item, "quantity_short": qty,
+             "reason": "next wave: beyond what the available vehicles can carry in this one"}
+            for (dest, item), qty in sorted(held.items())]  # fmt: skip
+
+
 async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
     plan_id, drill = state["plan_id"], state.get("is_drill", False)
     allocation = Allocation.model_validate(state["allocation"])
@@ -53,9 +68,9 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
     demand = Demand.model_validate(state["demand"])
     names = {p.facility_id: p.name for p in demand.relief_points}
     part_lines = {p.part_key: p.lines for p in routing.parts}
-    routed_orders = {p.order_key for p in routing.parts if any(p.part_key in r.order_keys for r in routing.routes)}
+    orders = carried_orders(allocation, routing)  # never dispatch goods no vehicle will carry
     now = datetime.now(UTC)
-    await audit("dispatcher", "node_started", f"Dispatching {len(routing.routes)} route(s), {len(routed_orders)} order(s)")
+    await audit("dispatcher", "node_started", f"Dispatching {len(routing.routes)} route(s), {len(orders)} order(s)")
 
     order_ids: dict[str, str] = {}
     route_ids: dict[str, str] = {}
@@ -68,15 +83,14 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
                 continue
             route_ids[route.vehicle_id] = str(await conn.fetchval(
                 """INSERT INTO routes (plan_id, vehicle_id, status, geom, distance_m, duration_s, stops, load_kg,
-                                       min_hazard_clearance_m)
-                   VALUES ($1, $2, 'planned', ST_SetSRID(ST_GeomFromText($3), 4326), $4, $5, $6, $7, $8) RETURNING id""",
+                                       min_hazard_clearance_m, parts)
+                   VALUES ($1, $2, 'planned', ST_SetSRID(ST_GeomFromText($3), 4326), $4, $5, $6, $7, $8, $9) RETURNING id""",
                 plan_id, route.vehicle_id, LineString(route.geometry).wkt, route.distance_m, route.duration_s,
                 json.loads(json.dumps([s.model_dump(mode="json") for s in route.stops])), route.load_kg,
                 ((state.get("verdicts") or [{}])[-1].get("min_clearance_m") or {}).get(route.vehicle_id),
+                [p.model_dump(mode="json") for p in routing.parts if p.part_key in route.order_keys],
             ))  # fmt: skip
-        for order in allocation.orders:
-            if order.order_key not in routed_orders:
-                continue  # never dispatch goods no vehicle will carry
+        for order in orders:
             key = idempotency_key(plan_id, order.supplier_id, order.destination_facility_id,
                                   json.dumps([l.model_dump(mode="json") for l in order.lines], sort_keys=True))
             carrier = next(r.vehicle_id for r in routing.routes
@@ -84,9 +98,10 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
             row = await conn.fetchrow(
                 """INSERT INTO orders (plan_id, route_id, supplier_id, destination_facility_id, status, idempotency_key,
                                        dispatched_at)
-                   VALUES ($1, $2, $3, $4, 'dispatched', $5, now())
+                   VALUES ($1, $2, $3, $4, $6, $5, now())
                    ON CONFLICT (idempotency_key) DO NOTHING RETURNING id""",
                 plan_id, route_ids[carrier], order.supplier_id, order.destination_facility_id, key,
+                "in_transit" if order.onboard else "dispatched",
             )  # fmt: skip
             order_id = str(row["id"]) if row else str(await conn.fetchval("SELECT id FROM orders WHERE idempotency_key = $1", key))
             order_ids[order.order_key] = order_id
@@ -101,7 +116,7 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
 
     # Driver instructions in the driver's language (translation guarded: numbers must not change).
     for route in routing.routes:
-        english = english_instructions(route, part_lines, drill)
+        english = english_instructions(route, part_lines, drill, updated=bool(state.get("replan_route_id")))
         text, language = english, "en"
         if route.driver_language != "en":
             if deps.llm is None:
@@ -123,9 +138,9 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
                       key=idempotency_key(plan_id, route_id, "sms"), who=f"driver of {route.vehicle_label}")
 
     # Purchase orders: PDF + supplier message.
-    for order in allocation.orders:
-        if order.order_key not in order_ids:
-            continue
+    for order in orders:
+        if order.onboard:
+            continue  # the supplier handed these over already
         order_id = order_ids[order.order_key]
         key = await deps.pool.fetchval("SELECT idempotency_key FROM orders WHERE id = $1::uuid", order_id)
         path = purchase_order_pdf(deps.settings.documents_dir / plan_id / f"PO-{order.order_key}.pdf", plan_id, order,

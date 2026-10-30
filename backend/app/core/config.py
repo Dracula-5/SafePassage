@@ -14,6 +14,7 @@ class CommonSettings(BaseSettings):
     redis_url: str = Field(description="redis://host:6379/0")
     log_level: str = "INFO"
     cors_origins: list[str] = Field(default_factory=list)
+    operator_token: str | None = Field(default=None, description="Required by drill/plan/approve endpoints when set")
     # Default timeout for any outbound HTTP call; individual clients may tighten it.
     http_timeout_s: float = 10.0
 

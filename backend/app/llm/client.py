@@ -12,13 +12,16 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.logging import get_logger
 from app.core.resilience import CircuitBreaker, SourceUnavailable, resilient_request
+
+if TYPE_CHECKING:
+    from .tracing import LangfuseTracer
 
 log = get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -74,9 +77,17 @@ def extract_json(text: str) -> str:
 
 
 class LLMClient:
-    def __init__(self, backend: ChatBackend, max_attempts: int = 3):
+    def __init__(self, backend: ChatBackend, max_attempts: int = 3, tracer: "LangfuseTracer | None" = None):
         self.backend = backend
         self.max_attempts = max_attempts
+        self.tracer = tracer
+
+    async def _trace(self, schema: type[BaseModel], system: str, prompt: str, reply: str | None, attempts: list[Attempt],
+                     error: str | None) -> None:
+        if self.tracer:
+            await self.tracer.record(name=schema.__name__, model=self.backend.model, system=system, prompt=prompt,
+                                     output=reply, latency_ms=sum(a.latency_ms for a in attempts),
+                                     attempts=len(attempts), error=error)  # fmt: skip
 
     async def generate(self, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
         schema_text = json.dumps(schema.model_json_schema(), separators=(",", ":"))
@@ -84,6 +95,7 @@ class LLMClient:
                         f"against this JSON Schema:\n{schema_text}")  # fmt: skip
         turns: list[tuple[str, str]] = [("user", prompt)]
         attempts: list[Attempt] = []
+        reply: str | None = None
         for _ in range(self.max_attempts):
             started = time.monotonic()
             reply = await self.backend.complete(instructions, turns)
@@ -97,8 +109,11 @@ class LLMClient:
                 turns += [("model", reply), ("user", f"That reply was invalid: {error}\nReturn the corrected JSON object only.")]
                 continue
             attempts.append(Attempt(ok=True, error=None, latency_ms=latency))
+            await self._trace(schema, system, prompt, reply, attempts, None)
             return LLMResult(value=value, model=self.backend.model, attempts=attempts)
-        raise LLMOutputError(f"{schema.__name__}: no valid output after {self.max_attempts} attempts", attempts)
+        failure = f"{schema.__name__}: no valid output after {self.max_attempts} attempts"
+        await self._trace(schema, system, prompt, reply, attempts, failure)
+        raise LLMOutputError(failure, attempts)
 
 
 class GeminiBackend:

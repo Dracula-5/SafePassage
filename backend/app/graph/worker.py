@@ -14,8 +14,10 @@ import socket
 
 import httpx
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from reliefroute_contracts.events import EventEnvelope, PlanRequested
-from reliefroute_contracts.streams import GROUP_BRAIN, HAZARD_UPDATED, PLAN_APPROVED, PLAN_REQUESTED
+from reliefroute_contracts.events import EventEnvelope
+from reliefroute_contracts.streams import (
+    GROUP_BRAIN, HAZARD_UPDATED, PLAN_APPROVED, PLAN_REQUESTED, VEHICLE_DEVIATION, VEHICLE_TELEMETRY,
+)
 
 from app.core import bus
 from app.core.db import close_pool, get_pool
@@ -28,22 +30,14 @@ from app.routing.valhalla import ValhallaClient
 from . import plans
 from .audit import Audit
 from .build import PlanRunner
+from .monitor import RouteMonitor
 from .nodes import Deps
 
 log = get_logger(__name__)
+GROUP_MONITOR = f"{GROUP_BRAIN}-monitor"  # separate group: plan runs must not hold up telemetry
+CRASHED_AFTER_S = 60       # matches the bus's re-claim delay
+REQUEUE_EVERY_S = 30
 AUTO_PLAN_TYPES = {"flood", "cyclone", "heavy_rain", "landslide", "tsunami", "earthquake"}
-
-
-async def request_plan(pool, *, trigger_kind: str, trigger_ref: str | None, hazard_ids: list[str], requested_by: str,
-                       idempotency_key: str | None) -> tuple[dict, bool]:
-    row, created = await plans.create_plan(pool, trigger_kind=trigger_kind, trigger_ref=trigger_ref,
-                                           hazard_ids=hazard_ids, requested_by=requested_by,
-                                           idempotency_key=idempotency_key)  # fmt: skip
-    if created:
-        await bus.publish(PLAN_REQUESTED, PlanRequested(plan_id=row["id"], trigger_kind=trigger_kind,
-                                                        trigger_ref=trigger_ref, hazard_ids=hazard_ids,
-                                                        requested_by=requested_by), dedupe_key=str(row["id"]))  # fmt: skip
-    return plans.summary_out(row), created
 
 
 class Handler:
@@ -57,10 +51,21 @@ class Handler:
         if envelope.event_type == PLAN_REQUESTED:
             claimed = await plans.claim_for_planning(pool, str(payload.plan_id))
             if claimed is None:
-                log.info("plan_already_claimed", plan_id=str(payload.plan_id))
+                # Redelivered because a worker died mid-run? Events run one at a time, so this
+                # process is not working on it. Otherwise it is an ordinary duplicate.
+                thread_id = await plans.abandoned_thread(pool, str(payload.plan_id), CRASHED_AFTER_S)
+                if thread_id:
+                    log.warning("plan_resumed_after_crash", plan_id=str(payload.plan_id))
+                    await self._guard(str(payload.plan_id), thread_id, self.runner.continue_after_crash(thread_id))
+                else:
+                    log.info("plan_already_claimed", plan_id=str(payload.plan_id))
                 return
-            await self._guard(claimed["id"], claimed["thread_id"],
-                              self.runner.start(claimed["id"], claimed["thread_id"], [str(h) for h in claimed["hazard_ids"]]))
+            hazard_ids = [str(h) for h in claimed["hazard_ids"]]
+            replacing_route = claimed["trigger_kind"] == "replan" and claimed["trigger_ref"]
+            run = (self.runner.start_replan(claimed["id"], claimed["thread_id"], hazard_ids, claimed["parent_plan_id"],
+                                            claimed["trigger_ref"]) if replacing_route
+                   else self.runner.start(claimed["id"], claimed["thread_id"], hazard_ids))  # fmt: skip
+            await self._guard(claimed["id"], claimed["thread_id"], run)
         elif envelope.event_type == PLAN_APPROVED:
             row = await pool.fetchrow(
                 """SELECT p.thread_id, a.decision::text, a.decided_by, a.reason FROM plans p
@@ -71,7 +76,7 @@ class Handler:
             await self._guard(str(payload.plan_id), row["thread_id"], self.runner.resume(row["thread_id"], decision))
         elif envelope.event_type == HAZARD_UPDATED and payload.change in ("created", "updated"):
             if payload.is_drill or (payload.severity in self.severities and payload.hazard_type in AUTO_PLAN_TYPES):
-                summary, created = await request_plan(
+                summary, created = await plans.request_plan(
                     pool, trigger_kind="drill" if payload.is_drill else "hazard", trigger_ref=str(payload.hazard_id),
                     hazard_ids=[str(payload.hazard_id)], requested_by="system",
                     idempotency_key=f"auto:{payload.hazard_id}")  # fmt: skip
@@ -90,6 +95,16 @@ class Handler:
             await plans.set_status(pool, plan_id, "failed", unreachable_reason=f"internal error: {type(exc).__name__}")
 
 
+async def requeue_loop(pool) -> None:
+    while True:
+        try:
+            if count := await plans.requeue_stuck_plans(pool, CRASHED_AFTER_S):
+                log.warning("plans_requeued", count=count)
+        except Exception:  # Redis may still be down: try again next round
+            log.exception("requeue_failed")
+        await asyncio.sleep(REQUEUE_EVERY_S)
+
+
 async def main() -> None:
     settings = get_brain_settings()
     configure_logging(settings.log_level)
@@ -102,9 +117,16 @@ async def main() -> None:
         runner = PlanRunner(deps, saver)
         log.info("brain_worker_ready", llm=deps.llm.backend.model if deps.llm else None,
                  twilio=deps.messenger.configured)  # fmt: skip
+        monitor = RouteMonitor(deps)
+        consumer = f"brain-{socket.gethostname()}"
         try:
-            await bus.consume([PLAN_REQUESTED, PLAN_APPROVED, HAZARD_UPDATED], GROUP_BRAIN,
-                              f"brain-{socket.gethostname()}", Handler(runner, settings.auto_plan_severities))  # fmt: skip
+            await asyncio.gather(
+                bus.consume([PLAN_REQUESTED, PLAN_APPROVED, HAZARD_UPDATED], GROUP_BRAIN, consumer,
+                            Handler(runner, settings.auto_plan_severities)),
+                bus.consume([VEHICLE_TELEMETRY, HAZARD_UPDATED, VEHICLE_DEVIATION], GROUP_MONITOR, consumer, monitor.handle),
+                monitor.run_sweeps(),
+                requeue_loop(pool),
+            )  # fmt: skip
         finally:
             await close_pool()
             await bus.close_redis()

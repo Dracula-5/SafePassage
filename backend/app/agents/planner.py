@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -50,6 +51,31 @@ def split_order(order: OrderDraft, max_kg: float) -> list[tuple[str, OrderDraft]
     return out
 
 
+def first_wave(parts: list[tuple[str, OrderDraft]], budget_kg: float) -> tuple[list[tuple[str, OrderDraft]], list[str]]:
+    """Take parts in rotation across orders until the fleet's wave capacity is used.
+
+    Rotation gives every destination and supplier a share of the first wave instead of one order
+    filling it. The rest is returned as part keys for the next wave.
+    """
+    queues: dict[str, deque[tuple[str, OrderDraft]]] = {}
+    for key, order in parts:
+        queues.setdefault(order.order_key, deque()).append((key, order))
+    chosen: list[tuple[str, OrderDraft]] = []
+    deferred: list[str] = []
+    used = 0.0
+    while queues:
+        for order_key in list(queues):
+            key, order = queues[order_key].popleft()
+            if used + order.weight_kg <= budget_kg:
+                chosen.append((key, order))
+                used += order.weight_kg
+            else:
+                deferred.append(key)
+            if not queues[order_key]:
+                del queues[order_key]
+    return chosen, deferred
+
+
 async def route_in_chunks(valhalla: ValhallaClient, waypoints: list[Location], rings) -> RouteResult:
     """Valhalla caps locations per route; chain overlapping chunks and join their geometry."""
     step = MAX_ROUTE_LOCATIONS - 1
@@ -69,24 +95,43 @@ async def plan_routes(
     start: datetime,
     horizon_s: int,
     attempt: int,
+    max_trips: int = 3,
+    shift_s: int | None = None,
+    onboard_vehicle_id: str | None = None,
 ) -> Routing:
     margin = MARGINS_M[min(attempt, len(MARGINS_M)) - 1]
     rings = exclusion_rings(hazards, margin_m=margin, simplify_tolerance_m=margin * 0.4)
     max_cap = max(v.capacity_kg for v in vehicles)
-    parts = [p for o in orders for p in split_order(o, max_cap)]
+    # Goods on the truck already fit it and must stay on it; only the rest is split and waved.
+    loaded = [(o.order_key, o) for o in orders if o.onboard]
+    onboard_kg = sum(o.weight_kg for _, o in loaded)
+    waiting = [p for o in orders if not o.onboard for p in split_order(o, max_cap)]
+    wave, deferred = first_wave(waiting, sum(v.capacity_kg for v in vehicles) * max_trips - onboard_kg)
+    parts = loaded + wave
 
     # Matrix nodes: vehicles first, then each distinct facility used by an order.
     locations: list[Location] = [Location(lon=v.lon, lat=v.lat) for v in vehicles]
     node_of_site: dict[str, int] = {}
     for _, o in parts:
-        for fid in (o.supplier_facility_id, o.destination_facility_id):
+        for fid in (o.destination_facility_id,) if o.onboard else (o.supplier_facility_id, o.destination_facility_id):
             if fid not in node_of_site:
                 node_of_site[fid] = len(locations)
                 locations.append(Location(lon=sites[fid].lon, lat=sites[fid].lat))
     matrix = await valhalla.matrix(locations, locations, exclude=rings)
 
+    def onboard_on(v: VehicleIn) -> float:
+        return onboard_kg if v.vehicle_id == onboard_vehicle_id else 0.0
+
+    def free_capacity(v: VehicleIn) -> float:
+        return max(v.capacity_kg - onboard_on(v), 1.0)
+
     stops, pairs = [], []
     for key, o in parts:
+        if o.onboard:  # counted by lowering that vehicle's free capacity below, not as a load change
+            stops.append(VrpStop(stop_id=f"D:{key}", node=node_of_site[o.destination_facility_id], demand_kg=0,
+                                 kind="deliver", window_end_s=horizon_s, service_s=SERVICE_S,
+                                 vehicle_id=onboard_vehicle_id))  # fmt: skip
+            continue
         stops.append(VrpStop(stop_id=f"P:{key}", node=node_of_site[o.supplier_facility_id], demand_kg=o.weight_kg,
                              kind="pickup", service_s=SERVICE_S))
         stops.append(VrpStop(stop_id=f"D:{key}", node=node_of_site[o.destination_facility_id], demand_kg=o.weight_kg,
@@ -94,8 +139,8 @@ async def plan_routes(
         pairs.append((f"P:{key}", f"D:{key}"))
     solution = solve(VrpProblem(
         durations_s=matrix.durations_s, stops=stops, pairs=pairs, horizon_s=horizon_s, time_limit_s=5,
-        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=v.capacity_kg)
-                  for i, v in enumerate(vehicles)],
+        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=free_capacity(v),
+                             available_until_s=shift_s) for i, v in enumerate(vehicles)],
     ))  # fmt: skip
 
     by_vehicle = {v.vehicle_id: v for v in vehicles}
@@ -130,11 +175,13 @@ async def plan_routes(
             vehicle_id=v.vehicle_id, vehicle_label=v.label, driver_language=v.driver_language,
             order_keys=sorted({s.stop_id.split(":", 1)[1] for s in r.visits}), stops=merged,
             geometry=geo.shape, distance_m=geo.distance_m, duration_s=geo.duration_s,
-            load_kg=r.load_kg, peak_load_kg=r.peak_load_kg, capacity_kg=v.capacity_kg,
+            load_kg=r.load_kg + onboard_on(v), peak_load_kg=r.peak_load_kg + onboard_on(v), capacity_kg=v.capacity_kg,
         ))  # fmt: skip
     routed = {k for route in routes for k in route.order_keys}
     unserved = sorted({key for key, _ in parts} - routed)
     return Routing(
-        routes=routes, unserved_order_keys=unserved, margin_m=margin, vehicles_considered=len(vehicles),
-        parts=[OrderPart(part_key=key, order_key=o.order_key, lines=o.lines, weight_kg=o.weight_kg) for key, o in parts],
+        routes=routes, unserved_order_keys=unserved, deferred_part_keys=sorted(deferred), margin_m=margin,
+        vehicles_considered=len(vehicles), onboard_part_keys=sorted(key for key, _ in loaded),
+        parts=[OrderPart(part_key=key, order_key=o.order_key, lines=o.lines, weight_kg=o.weight_kg)
+               for key, o in loaded + waiting],
     )
