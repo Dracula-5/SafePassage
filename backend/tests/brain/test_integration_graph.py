@@ -103,7 +103,7 @@ async def test_graph_pauses_for_approval_then_dispatches_idempotently(world):
     assert world["backend"].calls[:2] == ["sentinel-malformed", "sentinel"]  # repaired on the second try
     assert any(f"hazard:{world['hazard']}" in e["source_ids"] for e in timeline)
     needs = next(e for e in timeline if e["node"] == "needs")
-    assert "population is a lower bound (67% settlement coverage)" in needs["message"]
+    assert "census-tagged settlements only (67% settlement coverage)" in needs["message"]
     procurement = next(e for e in timeline if e["node"] == "procurement" and e["event_type"] == "decision")
     assert "1 shortfall" in procurement["message"]  # 300 kg rice held vs 575 kg needed
     assert await pool.fetchval("SELECT count(*) FROM orders") == 0  # nothing dispatched before approval
