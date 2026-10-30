@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 import httpx
 
 LABEL_PREFIX = "TEST-SIM-GPS"
+REPORTED_SPEED_MPS = 15  # a plausible truck speed; the test may move far faster to save time
 
 
 def metres(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -54,7 +55,7 @@ class Driver:
 
     def report(self) -> None:
         fix = {"lon": self.position[0], "lat": self.position[1], "accuracy_m": 15.0,
-               "recorded_at": datetime.now(UTC).isoformat(), "speed_mps": self.args.speed_mps}  # fmt: skip
+               "recorded_at": datetime.now(UTC).isoformat(), "speed_mps": REPORTED_SPEED_MPS}  # fmt: skip
         response = self.http.post("/api/telemetry", headers={"X-Device-Token": self.token},
                                   json={"vehicle_id": self.vehicle_id, "fixes": [fix]})  # fmt: skip
         response.raise_for_status()
@@ -77,8 +78,13 @@ class Driver:
         left_route: str | None = None  # the route this driver abandoned, until a replacement arrives
         has_left = False
         while True:
-            self.report()
-            done = self.follow_assignment()
+            try:
+                self.report()
+                done = self.follow_assignment()
+            except httpx.HTTPError as exc:  # the API restarted: carry on, like a phone in a dead zone
+                print(f"api unavailable: {exc}", flush=True)
+                time.sleep(a.tick_s)
+                continue
             if a.silent_after_stops is not None and done >= a.silent_after_stops:
                 print("going silent: the dashboard should mark this vehicle offline", flush=True)
                 return

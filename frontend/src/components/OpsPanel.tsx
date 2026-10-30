@@ -16,8 +16,25 @@ const EVENT_ICONS: Record<string, string> = {
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
 };
 
-function escalationText(e: Escalation): string {
-  return "quantity_short" in e ? `${e.quantity_short.toFixed(0)} ${e.item_code}: ${e.reason}` : e.reason;
+/** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
+function escalationLines(escalations: Escalation[]): string[] {
+  const totals = new Map<string, { quantity: number; item: string; reason: string; sites: number }>();
+  const others: string[] = [];
+  for (const e of escalations) {
+    if (!("quantity_short" in e)) {
+      others.push(e.reason);
+      continue;
+    }
+    const key = `${e.item_code}|${e.reason}`;
+    const line = totals.get(key) ?? { quantity: 0, item: e.item_code, reason: e.reason, sites: 0 };
+    line.quantity += e.quantity_short;
+    line.sites += 1;
+    totals.set(key, line);
+  }
+  const grouped = [...totals.values()].map(
+    (l) => `${Math.round(l.quantity).toLocaleString()} ${l.item}${l.sites > 1 ? ` across ${l.sites} sites` : ""}: ${l.reason}`,
+  );
+  return [...others, ...grouped];
 }
 
 interface Props {
@@ -153,7 +170,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
           {detail.escalations.length > 0 && (
             <div className="small warn">
               <b>Escalated to humans:</b>
-              <ul>{detail.escalations.map((e, i) => <li key={i}>{escalationText(e)}</li>)}</ul>
+              <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
             </div>
           )}
           {detail.critic.length > 0 && (

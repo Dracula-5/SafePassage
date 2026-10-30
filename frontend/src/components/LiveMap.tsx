@@ -179,6 +179,16 @@ export default function LiveMap(props: Props) {
 
   useEffect(renderOverlays, [props.vehicles, props.routes]);
 
+  // At state zoom a route is a few pixels; show it when a plan with routes is selected. Keyed on the
+  // route ids so a refresh of the same plan does not move the map under the operator.
+  const routeKey = props.routes.map((r) => r.id).join(",");
+  useEffect(() => {
+    const coordinates = latest.current.routes.flatMap((r) => r.geometry.coordinates as [number, number][]);
+    if (!coordinates.length) return;
+    const bounds = coordinates.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coordinates[0], coordinates[0]));
+    map.current?.fitBounds(bounds, { padding: 70, maxZoom: 13, duration: 800 });
+  }, [routeKey]);
+
   function facilityPopup(p: FacilityProperties): string {
     return `<div class="popup"><strong>${escapeHtml(p.name)}</strong>
       <div>${escapeHtml(p.kind)}${p.is_supplier ? " &middot; registered supplier" : ""}</div>
