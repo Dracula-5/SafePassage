@@ -1,0 +1,42 @@
+# Local stack. Owner: Instance B. See infra/README.md.
+name: reliefroute
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    platform: linux/amd64   # no arm64 image upstream; runs under emulation on Apple Silicon
+    environment:
+      POSTGRES_USER: reliefroute
+      POSTGRES_PASSWORD: reliefroute
+      POSTGRES_DB: reliefroute
+    ports: ["55432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reliefroute"]
+      interval: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6380:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 30
+
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:latest
+    profiles: ["routing"]
+    environment:
+      serve_tiles: "True"
+      build_admins: "True"
+      build_time_zones: "True"
+      use_tiles_ignore_pbf: "True"
+      server_threads: "4"
+    ports: ["8002:8002"]
+    volumes: ["${DATA_DIR:-~/reliefroute-data}/valhalla:/custom_files"]
+
+volumes:
+  pgdata:
+  redisdata:
