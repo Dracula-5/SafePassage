@@ -1,2 +1,4 @@
 -r base.txt
-# Brain-only deps are added as each component lands (langgraph, ortools, shapely, ...).
+ortools>=9.11
+shapely>=2.0
+pyproj>=3.6
