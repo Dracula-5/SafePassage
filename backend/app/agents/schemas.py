@@ -33,7 +33,14 @@ class Triage(BaseModel):
 
 
 class PopulationEstimate(BaseModel):
-    population_lower_bound: int = Field(ge=0)
+    """Sum of census figures (OSM `population` tags) of settlements whose point lies in the zone.
+
+    Not a strict bound either way: untagged settlements add nothing (undercount), while a city's
+    single figure counts in full when its centre is inside a zone that covers only part of it
+    (overcount). `places_with_population / places_total` is reported next to it everywhere.
+    """
+
+    population_lower_bound: int = Field(ge=0, description="Historic name; see class docstring")
     places_with_population: int = Field(ge=0)
     places_total: int = Field(ge=0)
     sources: list[str]

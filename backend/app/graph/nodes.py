@@ -102,8 +102,9 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         population = await data.population_in(deps.pool, state["hazard_ids"])
         points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan)
         await audit("sentinel", "tool_result",
-                    f"Population lower bound {population.population_lower_bound:,} from "
-                    f"{population.places_with_population}/{population.places_total} settlements with census figures; "
+                    f"Census population {population.population_lower_bound:,} from "
+                    f"{population.places_with_population}/{population.places_total} settlements in the zone that have a figure "
+                    f"(untagged settlements add none; a town/city figure counts in full when its centre lies in the zone); "
                     f"{len(points)} safe relief points within {s.relief_search_radius_m / 1000:.0f} km",
                     population.model_dump(), ["view:v_places", "view:v_facilities"])
         triage: Triage = await _llm_or_fallback(
@@ -126,7 +127,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         demand = compute_demand(population, points, horizon_days)
         await audit("needs", "decision",
                     f"{len(demand.lines)} demand lines for {len(points)} relief points over {horizon_days:g} day(s); "
-                    f"population is a lower bound ({population.coverage:.0%} settlement coverage)",
+                    f"population from census-tagged settlements only ({population.coverage:.0%} settlement coverage)",
                     demand.model_dump(mode="json"), _ids("facility", [p.facility_id for p in points]) + ["view:v_places"])
         await plans.set_status(deps.pool, state["plan_id"], "planning", demand=demand.model_dump(mode="json"))
         if not points:
