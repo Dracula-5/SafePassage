@@ -76,9 +76,9 @@ def test_brain_router_covers_contract():
     assert not missing, f"brain paths in openapi.yaml not served: {missing}"
 
 
-def test_healthz_reports_degraded_when_dependencies_are_down():
+def test_health_reports_degraded_when_dependencies_are_down():
     # conftest points DATABASE_URL/REDIS_URL at closed ports.
     client = TestClient(create_app(()))
-    response = client.get("/healthz")
+    response = client.get("/health")
     assert response.status_code == 503
     assert response.json() == {"status": "degraded", "checks": {"postgres": "error", "redis": "error"}}

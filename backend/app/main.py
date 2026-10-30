@@ -45,7 +45,7 @@ def load_router(module_name: str) -> APIRouter | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Connections are lazy; the API starts even when Postgres/Redis are down and /healthz says so.
+    # Connections are lazy; the API starts even when Postgres/Redis are down and /health says so.
     yield
     await close_pool()
     await close_redis()
@@ -60,8 +60,8 @@ def create_app(router_modules: tuple[str, ...] = ROUTER_MODULES) -> FastAPI:
             CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
         )
 
-    @app.get("/healthz", tags=["core"])
-    async def healthz() -> JSONResponse:
+    @app.get("/health", tags=["core"])
+    async def health() -> JSONResponse:
         checks: dict[str, str] = {}
         try:
             pool = await get_pool()
