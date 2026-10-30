@@ -11,7 +11,8 @@
  .drill{background:#6f2dbd;color:#fff;font-weight:800;padding:4px 8px;border-radius:4px;display:inline-block}
  .instr{white-space:pre-wrap;background:#f1f3f5;padding:10px;border-radius:6px;font-size:16px;line-height:1.5}
  .err{background:#fff0f0;padding:8px;border-radius:6px} .ok{color:#2f9e44} .bad{color:#c92a2a}
- ol li{margin-bottom:6px}
+ ol li{margin-bottom:6px} ol li.done{color:#868e96;text-decoration:line-through}
+ .newroute{background:#e8590c;color:#fff;font-weight:700;padding:10px;border-radius:6px;margin:8px 0}
 </style></head><body>
 <header><h1>ReliefRoute Driver</h1></header>
 <main>
@@ -37,5 +38,6 @@
   <button id="forget" class="secondary">Sign out this device</button>
  </section>
 </main>
+<script src="/driver/queue.js"></script>
 <script src="/driver/app.js"></script>
 </body></html>

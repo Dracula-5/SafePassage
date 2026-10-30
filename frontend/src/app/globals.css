@@ -44,3 +44,4 @@ button.ok { border-color: #2f9e44; color: #2f9e44; }
 .timeline li.dispatch { border-color: #0b7285; }
 .timeline .node { font-weight: 700; margin: 0 6px; font-size: 12px; text-transform: uppercase; }
 .tiny { font-size: 10px; }
+.badge.replan { background: #0b7285; color: #fff; }

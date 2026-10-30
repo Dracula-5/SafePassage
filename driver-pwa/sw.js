@@ -1,7 +1,7 @@
 // App-shell cache so the driver app opens without signal. API calls always go to the network;
 // telemetry that cannot be sent waits in the app's own queue (app.js), not here.
-const CACHE = "rr-driver-v1";
-const SHELL = ["/driver/", "/driver/app.js", "/driver/manifest.webmanifest", "/driver/icon.svg"];
+const CACHE = "rr-driver-v2";
+const SHELL = ["/driver/", "/driver/app.js", "/driver/queue.js", "/driver/manifest.webmanifest", "/driver/icon.svg"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))));
 self.addEventListener("activate", (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))));
 self.addEventListener("fetch", (e) => {

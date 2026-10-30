@@ -57,9 +57,34 @@ export interface DrillInput {
   ttl_minutes: number;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+const TOKEN_KEY = "rr_operator_token";
+
+function operatorToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Asks once for the operator token when a protected endpoint refuses (deployments only). */
+function askForToken(): boolean {
+  const token = window.prompt("Operator token");
+  if (!token) return false;
+  try {
+    sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
   if (!API_BASE) throw new Error("NEXT_PUBLIC_API_BASE is not set");
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", ...init });
+  const token = operatorToken();
+  const headers = { ...init?.headers, ...(token ? { "X-Operator-Token": token } : {}) };
+  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", ...init, headers });
+  if (res.status === 401 && !retried && askForToken()) return request<T>(path, init, true);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${init?.method ?? "GET"} ${path} failed: HTTP ${res.status} ${body.slice(0, 200)}`);
@@ -95,6 +120,7 @@ export function regionBbox(): [number, number, number, number] | null {
 
 export interface PlanSummary {
   id: string;
+  parent_plan_id: string | null;
   status: string;
   trigger_kind: string;
   hazard_ids: string[];
@@ -115,7 +141,12 @@ export interface PlanRoute {
   load_kg: number;
   min_hazard_clearance_m: number | null;
   stops: { facility_id: string; name: string; kind: string; eta: string; order_keys: string[] }[];
+  completed_stops: number;
 }
+
+export type Escalation =
+  | { destination_facility_id: string; item_code: string; quantity_short: number; reason: string }
+  | { kind: "alternate_hub"; facility_id: string; name: string; lon: number; lat: number; reason: string };
 
 export interface PlanDetail extends PlanSummary {
   demand: { destination_facility_id: string; item_code: string; quantity: number; basis: string }[];
@@ -124,7 +155,7 @@ export interface PlanDetail extends PlanSummary {
   critic: { attempt: number; passed: boolean; violations: string[]; created_at: string }[];
   approval: { decision: string; decided_by: string; reason: string | null; decided_at: string } | null;
   unreachable_reason: string | null;
-  escalations: { destination_facility_id: string; item_code: string; quantity_short: number; reason: string }[];
+  escalations: Escalation[];
   triage: { priority: string; planning_horizon_hours: number; rationale: string; key_risks: string[] } | null;
 }
 

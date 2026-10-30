@@ -6,12 +6,13 @@ const store = {
   get vehicle() { return JSON.parse(localStorage.getItem("rr_vehicle") || "null"); },
   set vehicle(v) { localStorage.setItem("rr_vehicle", JSON.stringify(v)); },
   get queue() { return JSON.parse(localStorage.getItem("rr_queue") || "[]"); },
-  set queue(q) { localStorage.setItem("rr_queue", JSON.stringify(q.slice(-2000))); }, // cap: ~1 day at 1 fix / 45 s
+  set queue(q) { localStorage.setItem("rr_queue", JSON.stringify(q)); },
 };
 const SPEECH_LANG = { te: "te-IN", hi: "hi-IN", en: "en-IN" };
 const MIN_FIX_INTERVAL_MS = 10_000;
 let lastFixAt = 0;
 let instructions = null;
+let routeId = null;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
@@ -46,31 +47,40 @@ function startGps() {
     $("gps").textContent = `${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)} (±${Math.round(p.coords.accuracy)} m)`;
     if (now - lastFixAt < MIN_FIX_INTERVAL_MS) return;
     lastFixAt = now;
-    store.queue = [...store.queue, { lon: p.coords.longitude, lat: p.coords.latitude, recorded_at: new Date(p.timestamp).toISOString(),
+    store.queue = RQueue.add(store.queue, { lon: p.coords.longitude, lat: p.coords.latitude, recorded_at: new Date(p.timestamp).toISOString(),
       speed_mps: p.coords.speed ?? null, heading_deg: p.coords.heading != null && p.coords.heading < 360 ? p.coords.heading : null,
-      accuracy_m: p.coords.accuracy }];
+      accuracy_m: p.coords.accuracy });
     show();
   }, (e) => { $("gps").innerHTML = `<span class="bad">${e.message}</span>`; }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
 }
 
 async function flush() {
   const v = store.vehicle;
-  const batch = store.queue.slice(0, 500);
+  const batch = RQueue.nextBatch(store.queue);
   if (!v || !batch.length || !navigator.onLine) return;
   try {
     const r = await api("/api/telemetry", { method: "POST", headers: { "Content-Type": "application/json", "X-Device-Token": v.device_token },
       body: JSON.stringify({ vehicle_id: v.vehicle.id, fixes: batch }) });
-    store.queue = store.queue.slice(batch.length); // duplicates are safe: the server ignores resends
+    store.queue = RQueue.afterSend(store.queue, batch, 202); // duplicates are safe: the server ignores resends
     $("sent").textContent = `${new Date().toLocaleTimeString()} (${r.accepted} new, ${r.duplicates} dup)`;
   } catch (e) {
+    store.queue = RQueue.afterSend(store.queue, batch, e.status ?? null);
     if (e.status === 401) { $("sent").innerHTML = '<span class="bad">device not recognised: sign out and register again</span>'; }
-    else if (e.status === 422) { store.queue = store.queue.slice(batch.length); } // stale fixes rejected by server: drop them
-    else { $("sent").innerHTML = `<span class="bad">retrying: ${e.message}</span>`; }
+    else if (e.status !== 422) { $("sent").innerHTML = `<span class="bad">retrying: ${esc(e.message)}</span>`; }
   }
   show();
 }
 
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+function speakInstructions() {
+  if (!instructions || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(instructions.text);
+  u.lang = SPEECH_LANG[instructions.language] || instructions.language;
+  const voice = speechSynthesis.getVoices().find((vo) => vo.lang === u.lang);
+  if (voice) u.voice = voice;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
 
 async function loadAssignment() {
   const v = store.vehicle;
@@ -78,24 +88,22 @@ async function loadAssignment() {
   try {
     const a = await api(`/api/vehicles/${v.vehicle.id}/assignment`);
     instructions = a.instructions;
-    const stops = a.route.stops.map((s) => `<li><b>${s.kind === "pickup" ? "Pick up" : "Deliver"}</b> ${esc(s.name)}, by ${new Date(s.eta).toLocaleTimeString()}</li>`).join("");
-    $("assignment").innerHTML = (a.is_drill ? '<p><span class="drill">DRILL - NOT A REAL DISPATCH</span></p>' : "")
-      + `<p>${(a.route.distance_m / 1000).toFixed(0)} km · about ${(a.route.duration_s / 3600).toFixed(1)} h · avoids active hazard zones</p>`
+    const changed = routeId !== null && routeId !== a.route.id; // the Replanner sent a replacement
+    routeId = a.route.id;
+    const done = a.route.completed_stops ?? 0;
+    const stops = a.route.stops.map((s, i) => `<li class="${i < done ? "done" : ""}"><b>${s.kind === "pickup" ? "Pick up" : "Deliver"}</b> ${esc(s.name)}, by ${new Date(s.eta).toLocaleTimeString()}</li>`).join("");
+    $("assignment").innerHTML = (changed ? '<div class="newroute">New route. Follow the stops below.</div>' : "")
+      + (a.is_drill ? '<p><span class="drill">DRILL - NOT A REAL DISPATCH</span></p>' : "")
+      + `<p>${(a.route.distance_m / 1000).toFixed(0)} km · about ${(a.route.duration_s / 3600).toFixed(1)} h · ${done}/${a.route.stops.length} stops · avoids active hazard zones</p>`
       + `<ol>${stops}</ol><div class="instr">${esc(a.instructions.text)}</div>`;
     $("speak").hidden = !("speechSynthesis" in window);
+    if (changed) speakInstructions();
   } catch (e) {
-    if (e.status === 404) { instructions = null; $("assignment").innerHTML = "<p>No assignment yet. Keep this screen open; it refreshes automatically.</p>"; $("speak").hidden = true; }
+    if (e.status === 404) { instructions = null; routeId = null; $("assignment").innerHTML = "<p>No assignment yet. Keep this screen open; it refreshes automatically.</p>"; $("speak").hidden = true; }
   }
 }
 
-$("speak").onclick = () => {
-  if (!instructions) return;
-  const u = new SpeechSynthesisUtterance(instructions.text);
-  u.lang = SPEECH_LANG[instructions.language] || instructions.language;
-  const voice = speechSynthesis.getVoices().find((vo) => vo.lang === u.lang);
-  if (voice) u.voice = voice;
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
-};
+$("speak").onclick = speakInstructions;
 $("forget").onclick = () => { if (confirm("Sign out? Queued GPS fixes will be discarded.")) { localStorage.clear(); location.reload(); } };
 window.addEventListener("online", () => { show(); flush(); loadAssignment(); });
 window.addEventListener("offline", show);

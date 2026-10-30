@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AgentEvent, PlanDetail, plansApi, PlanSummary, streamUrl, Vehicle } from "@/lib/api";
+import { AgentEvent, Escalation, PlanDetail, plansApi, PlanSummary, streamUrl, Vehicle } from "@/lib/api";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "#868e96", planning: "#1971c2", awaiting_approval: "#e8590c", approved: "#2f9e44", dispatched: "#2b8a3e",
@@ -15,6 +15,10 @@ const EVENT_ICONS: Record<string, string> = {
   node_started: "▶", node_finished: "■", tool_call: "⚙", tool_result: "⇣", decision: "✔", critic_rejection: "✖",
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
 };
+
+function escalationText(e: Escalation): string {
+  return "quantity_short" in e ? `${e.quantity_short.toFixed(0)} ${e.item_code}: ${e.reason}` : e.reason;
+}
 
 interface Props {
   selectedPlanId: string | null;
@@ -31,6 +35,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
   const [approver, setApprover] = useState("");
   const [reason, setReason] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  const [degraded, setDegraded] = useState<string | null>(null);
   const selected = useRef<string | null>(selectedPlanId);
   const callbacks = useRef({ onSelectPlan, onVehicle, onHazardChange });
   useEffect(() => {
@@ -59,8 +64,27 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
       if (pending) clearTimeout(pending);
       pending = setTimeout(refreshPlans, 500);
     };
-    source.onopen = () => setLive("live");
-    source.onerror = () => setLive("reconnecting");
+    let lost = false;
+    source.onopen = () => {
+      setLive("live");
+      setDegraded(null);
+      if (lost) {  // anything could have changed while the stream was down
+        lost = false;
+        refreshPlans();
+        callbacks.current.onHazardChange();
+      }
+    };
+    source.onerror = () => {
+      lost = true;
+      setLive("reconnecting");
+    };
+    // The server sends its own `error` event when Postgres or Redis hiccups; the stream stays open.
+    source.addEventListener("error", (e) => {
+      const data = (e as MessageEvent).data;
+      if (data) setDegraded((JSON.parse(data) as { message: string }).message);
+    });
+    source.addEventListener("plan", refreshSoon);
+    source.addEventListener("source_health", () => callbacks.current.onHazardChange());
     source.addEventListener("agent_event", (e) => {
       const ev = JSON.parse((e as MessageEvent).data) as AgentEvent;
       setEvents((prev) => [ev, ...prev.filter((p) => p.id !== ev.id)].slice(0, 300));
@@ -105,12 +129,15 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
       <h2>
         Plans <span className={`live ${live}`}>{live === "live" ? "● live" : live === "connecting" ? "○ connecting" : "○ reconnecting…"}</span>
       </h2>
+      {live === "reconnecting" && <div className="error small">Live updates interrupted. Retrying; this screen may be out of date.</div>}
+      {degraded && <div className="error small">Backend reports: {degraded}.</div>}
       {plans.length === 0 && <p className="muted small">No plans yet. Publish a drill or wait for a severe hazard.</p>}
       <ul className="plans">
         {plans.map((p) => (
           <li key={p.id} className={p.id === selectedPlanId ? "selected" : ""} onClick={() => select(p.id)}>
             <span className="badge" style={{ background: STATUS_COLORS[p.status] ?? "#495057" }}>{p.status.replace("_", " ")}</span>
             {p.is_drill && <span className="badge drill">DRILL</span>}
+            {p.parent_plan_id && <span className="badge replan">↻ REPLAN</span>}
             <span className="small">{new Date(p.created_at).toLocaleTimeString()} · {p.trigger_kind}</span>
           </li>
         ))}
@@ -126,7 +153,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
           {detail.escalations.length > 0 && (
             <div className="small warn">
               <b>Escalated to humans:</b>
-              <ul>{detail.escalations.map((e, i) => <li key={i}>{e.quantity_short.toFixed(0)} {e.item_code}: {e.reason}</li>)}</ul>
+              <ul>{detail.escalations.map((e, i) => <li key={i}>{escalationText(e)}</li>)}</ul>
             </div>
           )}
           {detail.critic.length > 0 && (
@@ -134,7 +161,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
           )}
           <p className="small">
             {detail.routes.length} route(s) · {detail.orders.length} order(s)
-            {detail.routes.map((r) => ` · ${(r.distance_m / 1000).toFixed(0)} km, clearance ${r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m`)}
+            {detail.routes.map((r) => ` · ${(r.distance_m / 1000).toFixed(0)} km, clearance ${r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m, ${r.status}, ${r.completed_stops}/${r.stops.length} stops`)}
           </p>
           {detail.status === "awaiting_approval" && (
             <div className="approve">
