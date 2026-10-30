@@ -8,7 +8,7 @@ import type { GeoJSONSource, LngLatBoundsLike, Map as MlMap, MapMouseEvent } fro
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef } from "react";
 
-import { api, FacilityProperties, FeatureCollection, HazardProperties } from "@/lib/api";
+import { api, FacilityProperties, FeatureCollection, HazardProperties, PlanRoute, Vehicle } from "@/lib/api";
 
 export const SEVERITY_COLORS: Record<string, string> = {
   extreme: "#b3002d",
@@ -34,6 +34,8 @@ interface Props {
   onMapClick: (lngLat: [number, number]) => void;
   onCancelDrill: (id: string) => void;
   onFacilitiesStatus: (status: string) => void;
+  vehicles: Vehicle[];
+  routes: PlanRoute[];
 }
 
 function escapeHtml(text: string): string {
@@ -89,6 +91,8 @@ export default function LiveMap(props: Props) {
       m.addSource("hazards", { type: "geojson", data: EMPTY });
       m.addSource("facilities", { type: "geojson", data: EMPTY });
       m.addSource("draft", { type: "geojson", data: EMPTY });
+      m.addSource("routes", { type: "geojson", data: EMPTY });
+      m.addSource("vehicles", { type: "geojson", data: EMPTY });
       const color: maplibregl.ExpressionSpecification = [
         "match", ["get", "severity"],
         ...Object.entries(SEVERITY_COLORS).flat(),
@@ -106,11 +110,17 @@ export default function LiveMap(props: Props) {
           "circle-color": ["match", ["get", "kind"], "hospital", "#d6336c", "shelter", "#2b8a3e", "school", "#1971c2",
             "warehouse", "#5f3dc4", "godown", "#5f3dc4", "#495057"],
           "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+      m.addLayer({ id: "route-casing", type: "line", source: "routes", paint: { "line-color": "#fff", "line-width": 7 } });
+      m.addLayer({ id: "route-line", type: "line", source: "routes", paint: { "line-color": "#0b7285", "line-width": 4 } });
+      m.addLayer({ id: "vehicle-points", type: "circle", source: "vehicles",
+        paint: { "circle-radius": 8, "circle-color": ["case", ["get", "is_offline"], "#868e96", "#0b7285"],
+          "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
       m.addLayer({ id: "draft-fill", type: "fill", source: "draft", paint: { "fill-color": "#6f2dbd", "fill-opacity": 0.2 } });
       m.addLayer({ id: "draft-line", type: "line", source: "draft", paint: { "line-color": "#6f2dbd", "line-width": 2 } });
       m.addLayer({ id: "draft-pts", type: "circle", source: "draft", filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-radius": 4, "circle-color": "#6f2dbd" } });
       map.current = m;
+      renderOverlays();
       renderHazards();
       loadFacilities();
     });
@@ -120,10 +130,12 @@ export default function LiveMap(props: Props) {
         latest.current.onMapClick([e.lngLat.lng, e.lngLat.lat]);
         return;
       }
-      const hits = m.queryRenderedFeatures(e.point, { layers: ["facility-points", "hazard-fill"] });
+      const hits = m.queryRenderedFeatures(e.point, { layers: ["vehicle-points", "facility-points", "hazard-fill"] });
       if (!hits.length) return;
       const hit = hits[0];
-      const html = hit.layer.id === "facility-points"
+      const html = hit.layer.id === "vehicle-points"
+        ? vehiclePopup(hit.properties as Record<string, unknown>)
+        : hit.layer.id === "facility-points"
         ? facilityPopup(hit.properties as unknown as FacilityProperties)
         : hazardPopup(hit.properties as unknown as HazardProperties);
       const popup = new maplibregl.Popup({ maxWidth: "340px" }).setLngLat(e.lngLat).setHTML(html).addTo(m);
@@ -140,6 +152,32 @@ export default function LiveMap(props: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function vehiclePopup(p: Record<string, unknown>): string {
+    const seen = p.last_seen_at ? new Date(String(p.last_seen_at)).toLocaleTimeString() : "never";
+    return `<div class="popup"><strong>${escapeHtml(String(p.label))}</strong>
+      <div>${p.is_offline === true || p.is_offline === "true" ? '<span class="badge stale">OFFLINE</span>' : "online"} &middot; ${escapeHtml(String(p.status))}</div>
+      <div class="muted">capacity ${p.capacity_kg} kg &middot; last GPS ${escapeHtml(seen)}</div></div>`;
+  }
+
+  function renderOverlays() {
+    const m = map.current;
+    if (!m) return;
+    const { vehicles, routes } = latest.current;
+    (m.getSource("vehicles") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: vehicles.filter((v) => v.position).map((v) => ({
+        type: "Feature", geometry: v.position!,
+        properties: { id: v.id, label: v.label, status: v.status, is_offline: v.is_offline, capacity_kg: v.capacity_kg, last_seen_at: v.last_seen_at },
+      })),
+    });
+    (m.getSource("routes") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: routes.map((r) => ({ type: "Feature", geometry: r.geometry, properties: { id: r.id } })),
+    });
+  }
+
+  useEffect(renderOverlays, [props.vehicles, props.routes]);
 
   function facilityPopup(p: FacilityProperties): string {
     return `<div class="popup"><strong>${escapeHtml(p.name)}</strong>

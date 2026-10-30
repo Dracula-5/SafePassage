@@ -6,9 +6,10 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, FeatureCollection, HazardProperties, regionBbox, Severity, SourceHealth } from "@/lib/api";
+import { api, FeatureCollection, HazardProperties, PlanDetail, plansApi, regionBbox, Severity, SourceHealth, Vehicle } from "@/lib/api";
 
 import { SEVERITY_COLORS } from "./LiveMap";
+import OpsPanel from "./OpsPanel";
 
 const LiveMap = dynamic(() => import("./LiveMap"), { ssr: false, loading: () => <div className="map loading">Loading map…</div> });
 
@@ -35,12 +36,15 @@ export default function Dashboard() {
   const [drill, setDrill] = useState({ label: "", hazard_type: "flood", severity: "severe" as Severity, ttl_minutes: 120 });
   const [drillMsg, setDrillMsg] = useState<string | null>(null);
   const bounds = useMemo(() => regionBbox(), []);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [plan, setPlan] = useState<PlanDetail | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [h, s] = await Promise.all([api.hazards(), api.sourceHealth()]);
+      const [h, s, v] = await Promise.all([api.hazards(), api.sourceHealth(), plansApi.vehicles()]);
       setHazards(h);
       setHealth(s);
+      setVehicles(v);
       setError(null);
       setUpdatedAt(new Date());
     } catch (err) {
@@ -113,6 +117,19 @@ export default function Dashboard() {
         </section>
 
         <section>
+          <h2>Fleet ({vehicles.filter((v) => !v.is_offline).length}/{vehicles.length} online)</h2>
+          <ul className="sources">
+            {vehicles.map((v) => (
+              <li key={v.id}>
+                <span className={`dot ${v.is_offline ? "stale" : "fresh"}`} />
+                <b>{v.label}</b> <span className="muted">{v.is_offline ? "offline" : "online"} · last GPS {ago(v.last_seen_at)}</span>
+              </li>
+            ))}
+            {vehicles.length === 0 && <li className="muted small">No vehicles registered. Drivers register in the Driver app.</li>}
+          </ul>
+        </section>
+
+        <section>
           <h2>Active hazards ({hazards?.features.length ?? "…"})</h2>
           <p className="muted small">{counts.map(([src, n]) => `${src}: ${n}`).join(" · ") || "none"}</p>
           <ul className="hazards">
@@ -165,6 +182,14 @@ export default function Dashboard() {
         onMapClick={(c) => setVertices((v) => [...v, c])}
         onCancelDrill={cancelDrill}
         onFacilitiesStatus={setFacilitiesStatus}
+        vehicles={vehicles}
+        routes={plan?.routes ?? []}
+      />
+      <OpsPanel
+        selectedPlanId={plan?.id ?? null}
+        onSelectPlan={setPlan}
+        onVehicle={(v) => setVehicles((prev) => [...prev.filter((p) => p.id !== v.id), v])}
+        onHazardChange={refresh}
       />
     </div>
   );

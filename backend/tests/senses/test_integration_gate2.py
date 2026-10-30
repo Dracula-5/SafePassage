@@ -155,3 +155,10 @@ async def test_sse_streams_agent_events_and_resumes(live_env, monkeypatch):
     assert [f"id: {i}" in c for i, c in zip(ids, agent)] == [True] * 3
     resumed = [c async for c in stream_mod.event_stream(FakeRequest(2), plan, ids[0])]
     assert sum("event: agent_event" in c for c in resumed) == 2
+
+
+async def test_driver_app_is_served_without_path_traversal(api):
+    assert "ReliefRoute Driver" in (await api.get("/driver/")).text
+    assert (await api.get("/driver/sw.js")).headers["service-worker-allowed"] == "/driver/"
+    for bad in ("/driver/../backend/.env", "/driver/%2e%2e/backend/.env", "/driver/README.md"):
+        assert (await api.get(bad)).status_code == 404, bad

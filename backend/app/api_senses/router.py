@@ -22,6 +22,7 @@ from app.core.db import get_pool
 
 from ..suppliers.router import router as portal_router
 from ..telemetry.router import router as telemetry_router
+from .driver_app import router as driver_router
 from .stream import router as stream_router
 from ..ingestion.store import publish_hazard_events, set_hazard_status, upsert_hazard
 from ..ingestion.models import NormalizedHazard
@@ -31,6 +32,7 @@ router = APIRouter(tags=["senses"])
 router.include_router(telemetry_router)
 router.include_router(portal_router)
 router.include_router(stream_router)
+router.include_router(driver_router)
 GEOJSON = "application/geo+json"
 MAX_DRILL_AREA_KM2 = 50_000  # larger than any district; stops accidental continent-sized drills
 

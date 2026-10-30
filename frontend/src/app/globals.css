@@ -26,3 +26,21 @@ button.danger { border-color: #e03131; color: #e03131; margin-top: 6px; }
 .row { display: flex; gap: 6px; }
 .popup { font-size: 13px; display: grid; gap: 3px; }
 .drill-label { background: #6f2dbd; color: #fff; font-weight: 800; font-size: 12px; padding: 2px 6px; border-radius: 3px; letter-spacing: .08em; }
+.layout { grid-template-columns: 330px 1fr 380px; }
+.ops { border-left: 1px solid #dee2e6; border-right: 0; }
+.live { font-size: 11px; font-weight: 600; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.live.live { color: #2f9e44; } .live.connecting, .live.reconnecting { color: #e8590c; }
+.plans li { padding: 6px 4px; border-bottom: 1px solid #e9ecef; cursor: pointer; }
+.plans li.selected { background: #e7f5ff; }
+.detail { background: #fff; border: 1px solid #dee2e6; border-radius: 6px; padding: 8px; margin: 8px 0; font-size: 13px; }
+.warn { background: #fff9db; padding: 6px; border-radius: 4px; }
+.approve { display: grid; gap: 6px; background: #fff4e6; padding: 8px; border-radius: 6px; }
+.approve input { padding: 6px; }
+button.ok { border-color: #2f9e44; color: #2f9e44; }
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li { border-left: 3px solid #adb5bd; padding: 4px 8px; margin-bottom: 6px; background: #fff; }
+.timeline li.decision { border-color: #2f9e44; } .timeline li.critic_rejection, .timeline li.error { border-color: #e03131; }
+.timeline li.approval_requested, .timeline li.approval_decided { border-color: #e8590c; } .timeline li.data_stale { border-color: #f59f00; }
+.timeline li.dispatch { border-color: #0b7285; }
+.timeline .node { font-weight: 700; margin: 0 6px; font-size: 12px; text-transform: uppercase; }
+.tiny { font-size: 10px; }

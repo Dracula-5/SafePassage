@@ -90,3 +90,78 @@ export function regionBbox(): [number, number, number, number] | null {
   const parts = raw.split(",").map(Number);
   return parts.length === 4 && parts.every(Number.isFinite) ? (parts as [number, number, number, number]) : null;
 }
+
+// ---- Gate 2: plans (served by A), vehicles, live stream (served by B)
+
+export interface PlanSummary {
+  id: string;
+  status: string;
+  trigger_kind: string;
+  hazard_ids: string[];
+  is_drill: boolean;
+  requires_approval: boolean;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanRoute {
+  id: string;
+  vehicle_id: string;
+  status: string;
+  geometry: GeoJSON.LineString;
+  distance_m: number;
+  duration_s: number;
+  load_kg: number;
+  min_hazard_clearance_m: number | null;
+  stops: { facility_id: string; name: string; kind: string; eta: string; order_keys: string[] }[];
+}
+
+export interface PlanDetail extends PlanSummary {
+  demand: { destination_facility_id: string; item_code: string; quantity: number; basis: string }[];
+  routes: PlanRoute[];
+  orders: { id: string; supplier_id: string; status: string; idempotency_key: string; lines: { item_code: string; quantity: number }[] }[];
+  critic: { attempt: number; passed: boolean; violations: string[]; created_at: string }[];
+  approval: { decision: string; decided_by: string; reason: string | null; decided_at: string } | null;
+  unreachable_reason: string | null;
+  escalations: { destination_facility_id: string; item_code: string; quantity_short: number; reason: string }[];
+  triage: { priority: string; planning_horizon_hours: number; rationale: string; key_risks: string[] } | null;
+}
+
+export interface Vehicle {
+  id: string;
+  label: string;
+  driver_name: string | null;
+  capacity_kg: number;
+  status: string;
+  position: GeoJSON.Point | null;
+  last_seen_at: string | null;
+  is_offline: boolean;
+}
+
+export interface AgentEvent {
+  id: number;
+  plan_id: string | null;
+  node: string;
+  event_type: string;
+  message: string;
+  payload: Record<string, unknown>;
+  source_ids: string[];
+  created_at: string;
+}
+
+export const plansApi = {
+  list: () => request<PlanSummary[]>("/api/plans?limit=20"),
+  get: (id: string) => request<PlanDetail>(`/api/plans/${id}`),
+  decide: (id: string, decision: "approved" | "rejected", decided_by: string, reason?: string) =>
+    request<unknown>(`/api/plans/${id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, decided_by, reason: reason || undefined }),
+    }),
+  vehicles: () => request<Vehicle[]>("/api/vehicles"),
+};
+
+export function streamUrl(): string {
+  return `${API_BASE}/api/stream`;
+}
