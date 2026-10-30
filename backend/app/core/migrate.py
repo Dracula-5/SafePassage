@@ -68,7 +68,7 @@ async def apply_all(conn: asyncpg.Connection, files: list[Path] | None = None) -
                 raise MigrationError(f"{key} changed after it was applied")
             continue
         async with conn.transaction():
-            await conn.execute(path.read_text())
+            await conn.execute(path.read_text(encoding="utf-8"))
             await conn.execute("INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", key, digest)
         log.info("migration_applied", file=key)
         newly_applied.append(key)
