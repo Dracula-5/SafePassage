@@ -9,6 +9,7 @@ the human decides and applies it.
 |---|---|
 | `ownership.txt` | Which instance may touch which path |
 | `db/schema.sql` | The whole baseline: extensions, enum types, all 14 tables, read views (`v_*`) |
+| `db/patches/` | Approved contract changes applied after the baseline (001: places + `v_places`) |
 | `db/SCHEMA.md` | Table ownership, column meaning, evolution rules |
 | `events.md` | Redis Streams catalog |
 | `events.schema.json` | JSON Schema generated from the Python models (do not hand-edit) |
@@ -23,7 +24,7 @@ the human decides and applies it.
    vehicles, telemetry, source_health.
 2. Cross-reads use the `v_*` views (`v_active_hazards`, `v_vehicle_status`,
    `v_vehicle_assignment`, `v_available_stock`, `v_source_freshness`, `v_facilities`,
-   `v_suppliers`). Reading your own
+   `v_suppliers`, `v_places`). Reading your own
    tables directly is fine.
 3. Owners may add columns, indexes and private tables in their own `1xx`/`2xx` migrations.
    They may not drop, rename or retype a column listed in `db/SCHEMA.md`.
