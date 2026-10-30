@@ -95,7 +95,7 @@ async def list_facilities(
     box = _bbox(bbox)
     rows = await (await get_pool()).fetch(
         """SELECT f.id, f.source::text, f.source_ref, f.kind::text, f.name, f.capacity_people,
-                  ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
+                  ST_AsGeoJSON(f.geom, 6) AS geojson,
                   EXISTS (SELECT 1 FROM suppliers s WHERE s.facility_id = f.id) AS is_supplier
            FROM facilities f
            WHERE ($1::text[] IS NULL OR f.kind::text = ANY($1))
@@ -104,7 +104,7 @@ async def list_facilities(
     )  # fmt: skip
     features = [{
         "type": "Feature", "id": str(r["id"]),
-        "geometry": {"type": "Point", "coordinates": [round(r["lon"], 6), round(r["lat"], 6)]},
+        "geometry": json.loads(r["geojson"]),
         "properties": {"id": str(r["id"]), "source": r["source"], "source_ref": r["source_ref"], "kind": r["kind"],
                        "name": r["name"], "capacity_people": r["capacity_people"], "is_supplier": r["is_supplier"]},
     } for r in rows]  # fmt: skip
@@ -115,13 +115,13 @@ async def list_facilities(
 async def list_vehicles() -> list[dict]:
     rows = await (await get_pool()).fetch(
         """SELECT id, label, driver_name, driver_language, capacity_kg, status::text, last_seen_at,
-                  seconds_since_seen, is_offline, ST_X(last_position) AS lon, ST_Y(last_position) AS lat
+                  seconds_since_seen, is_offline, ST_AsGeoJSON(last_position, 6) AS geojson
            FROM v_vehicle_status ORDER BY label"""
     )
     return [{
         "id": str(r["id"]), "label": r["label"], "driver_name": r["driver_name"], "driver_language": r["driver_language"],
         "capacity_kg": r["capacity_kg"], "status": r["status"],
-        "position": None if r["lon"] is None else {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
+        "position": None if r["geojson"] is None else json.loads(r["geojson"]),
         "last_seen_at": _iso(r["last_seen_at"]), "seconds_since_seen": r["seconds_since_seen"], "is_offline": r["is_offline"],
     } for r in rows]  # fmt: skip
 
