@@ -20,10 +20,17 @@ from shapely.validation import explain_validity
 
 from app.core.db import get_pool
 
+from ..suppliers.router import router as portal_router
+from ..telemetry.router import router as telemetry_router
+from .stream import router as stream_router
 from ..ingestion.store import publish_hazard_events, set_hazard_status, upsert_hazard
 from ..ingestion.models import NormalizedHazard
 
 router = APIRouter(tags=["senses"])
+# Sub-routers live in their own packages; main.py only discovers this module's `router`.
+router.include_router(telemetry_router)
+router.include_router(portal_router)
+router.include_router(stream_router)
 GEOJSON = "application/geo+json"
 MAX_DRILL_AREA_KM2 = 50_000  # larger than any district; stops accidental continent-sized drills
 
