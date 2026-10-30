@@ -78,10 +78,23 @@ async def test_fetch_is_bounded_and_dedupes():
     assert len(result.hazards) == 5 and len({h.dedupe_key for h in result.hazards}) == 1
 
 
-async def test_rate_limited_polygons_mark_source_degraded():
+async def test_rate_limited_and_unplaceable_alerts_use_fallback_not_failure():
+    """SACHET refuses polygons and no area name matches: alerts are skipped, health shows the fallback."""
     source = SachetSource("https://sachet.example/rss.xml", poll_s=60, max_new_per_poll=3, pause_s=0)
     async with httpx.AsyncClient(transport=_transport(polygon_status=403)) as http:
-        with pytest.raises(SourceUnavailable, match="all 3 alert downloads failed.*SACHET refused and no area name matched"):
+        result = await source.fetch(http, NoKnownRows())
+    assert result.hazards == [] and result.skipped == 0 and result.used_fallback == "areaDesc_osm_admin"
+
+
+async def test_cap_server_errors_still_mark_source_degraded():
+    def handler(request: httpx.Request):
+        if str(request.url).endswith(".xml"):
+            return httpx.Response(200, text=fixture_text("sachet_rss.xml"))
+        return httpx.Response(404, text="gone")
+
+    source = SachetSource("https://sachet.example/rss.xml", poll_s=60, max_new_per_poll=3, pause_s=0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(SourceUnavailable, match="all 3 alert downloads failed"):
             await source.fetch(http, NoKnownRows())
 
 

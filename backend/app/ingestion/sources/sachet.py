@@ -180,9 +180,10 @@ class SachetSource:
             log.info("sachet_area_fallback", guid=guid, matched=match.matched, unmatched=match.unmatched,
                      ambiguous=match.ambiguous)  # fmt: skip
             return to_hazard(guid, cap, list(match.geom.geoms), geometry_source=AREA_FALLBACK, area_match=match)
-        if polygons is None:
-            raise ValueError(f"polygon {guid}: SACHET refused and no area name matched ({match.unmatched + match.ambiguous})")
-        log.info("sachet_alert_without_polygon", guid=guid, alert_event=cap["event"], area=cap["area_desc"][:80])
+        # Not placeable without guessing: SACHET gave no polygon and no area name matched uniquely.
+        # This is a content limitation, not a source failure, so it does not count against health.
+        log.info("sachet_alert_unplaceable", guid=guid, alert_event=cap["event"], area=cap["area_desc"][:80],
+                 sachet_refused=polygons is None, unmatched=match.unmatched, ambiguous=match.ambiguous)
         return None
 
     async def fetch(self, http: httpx.AsyncClient, conn: asyncpg.Pool) -> FetchResult:
@@ -213,5 +214,6 @@ class SachetSource:
             first_error = next(str(r) for r in results if isinstance(r, Exception))
             self.breaker.record_failure()  # 3 such polls open the breaker and pause SACHET for 15 min
             raise SourceUnavailable(self.name, f"all {skipped} alert downloads failed, e.g. {first_error[:150]}")
-        fallback = AREA_FALLBACK if any(h.raw.get("geometry_source") == AREA_FALLBACK for h in hazards) else None
+        cooling_down = time.monotonic() < self._polygon_blocked_until
+        fallback = AREA_FALLBACK if cooling_down or any(h.raw.get("geometry_source") == AREA_FALLBACK for h in hazards) else None
         return FetchResult(hazards=hazards, facilities=[], skipped=skipped, used_fallback=fallback)
