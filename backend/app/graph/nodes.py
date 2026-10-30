@@ -64,6 +64,16 @@ def _ids(prefix: str, ids: list[str]) -> list[str]:
     return [f"{prefix}:{i}" for i in ids]
 
 
+AREA_MARGIN_DEG = 0.5  # about 50 km: hazards farther than this from every location cannot affect the trip
+
+
+def _area(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+    """Bounding box of the trip's locations plus a margin; only hazards inside matter for routing."""
+    lons, lats = [p[0] for p in points], [p[1] for p in points]
+    m = AREA_MARGIN_DEG
+    return min(lons) - m, min(lats) - m, max(lons) + m, max(lats) + m
+
+
 def _stop(state: PlanState, status: str, reason: str) -> dict:
     return {"outcome": status, "outcome_reason": reason}
 
@@ -155,9 +165,9 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         stock = nearby
         travel: dict[tuple[str, str], float | None] = {}
         if stock:
-            hazards = await fetch_active_hazards(deps.pool)
-            rings = exclusion_rings(hazards)
             suppliers = sorted({(x.supplier_id, x.lon, x.lat) for x in stock})
+            hazards = await fetch_active_hazards(deps.pool, bbox=_area([(lo, la) for _, lo, la in suppliers] + points))
+            rings = exclusion_rings(hazards)
             targets = [Location(lon=p.lon, lat=p.lat) for p in demand.relief_points]
             chunk = max(1, 2500 // max(1, len(targets)) // 2)  # stay well under max_matrix_location_pairs
             for start_i in range(0, len(suppliers), chunk):
@@ -205,7 +215,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         sites = {p.facility_id: Site(p.facility_id, p.name, p.lon, p.lat) for p in demand.relief_points}
         for o in allocation.orders:
             sites[o.supplier_facility_id] = Site(o.supplier_facility_id, o.supplier_name, o.supplier_lon, o.supplier_lat)
-        hazards = await fetch_active_hazards(deps.pool)
+        trip = [(v.lon, v.lat) for v in vehicles] + [(x.lon, x.lat) for x in sites.values()]
+        hazards = await fetch_active_hazards(deps.pool, bbox=_area(trip))
         triage = Triage.model_validate(state["triage"])
         routing = await plan_routes(deps.valhalla, allocation.orders, vehicles, sites, hazards,
                                     datetime.fromisoformat(state["started_at"]), triage.planning_horizon_hours * 3600,
@@ -223,7 +234,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
     async def critic(state: PlanState) -> dict:
         audit = audit_for(state)
         routing = Routing.model_validate(state["routing"])
-        hazards = await fetch_active_hazards(deps.pool)  # current hazards, not the planner's snapshot
+        # Current hazards (not the planner's snapshot) near any route.
+        hazards = await fetch_active_hazards(deps.pool, bbox=_area([pt for r in routing.routes for pt in r.geometry]))
         triage = Triage.model_validate(state["triage"])
         verdict = review(routing, hazards, state["attempt"], datetime.fromisoformat(state["started_at"]),
                          triage.planning_horizon_hours * 3600, s.min_route_clearance_m)
