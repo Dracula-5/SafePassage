@@ -102,18 +102,47 @@ class LLMClient:
 
 
 class GeminiBackend:
-    """Google Gemini via the public REST API (generateContent)."""
+    """Google Gemini via the public REST API (generateContent), over an ordered list of models.
+
+    Gemini models come and go (404 when retired) and are often overloaded (503/429 or slow).
+    Each call tries the models in order with its own breaker and time budget; the model that
+    answers moves to the front, and `model` names it for the audit trail.
+    """
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
+    SKIP_STATUS = {404, 429, 500, 503}
 
-    def __init__(self, api_key: str, model: str, http: httpx.AsyncClient, breaker: CircuitBreaker | None = None,
-                 timeout_s: float = 60.0, temperature: float = 0.2):
+    def __init__(self, api_key: str, models: list[str], http: httpx.AsyncClient, timeout_s: float = 30.0,
+                 temperature: float = 0.2):
         self.api_key = api_key
-        self.model = model
+        self.models = list(models)
         self.http = http
-        self.breaker = breaker or CircuitBreaker("gemini", failure_threshold=3, reset_after_s=60)
         self.timeout_s = timeout_s
         self.temperature = temperature
+        self.breakers = {m: CircuitBreaker(f"gemini:{m}", failure_threshold=2, reset_after_s=300) for m in self.models}
+        self.breaker = CircuitBreaker("gemini")  # used only for list_models
+
+    @property
+    def model(self) -> str:
+        return self.models[0] if self.models else ""
+
+    async def _call(self, model: str, body: dict) -> str:
+        breaker = self.breakers.setdefault(model, CircuitBreaker(f"gemini:{model}", failure_threshold=2, reset_after_s=300))
+        resp = await resilient_request(
+            self.http, "POST", f"{self.BASE}/models/{model}:generateContent", breaker,
+            timeout_s=self.timeout_s, retries=0, json=body, headers={"x-goog-api-key": self.api_key},
+        )  # fmt: skip
+        if resp.status_code in self.SKIP_STATUS:
+            breaker.record_failure()
+            raise SourceUnavailable(f"gemini:{model}", f"HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            raise SourceUnavailable(f"gemini:{model}", f"HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        try:
+            return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+        except (KeyError, IndexError) as exc:
+            reason = (data.get("promptFeedback") or {}).get("blockReason") or data.get("candidates", [{}])[0].get("finishReason")
+            raise SourceUnavailable(f"gemini:{model}", f"no text in reply ({reason})") from exc
 
     async def complete(self, system: str, turns: list[tuple[str, str]]) -> str:
         body = {
@@ -121,18 +150,28 @@ class GeminiBackend:
             "contents": [{"role": role, "parts": [{"text": text}]} for role, text in turns],
             "generationConfig": {"temperature": self.temperature, "responseMimeType": "application/json"},
         }
-        resp = await resilient_request(
-            self.http, "POST", f"{self.BASE}/models/{self.model}:generateContent", self.breaker,
-            timeout_s=self.timeout_s, retries=2, json=body, headers={"x-goog-api-key": self.api_key},
-        )  # fmt: skip
-        if resp.status_code != 200:
-            raise SourceUnavailable("gemini", f"HTTP {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+        errors = []
+        for model in list(self.models):
+            try:
+                text = await self._call(model, body)
+            except SourceUnavailable as exc:
+                errors.append(f"{model}: {exc.reason}")
+                log.warning("gemini_model_unavailable", model=model, reason=exc.reason)
+                continue
+            if self.models[0] != model:  # prefer what works
+                self.models.remove(model)
+                self.models.insert(0, model)
+            return text
+        raise SourceUnavailable("gemini", "; ".join(errors) or "no models configured")
+
+    async def probe(self, model: str) -> bool:
+        """Tiny request: does this model answer right now?"""
         try:
-            return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
-        except (KeyError, IndexError) as exc:
-            reason = (data.get("promptFeedback") or {}).get("blockReason") or data.get("candidates", [{}])[0].get("finishReason")
-            raise SourceUnavailable("gemini", f"no text in reply ({reason})") from exc
+            await self._call(model, {"contents": [{"role": "user", "parts": [{"text": 'Reply with JSON {"ok": true}'}]}],
+                                     "generationConfig": {"responseMimeType": "application/json"}})  # fmt: skip
+            return True
+        except SourceUnavailable:
+            return False
 
     async def list_models(self) -> list[str]:
         resp = await resilient_request(self.http, "GET", f"{self.BASE}/models", self.breaker, timeout_s=15,

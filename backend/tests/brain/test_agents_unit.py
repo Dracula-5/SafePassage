@@ -116,6 +116,11 @@ def test_extract_json_and_model_pick():
              "gemini-2.5-flash-image"]
     assert pick_gemini_model(names) == "gemini-2.5-flash"
     assert pick_gemini_model(["gemini-2.5-pro"]) is None
+    from app.llm.factory import rank_gemini_models
+    ranked = rank_gemini_models(["gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash",
+                                 "gemini-3.8-flash-tts", "gemini-flash-latest"])
+    assert ranked == ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview",
+                      "gemini-3.5-flash-lite"]
 
 
 def test_fallbacks_are_labelled():
@@ -125,3 +130,20 @@ def test_fallbacks_are_labelled():
                    area_km2=1, is_drill=True, is_stale=False, expires_at=None)
     t = fallbacks.triage([h], pop, "LLM not configured")
     assert t.priority == "high" and t.rationale.startswith("RULE-BASED FALLBACK") and t.recommend_human_review
+
+
+async def test_gemini_backend_falls_through_unavailable_models():
+    import httpx
+    from app.llm.client import GeminiBackend
+
+    def handler(request):
+        model = request.url.path.split("/models/")[1].split(":")[0]
+        if model == "busy":
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        if model == "gone":
+            return httpx.Response(404, json={"error": {"message": "retired"}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"ok": true}'}]}}]})
+
+    backend = GeminiBackend("k", ["busy", "gone", "good"], httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    assert await backend.complete("s", [("user", "p")]) == '{"ok": true}'
+    assert backend.model == "good" and backend.models[0] == "good"
