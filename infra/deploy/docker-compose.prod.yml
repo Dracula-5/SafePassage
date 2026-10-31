@@ -2,71 +2,141 @@
 # and infra/osm/*.sh. Run from the repo root:
 #   cp infra/deploy/.env.example infra/deploy/.env   # then fill it in
 #   docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
-# Put HTTPS in front of port 8000 (Caddy, a tunnel or the host's proxy) before exposing it.
+#
+# Only Caddy is reachable from outside, on 80 and 443. The API refuses to start with unsafe settings
+# (core/security.py). The database, Redis and Valhalla sit on a network with no way out or in. The
+# services connect as a role that is not a superuser; only `migrate` and `backup` hold the admin login.
 name: reliefroute-prod
 
-x-backend: &backend
-  build: { context: ../.., dockerfile: infra/deploy/backend.Dockerfile }
+x-hardening: &hardening
   restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  logging: { driver: json-file, options: { max-size: 20m, max-file: "5" } }
+
+x-backend: &backend
+  <<: *hardening
+  image: reliefroute-backend
+  build: { context: ../.., dockerfile: infra/deploy/backend.Dockerfile }
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: [/tmp]
+  pids_limit: 512
   env_file: .env
-  environment:
-    DATABASE_URL: postgresql://reliefroute:${POSTGRES_PASSWORD}@db:5432/reliefroute
-    REDIS_URL: redis://redis:6379/0
+  environment: &backend-env
+    APP_ENV: production
+    DATABASE_URL: postgresql://reliefroute_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/reliefroute
+    REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0
     VALHALLA_URL: http://valhalla:8002
     FACILITIES_EXTRACT_PATH: /data/osm/facilities.geojsonseq
     PLACES_EXTRACT_PATH: /data/osm/places.geojsonseq
     ADMIN_EXTRACT_PATH: /data/osm/admin.geojsonseq
     DOCUMENTS_DIR: /data/documents
-  volumes: ["${DATA_DIR}/osm:/data/osm:ro", "documents:/data/documents"]
-  depends_on:
-    db: { condition: service_healthy }
-    redis: { condition: service_healthy }
+  volumes: ["${DATA_DIR:?set DATA_DIR}/osm:/data/osm:ro", "documents:/data/documents"]
+  depends_on: { migrate: { condition: service_completed_successfully } }
 
 services:
+  caddy:
+    <<: *hardening
+    image: caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment: { DOMAIN: "${DOMAIN:?set DOMAIN}" }
+    ports: ["80:80", "443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"]
+    networks: { edge: { ipv4_address: 172.30.0.2 } }
+    depends_on: { api: { condition: service_healthy } }
+
   db:
-    image: postgis/postgis:16-3.4
-    restart: unless-stopped
+    <<: *hardening
+    image: postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
     environment:
       POSTGRES_USER: reliefroute
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: reliefroute
     volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [private]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U reliefroute"], interval: 5s, retries: 30 }
 
   redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    <<: *hardening
+    image: redis@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    # noeviction: streams hold undelivered events, so a full Redis must refuse writes rather than drop them.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
+    environment: { REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}" }
     volumes: [redisdata:/data]
-    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 30 }
+    networks: [private]
+    healthcheck: { test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"], interval: 5s, retries: 30 }
 
   valhalla:
-    image: ghcr.io/valhalla/valhalla-scripted:latest
-    restart: unless-stopped
+    <<: *hardening
+    image: ghcr.io/valhalla/valhalla-scripted@sha256:f0556eec9720432337024ef3f29a9cb1ccd752f47ac057c58d3122209989d8da
     environment: { serve_tiles: "True", build_admins: "True", build_time_zones: "True", use_tiles_ignore_pbf: "True", server_threads: "4" }
-    volumes: ["${DATA_DIR}/valhalla:/custom_files"]
+    volumes: ["${DATA_DIR:?set DATA_DIR}/valhalla:/custom_files"]
+    networks: [private]
 
   migrate:
     <<: *backend
     restart: "no"
     command: ["python", "-m", "app.core.migrate"]
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql://reliefroute:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/reliefroute
+      APP_DB_ROLE: reliefroute_app
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+    networks: [private]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   api:
     <<: *backend
-    ports: ["8000:8000"]
-    depends_on: { migrate: { condition: service_completed_successfully } }
+    environment:
+      <<: *backend-env
+      FORWARDED_ALLOW_IPS: 172.30.0.2   # uvicorn takes the client address only from Caddy, so it can't be spoofed
+    networks: [edge, private]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
+  # The workers need the internet (hazard feeds, Gemini, Twilio) but nothing needs to reach them.
   ingestion:
     <<: *backend
     command: ["python", "-m", "app.ingestion.worker"]
-    depends_on: { migrate: { condition: service_completed_successfully } }
+    networks: [outbound, private]
 
   brain:
     <<: *backend
     command: ["python", "-m", "app.graph.worker"]
-    depends_on: { migrate: { condition: service_completed_successfully } }
+    networks: [outbound, private]
+
+  backup:
+    <<: *hardening
+    image: postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: reliefroute
+      PGDATABASE: reliefroute
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes: ["./backup.sh:/backup.sh:ro", "backups:/backups"]
+    networks: [private]
+    depends_on: { db: { condition: service_healthy } }
+
+networks:
+  edge:
+    # ip_range keeps automatic addresses away from Caddy's fixed one, or whichever starts first takes it.
+    ipam: { config: [{ subnet: 172.30.0.0/24, ip_range: 172.30.0.128/25 }] }
+  outbound: {}
+  private:
+    internal: true
 
 volumes:
   pgdata:
   redisdata:
   documents:
+  backups:
+  caddy_data:
+  caddy_config:

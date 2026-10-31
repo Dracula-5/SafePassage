@@ -1,4 +1,6 @@
 # Local stack. Owner: Instance B. See infra/README.md.
+# Every port is bound to 127.0.0.1: the development password and a Redis with no password are only
+# acceptable because nothing else on the network, such as shared Wi-Fi, can reach them.
 name: reliefroute
 services:
   db:
@@ -8,7 +10,7 @@ services:
       POSTGRES_USER: reliefroute
       POSTGRES_PASSWORD: reliefroute
       POSTGRES_DB: reliefroute
-    ports: ["${DB_HOST_PORT:-55432}:5432"]   # Windows can reserve 55432; set DB_HOST_PORT in a root .env
+    ports: ["127.0.0.1:${DB_HOST_PORT:-55432}:5432"]   # Windows can reserve 55432; set DB_HOST_PORT in a root .env
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U reliefroute"]
@@ -18,7 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
-    ports: ["6380:6379"]
+    ports: ["127.0.0.1:6380:6379"]
     volumes: [redisdata:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -26,7 +28,7 @@ services:
       retries: 30
 
   valhalla:
-    image: ghcr.io/valhalla/valhalla-scripted:latest
+    image: ghcr.io/valhalla/valhalla-scripted@sha256:f0556eec9720432337024ef3f29a9cb1ccd752f47ac057c58d3122209989d8da
     profiles: ["routing"]
     environment:
       serve_tiles: "True"
@@ -34,7 +36,7 @@ services:
       build_time_zones: "True"
       use_tiles_ignore_pbf: "True"
       server_threads: "4"
-    ports: ["8002:8002"]
+    ports: ["127.0.0.1:8002:8002"]
     volumes: ["${DATA_DIR:-~/reliefroute-data}/valhalla:/custom_files"]
 
 volumes:

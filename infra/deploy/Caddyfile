@@ -1,0 +1,9 @@
+# HTTPS for the API. Caddy gets and renews the certificate for DOMAIN by itself, and it replaces any
+# X-Forwarded-For a client sends, so the rate limiter sees real addresses. It streams /api/stream
+# unbuffered without being told. Keep this free of `encode`: compression would hold back the stream.
+{$DOMAIN} {
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy api:8000
+}
