@@ -1,5 +1,6 @@
 """Pure logic of the wave limit, stale-plan checks and replanning. No services."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -268,30 +269,32 @@ async def test_alternate_hub_skips_points_already_tried_and_survives_a_router_ou
     assert await _alternate_hub(deps, {"hazard_ids": []}, _demand([]), [Vehicle], allocation, []) is None
 
 
-async def test_langfuse_receives_a_trace_and_generation():
+async def test_llm_calls_are_traced_to_langfuse_as_opentelemetry_generations():
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
-        seen["url"], seen["auth"], seen["body"] = str(request.url), request.headers["authorization"], json.loads(request.content)
-        return httpx.Response(207, json={"successes": [], "errors": []})
+        seen.update(url=str(request.url), auth=request.headers["authorization"], body=json.loads(request.content))
+        return httpx.Response(200, json={})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         tracer = LangfuseTracer("pk", "sk", "https://lf.example/", http)
         await tracer.record(name="Triage", model="gemini-x", system="sys", prompt="p", output="o", latency_ms=120,
                             attempts=2, error=None)  # fmt: skip
-    assert seen["url"] == "https://lf.example/api/public/ingestion" and seen["auth"].startswith("Basic ")
-    trace, generation = seen["body"]["batch"]
-    assert trace["type"] == "trace-create" and generation["type"] == "generation-create"
-    assert generation["body"]["traceId"] == trace["body"]["id"] and generation["body"]["model"] == "gemini-x"
+    assert seen["url"] == "https://lf.example/api/public/otel/v1/traces" and seen["auth"].startswith("Basic ")
+    span = seen["body"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    attributes = {a["key"]: a["value"]["stringValue"] for a in span["attributes"]}
+    assert span["name"] == "Triage" and len(span["traceId"]) == 32 and len(span["spanId"]) == 16
+    assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 120_000_000
+    assert attributes["langfuse.observation.type"] == "generation" and attributes["gen_ai.request.model"] == "gemini-x"
+    assert "sys" in attributes["langfuse.observation.input"] and attributes["langfuse.observation.output"] == "o"
 
 
-async def test_langfuse_refusing_items_inside_a_207_is_noticed(capsys):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(207, json={"successes": [], "errors": [{"id": "1", "status": 400, "message": "bad"}]})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, json={"partialSuccess": {"rejectedSpans": 1, "errorMessage": "bad"}}),
+    httpx.Response(401, json={"message": "bad key"}),
+])  # fmt: skip
+async def test_langfuse_refusing_a_trace_is_noticed(capsys, response):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response)) as http:
         await LangfuseTracer("pk", "sk", "https://lf.example", http).record(
             name="Triage", model="m", system="s", prompt="p", output=None, latency_ms=1, attempts=1, error=None)
     assert "langfuse_rejected" in capsys.readouterr().out

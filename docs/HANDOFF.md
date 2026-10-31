@@ -44,7 +44,7 @@ The local database holds live data only: this session's drills, plans and test v
 | Real-phone GPS | A teammate **inside Andhra Pradesh**, through a tunnel. The road graph covers AP only, and vehicles over 200 km from the relief points are ignored |
 | Real water stock | A supplier check-in at `/supplier`. `infra/demo/seed_demo_water.py` was not run here; it stays labelled, and running it means disclosing it |
 | Deploy | A VM with 8 GB RAM and a domain name pointing at it. Then follow `docs/deploy.md`. No Vercel account is needed: the dashboard is now in the production stack |
-| Langfuse dashboards, SMS and WhatsApp | Langfuse and Twilio keys. The code is in place; messages are recorded as not sent until then |
+| SMS and WhatsApp | Twilio's key is valid, but it is a Trial account, which only reaches numbers verified with Twilio. No real message has gone out: drills send nothing by design |
 | Review contract requests 002, 003 and 004 |
 | Merge into `main` | The human owner. Ideally a PR from `integration/gate3` |
 

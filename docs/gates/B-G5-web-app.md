@@ -41,6 +41,7 @@ A plan took about a minute to reach approval, because the fallback chain worked 
 2. **A parked truck could look offline.** GPS can go quiet when nothing moves, so the phone now asks for a fresh reading every 5 seconds.
 3. **An empty instructions box.** The route reaches the phone about a minute before its translation. The screen now says so.
 4. **A sleeping phone stops sending GPS.** The driver screen now keeps the screen awake.
+5. **Langfuse refused every trace.** It no longer takes the old format, and said so inside a 207 response that looked like success. The tracer now sends OpenTelemetry and notices refusals. A real trace was written through the app's tracer and read back from Langfuse.
 
 ## Not verified
 
