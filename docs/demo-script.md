@@ -12,30 +12,30 @@ Do this 30 minutes ahead.
 - [ ] **Sign up beforehand.** Create a duty officer and a driver account at `http://localhost:3000/signup`, with the codes in `infra/deploy/local.env`. `sim_driver` reads `ENROLMENT_CODE` from the environment.
 - [ ] **At least two vehicles online inside Andhra Pradesh**, for the reassign beat. Use real phones through a tunnel if a teammate is in the state; otherwise `sim_driver` (its vehicles are named `TEST-SIM-GPS`, so say so).
 - [ ] A real water check-in at `/supplier` from a supplier or teammate. Otherwise water shows as an escalated shortfall, which is honest but less impressive.
-- [ ] Rehearse one full drill, then cancel it.
-- [ ] Open three windows: dashboard, driver app on a phone, and a terminal.
+- [ ] Rehearse one full drill, then end it from its popup on the map.
+- [ ] Open three windows: the dashboard, `/driver` on a phone, and a terminal.
 
 ## The script
 
 **0:00 Live picture.** "This is Andhra Pradesh right now. These alerts come from NDMA's SACHET feed, GDACS and rainfall forecasts. The dots on the left show how fresh each source is. If one goes down it turns red and says so: we never fill in a gap with a guess."
 
-**0:20 Trigger.** Click *Draw drill zone*, draw a flood across the Krishna near Vijayawada, set severity *severe*, *Publish drill*. "Judges can draw any disaster. It's labelled DRILL, but it goes through exactly the same pipeline as a real alert."
+**0:20 Trigger.** Click *Draw a what-if drill*, click corners across the Krishna near Vijayawada, name it, set severity *severe*, and press *Publish*. "Judges can draw any disaster. It's labelled DRILL, but it goes through exactly the same pipeline as a real alert."
 
-**0:35 The swarm reasons.** Select the new plan and read the timeline as it fills. Point out:
+**0:35 The swarm reasons.** Open the *Activity* tab and read the steps as they appear. With Gemini this takes about a minute. Point out:
 - **Sentinel:** Gemini's triage, and that it flags low census coverage by itself.
 - **Needs:** real census population, scaled by how much of the mandal is under water. Sphere humanitarian standards turn that into litres and kilos.
 - **Procurement:** real government ration stock from AePDS, split across mandals. What can't be found is escalated, not invented.
 - **Route Planner and Critic:** OR-Tools solves the routes; Valhalla and Shapely prove they clear the hazard. "The LLM reasons. Solvers compute. No model ever produces a coordinate or a stock number."
 
-**1:05 Human in the loop.** Show the brief, then the reasons this needs approval. Type a name and press *Approve dispatch*. "The plan re-checks the world after you approve, so a stale approval can't send a truck into a flood."
+**1:05 Human in the loop.** On the *Plans* tab, select the plan and show the brief and what needs a person. Press *Approve dispatch*. "The record shows who signed in, not a typed name. And the plan re-checks the world after you approve, so a stale approval can't send a truck into a flood."
 
-**1:20 Dispatch.** The route appears on the map. On the phone, show the stops and press *Read instructions aloud* for the Telugu voice. Show the PO PDF if there's time. "Every step is idempotent. Press approve twice, kill the worker: nothing is sent twice."
+**1:20 Dispatch.** The route appears on the map. On the phone, show the stops and press *Read aloud* for the Telugu voice. The Telugu text arrives about a minute after the stops; the screen says so meanwhile. Show the PO PDF if there's time. "Every step is idempotent. Press approve twice, kill the worker: nothing is sent twice."
 
 **1:40 Closed loop.** Draw a second drill across the road ahead of the truck, or have the driver leave the route. Without anyone pressing anything, the timeline shows the Route Monitor detecting it and the Replanner sending a new route, and the phone announces it. "Goods already on the truck stay on it. It didn't ask for approval because these goods were already approved."
 
 **2:10 Driver offline.** Stop one vehicle's GPS. About five minutes later it's reassigned, so show a prepared example if time is short. "Goods still at the supplier go to another truck. Goods on the lost truck can't be replanned, so a human gets its last known position."
 
-**2:30 Break it.** In the terminal, `docker compose stop valhalla`, then trigger a plan. It stops with "routing service unavailable, so no route can be verified as safe". "It refuses to guess. In a disaster, a confident wrong route is the worst outcome." Restart Valhalla: `docker compose start valhalla`.
+**2:30 Break it.** With a truck online, run `docker stop reliefroute-prod-valhalla-1` in the terminal, then draw a drill. It stops with "routing service unavailable, so no route can be verified as safe". "It refuses to guess. In a disaster, a confident wrong route is the worst outcome." Then run `docker start reliefroute-prod-valhalla-1`.
 
 **2:50 Close.** "Live data, real stock, verified routes, a human in control, and it repairs itself."
 
@@ -46,13 +46,13 @@ Do this 30 minutes ahead.
 | No active real alerts | Normal. Use the drill; it runs the same pipeline |
 | SACHET returning 403 | It rate-limits. Alerts still appear, placed by area name with a *fallback* badge. Point at the badge: that's the design |
 | A source goes red | Say so. It's the "data stale" edge case, working |
-| Gemini overloaded | The fallback chain tries other models. If all fail, the plan continues with text labelled RULE-BASED and a required human review. Say so |
+| Gemini overloaded | Each call gives up after 45 seconds and tries the next model. If all fail, the plan continues with text labelled RULE-BASED and a required human review. Say so |
 | No Telugu voice on the phone | The phone has no Telugu speech pack. Show the Telugu text instead |
 | Plan stops at "no online vehicle" | GPS fixes are older than 2 minutes. Reopen the driver app or restart `sim_driver` |
 | Plan fails with "no census population" | The drill missed every settlement with a census tag. Draw it over a town |
 | Plan fails with "no safe relief point" | The drill is too large or too far from schools and shelters. Draw a smaller one |
 | Planning is slow | Valhalla or Gemini is slow. Talk through the timeline: it's progressing live |
-| Backend won't respond | Dashboard says "Backend unreachable". Run `.\infra\dev\stack.ps1 up`, which restarts everything, then reload |
+| Backend won't respond | The dashboard says "Cannot reach the server". Run `.\infra\dev\stack.ps1 prod`, which restarts everything, then reload |
 | Venue Wi-Fi fails | Phone tether. The stack runs locally; only live sources and Gemini need internet, and stale data is flagged rather than breaking |
 
 ## Questions judges may ask

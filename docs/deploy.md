@@ -9,7 +9,7 @@ Budget about an hour the first time, most of it building the map data. Copying t
 - A VM with **8 GB of RAM**, 40 GB of disk and Ubuntu 24.04, or similar.
 - A **domain name** you can point at it. Phones only give GPS over HTTPS, so an IP address will not do.
 - A **Gemini API key**. Without one the system still runs, on labelled rule-based steps, but drivers get English instructions.
-- Optional: Twilio keys for SMS and WhatsApp, Langfuse keys for tracing, a FIRMS key for fire data.
+- Optional: Twilio keys for SMS and WhatsApp, Langfuse keys for tracing, a FIRMS key for fire data, and an email provider's SMTP details.
 
 ## Steps
 
@@ -76,6 +76,20 @@ Sign up first at `/signup` as a duty officer, using `OPERATOR_TOKEN` as the code
 **6. Keep it safe**
 
 Copy the `backups` volume off the VM on a schedule. [security.md](security.md) covers what to do if a phone is lost, a token leaks or the database must be restored.
+
+## Turning on email
+
+Any provider's SMTP works: Resend, SendGrid, Amazon SES, or a Gmail app password. Add these to `infra/deploy/.env`, then run `up -d`:
+
+```
+SMTP_HOST=smtp.your-provider.com
+SMTP_PORT=587
+SMTP_USER=...
+SMTP_PASSWORD=...
+MAIL_FROM=ReliefRoute <relief@your-domain>
+```
+
+New accounts then get a link to confirm their address, and *Forgot your password?* emails a reset link. Until then, a duty officer makes reset links in the Team tab. Most providers ask you to verify the sending domain first.
 
 ## Updating
 

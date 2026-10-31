@@ -6,7 +6,7 @@ Built for a Gen-AI buildathon (Theme 2: Climate, Resource Infrastructure & Globa
 
 **LLMs reason, solvers compute.** Gemini triages alerts, briefs the human and translates driver instructions. OR-Tools plans the routes and Shapely verifies them. The LLM never supplies a coordinate, distance or stock figure.
 
-![Dashboard: a planned route bending around a flood drill at Tenali, with the agent timeline and approval panel](docs/images/dashboard.png)
+![The operations dashboard: live numbers, a dispatched route around a flood drill at Vijayawada, and the plan's brief](docs/images/dashboard.png)
 
 ## How it works
 

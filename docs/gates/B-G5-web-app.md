@@ -43,9 +43,33 @@ A plan took about a minute to reach approval, because the fallback chain worked 
 4. **A sleeping phone stops sending GPS.** The driver screen now keeps the screen awake.
 5. **Langfuse refused every trace.** It no longer takes the old format, and said so inside a 207 response that looked like success. The tracer now sends OpenTelemetry and notices refusals. A real trace was written through the app's tracer and read back from Langfuse.
 
+## Finishing the remaining work
+
+All 473 tests pass, on real PostGIS, Redis and Valhalla, with SACHET's live polygons included. The last full run was 471 of 473; both failures were mistakes in new tests, fixed and re-run with their files.
+
+**A replan with live Gemini, for the first time.** A truck left its route for Narasaraopet, on land and 70 km from the route. The replan finished in 48 seconds with no human, and the new route reached the driver with Telugu instructions.
+
+```
+17:52:39 replanner  off route: 5 order(s) to re-route, 0 line(s) stranded on the vehicle
+17:52:45 critic     Attempt 1: PASS (1 hazards checked, clearance >= 100 m, capacity and horizon OK)
+17:52:51 supervisor LLM plan brief (gemini-3-flash-preview)
+17:52:51 supervisor Auto-approved: re-route of goods already approved
+17:53:01 dispatcher Translated instructions for TEST-SIM-GPS-LLM-A into Telugu (numbers verified)
+```
+
+**Faster planning.** A retired Gemini model is dropped for good, one that failed rests for 2 minutes, and a call gives up after 45 seconds. A plan then carries on with the labelled rule-based step.
+
+**Email.** Address confirmation and forgot-password work over standard SMTP, and stay off until a provider is set. The whole journey passed in real Chrome against a real SMTP server (Mailpit), on the production images.
+
+**Browser tests in the repo.** `frontend/tests/e2e` covers a stranger being refused, sign-in, the 5-second refresh, email, and a drill reaching the phone. CI runs all but the drill, which needs the road map.
+
+**The demo's outage moment was false.** With the road service stopped, a plan said "no supplier has reachable stock". It now stops with "routing service unavailable, so no route can be verified as safe".
+
+**A worker could shut itself down by mistake.** After a dropped connection, the old session can hold its lock for a moment, and the worker took that for a rival. It now checks several times first. Its test also took reconnecting to mean it had the lock, and now waits for the lock itself. The whole file then passed 5 runs in a row. The earlier intermittent failure was not captured, so that cause is likely rather than proven.
+
 ## Not verified
 
-- **Sending email.** No mail provider is set up, so addresses are not proven. See [security.md](../security.md).
+- **Email through a real provider.** It works against a real SMTP server, but no provider is set up, so real delivery and spam handling are untested.
 - **A real phone.** The driver screen ran in Chrome with a phone-sized window and an emulated location.
 - **Telugu voice.** The text is verified; speech depends on the phone.
 - **Twilio sending.** The key is valid, but it is a Trial account, which can only message numbers verified with Twilio. Drills send nothing by design, so no real message has gone out.

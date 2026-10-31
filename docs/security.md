@@ -100,7 +100,7 @@ The restore replaces what is there. `migrate` puts the service role's access bac
 
 ## What is not covered
 
-- **Email addresses are not proven.** No mail provider is set up, so an address is only what the person typed, and a forgotten password is reset by a one-time link that a duty officer creates in the Team tab and passes on. Connect a provider before relying on email as identity. A signed-in approval does record the account that made it.
+- **Email stays off until a provider is set.** Until then an address is only what the person typed, and a forgotten password is reset by a one-time link that a duty officer makes in the Team tab. With a provider, people confirm their address and reset their own password. Confirming is recorded, not required: the codes are what control access. Forgot-password answers the same whether or not an account exists.
 - **The supplier portal is open to anyone.** That is deliberate, so a real supplier can check in during a disaster. Limits and the unverified flag contain it, but fake entries can still appear for a human to reject.
 - **GPS can be faked by a registered phone.** The token proves which phone is reporting, not where it is.
 - **WhatsApp replays.** Twilio's signature has no timestamp, so a captured message could be resent. It only repeats the same stock figures.

@@ -20,6 +20,7 @@ One worker carried both roles through Gates 3 and 4, on one integration branch w
 - **002** (`contracts/requests/A-plan-and-admin-views.md`): two read-only views, added as owner migrations.
 - **003** (`contracts/requests/A-security-hardening.md`): the access rules, new endpoints and limits. `openapi.yaml` does not describe these until it is applied.
 - **004** (`contracts/requests/B-accounts-and-one-web-app.md`): email accounts and the single web app.
+- **005** (`contracts/requests/B-email-links.md`): email confirmation and forgot-password.
 
 ## 2. Gate status
 
@@ -31,7 +32,7 @@ One worker carried both roles through Gates 3 and 4, on one integration branch w
 | 3 Closed loop and edge cases | 🟡 Built and proven live with labelled simulated vehicles |
 | 4 Polish, docs, deploy | 🟡 Docs done. Security reviewed and hardened. Production stack rehearsed end to end on this machine. Not deployed |
 
-Tests at the last run: **457 passed, 3 skipped** (SACHET rate-limiting this IP), on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md`, `docs/gates/A-G4-security.md` and `docs/gates/B-G5-web-app.md`.
+Tests at the last run: **473 tests passing**, with SACHET's live polygons included, on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md`, `docs/gates/A-G4-security.md` and `docs/gates/B-G5-web-app.md`.
 
 The local database holds live data only: this session's drills, plans and test vehicles were cleared. Their PO PDFs, labelled DRILL, remain in `~/reliefroute-data/documents/`.
 
@@ -39,17 +40,16 @@ The local database holds live data only: this session's drills, plans and test v
 
 | Item | Needs |
 |---|---|
-| Replans with a live LLM | Not run yet. Triage, plan briefs and Telugu translation have now run live on this machine, on 2026-10-31 |
 | Telugu voice on a phone | A real phone with a Telugu speech pack. The Telugu text itself is verified |
 | Real-phone GPS | A teammate **inside Andhra Pradesh**, through a tunnel. The road graph covers AP only, and vehicles over 200 km from the relief points are ignored |
 | Real water stock | A supplier check-in at `/supplier`. `infra/demo/seed_demo_water.py` was not run here; it stays labelled, and running it means disclosing it |
 | Deploy | A VM with 8 GB RAM and a domain name pointing at it. Then follow `docs/deploy.md`. No Vercel account is needed: the dashboard is now in the production stack |
 | SMS and WhatsApp | Twilio's key is valid, but it is a Trial account, which only reaches numbers verified with Twilio. No real message has gone out: drills send nothing by design |
-| Review contract requests 002, 003 and 004 |
+| Review contract requests 002 to 005 |
 | Merge into `main` | The human owner. Ideally a PR from `integration/gate3` |
 
 | FIRMS fire data | A valid MAP_KEY. NASA rejected the value in `infra/deploy/local.env`: real keys are 32 characters |
-| Email sending | A mail provider, to prove addresses and let people reset their own passwords |
+| Email delivery | An email provider's SMTP details in `.env` (see `docs/deploy.md`). The feature is built and works against a real SMTP server; only delivery through a real provider is untested |
 
 Once a real phone is verified, add the output to the gate reports and tag `phase2-*` and `phase3-*`.
 
@@ -91,6 +91,8 @@ Valhalla takes about 35 minutes to build on Windows, compared with 5 on macOS, b
 - **AePDS responses are about 50 MB** and can take minutes, one commodity at a time, every 6 h. 36 offices are still skipped and logged by name.
 - **Valhalla limits that matter:** 400 km per matrix pair, 2,500 pairs, 20 locations per route. `infra/valhalla/raise_limits.py` must run after a first build, or real hazard polygons are rejected.
 - **Next 16:** MapLibre's worker is copied to `frontend/public/maplibre` on `npm install`. Don't remove that step.
+- **Browser tests** are in `frontend/tests/e2e`. Run `npm run test:e2e` in `frontend`, with `OPERATOR_TOKEN` and `ENROLMENT_CODE` set. `E2E_ROUTING=1` adds the drill, and `E2E_MAILPIT_URL` adds email. CI runs them without the road map.
+- **Next keeps the page you left mounted but hidden,** so a test can find two of the same field. Use `locator("visible=true")`.
 - **Simulated vehicles** come from `backend/tests/tools/sim_driver.py` and are always named `TEST-SIM-GPS`. It never runs at runtime. Set `ENROLMENT_CODE` first. Above about 500 m/s it jumps past the 300 m arrival circle and never reaches a stop.
 - **Auto-plans need a settlement.** An alert gets a plan only once it is active and covers a place in `v_places`, and it waits while facilities are loading. Drills always get one.
 - **Drills are silent.** They record each message as not sent, even with Twilio configured, unless `DRILL_SEND_MESSAGES=true`.
