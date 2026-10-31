@@ -16,6 +16,8 @@ git history (all branches): no secrets found; only .env.example files tracked
 
 The new tests are in `tests/senses/test_security.py` and `tests/brain/test_security_brain.py`.
 
+**GitHub Actions passed all 5 jobs on Linux from a clean checkout** ([run 41183776200](https://github.com/Dracula-5/SafePassage/actions/runs/41183776200)): backend, frontend, driver app, deploy files and secrets. The first run failed the frontend type check, because Next's generated types are missing from a fresh checkout; the workflow now generates them. CI has no road graph, so tests that need Valhalla skip there and must be run locally.
+
 ## What the review found
 
 | Severity | Problem | Fix |
@@ -105,6 +107,5 @@ Every test passed before these appeared.
 - **A real domain and a real certificate.** Caddy used its local CA for `localhost`.
 - **The off-route replan in production configuration.** The simulator was too fast to reach a stop in that run. The offline replan writes the same tables and passed; off-route passed live in `A-G3.md` and in tests.
 - **Ingestion in production configuration.** It was not started, to avoid a second poller hitting SACHET. Its bulk load ran as the service role only in `test_the_service_role_can_run_the_system`.
-- **The GitHub Actions workflow** has not run yet: it first runs on this push.
 - **An independent security audit.** This was a review by the people who built it.
 - **Gemini and a real phone in Andhra Pradesh,** as before.
