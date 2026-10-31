@@ -1,7 +1,8 @@
 """Sign-up, sign-in and account management for the web app.
 
-No email is sent: that needs a mail provider, so addresses are not proven and a forgotten password is
-reset by a one-time link that an operator creates and passes on. See docs/security.md.
+With a mail provider set (mail.py), people confirm their address and reset their own password. Without
+one, addresses are not proven, and a forgotten password is reset by a one-time link that an operator
+creates and passes on. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.core.auth import refuse, require_operator, same_secret
@@ -22,10 +23,13 @@ from app.core.sessions import (
 )  # fmt: skip
 from app.core.validation import Email, Name
 
+from . import mail
+
 router = APIRouter(tags=["senses"])
 MAX_FAILED_SIGNINS = 10
 LOCKED_MINUTES = 15
 RESET_LINK_HOURS = 24
+EMAIL_CHECK_HOURS = 72
 Password = Annotated[str, Field(min_length=10, max_length=128)]
 
 
@@ -46,8 +50,26 @@ class SignIn(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+async def _one_time_token(conn, table: str, account_id: UUID, hours: int) -> str:
+    """Only the hash is stored, and a new link replaces any older one. `table` comes from this file."""
+    token = secrets.token_urlsafe(32)
+    await conn.execute(f"DELETE FROM {table} WHERE account_id = $1", account_id)
+    await conn.execute(f"""INSERT INTO {table} (token_hash, account_id, expires_at)
+                           VALUES ($1, $2, now() + make_interval(hours => $3))""", digest(token), account_id, hours)  # fmt: skip
+    return token
+
+
+def _link(path: str) -> str:
+    return get_common_settings().public_url.rstrip("/") + path
+
+
+@router.get("/api/auth/options")
+async def auth_options() -> dict:
+    return {"email": mail.enabled(get_common_settings())}
+
+
 @router.post("/api/auth/signup", status_code=201)
-async def sign_up(body: SignUp, request: Request, response: Response) -> dict:
+async def sign_up(body: SignUp, request: Request, response: Response, later: BackgroundTasks) -> dict:
     settings = get_common_settings()
     required = {"operator": settings.operator_token, "driver": settings.enrolment_code}.get(body.role)
     if required and not same_secret(required, body.code):
@@ -62,7 +84,46 @@ async def sign_up(body: SignUp, request: Request, response: Response) -> dict:
     except asyncpg.UniqueViolationError as exc:
         raise HTTPException(409, "an account with this email already exists: sign in instead") from exc
     await open_session(response, request, row["id"])
+    if mail.enabled(settings):
+        pool = await get_pool()
+        token = await _one_time_token(pool, "email_checks", row["id"], EMAIL_CHECK_HOURS)
+        later.add_task(mail.send, body.email, "Confirm your ReliefRoute email",
+                       f"Hello {body.name},\n\nConfirm this address for your ReliefRoute account:\n{_link(f'/verify?token={token}')}\n\n"
+                       f"The link works once, for {EMAIL_CHECK_HOURS} hours. If this was not you, ignore this message.")  # fmt: skip
     return account_out(row)
+
+
+class EmailCheck(BaseModel):
+    token: str = Field(min_length=20, max_length=100)
+
+
+@router.post("/api/auth/verify", status_code=204)
+async def confirm_email(body: EmailCheck) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        account_id = await conn.fetchval(
+            "DELETE FROM email_checks WHERE token_hash = $1 AND expires_at > now() RETURNING account_id", digest(body.token))
+        if account_id is None:
+            raise HTTPException(422, "this link has expired or was already used")
+        await conn.execute("UPDATE accounts SET email_verified_at = now() WHERE id = $1", account_id)
+
+
+class ForgotPassword(BaseModel):
+    email: Email
+
+
+@router.post("/api/auth/forgot", status_code=202)
+async def forgot_password(body: ForgotPassword, later: BackgroundTasks) -> dict:
+    """The same answer, just as fast, whether or not the account exists: the email goes out afterwards."""
+    if mail.enabled(get_common_settings()):
+        pool = await get_pool()
+        account_id = await pool.fetchval("SELECT id FROM accounts WHERE lower(email) = $1 AND disabled_at IS NULL", body.email)
+        if account_id:
+            token = await _one_time_token(pool, "password_resets", account_id, RESET_LINK_HOURS)
+            later.add_task(mail.send, body.email, "Reset your ReliefRoute password",
+                           f"Choose a new password here:\n{_link(f'/reset?token={token}')}\n\n"
+                           f"The link works once, for {RESET_LINK_HOURS} hours. If this was not you, ignore this message.")  # fmt: skip
+    return {"sent_if_registered": True}
 
 
 @router.post("/api/auth/signin")
@@ -122,12 +183,13 @@ async def reset_password(body: PasswordReset) -> None:
 @router.get("/api/accounts", dependencies=[Depends(require_operator)])
 async def list_accounts() -> list[dict]:
     rows = await (await get_pool()).fetch(
-        """SELECT a.id, a.email, a.name, a.role, a.last_signin_at, a.disabled_at, s.id AS supplier_id,
+        """SELECT a.id, a.email, a.name, a.role, a.last_signin_at, a.disabled_at, a.email_verified_at, s.id AS supplier_id,
                   s.name AS supplier_name, s.verified AS supplier_verified, v.label AS vehicle_label
            FROM accounts a LEFT JOIN suppliers s ON s.account_id = a.id LEFT JOIN vehicles v ON v.account_id = a.id
            ORDER BY a.role, lower(a.email)""")
     return [account_out(r) | {
         "last_signin_at": r["last_signin_at"], "disabled": r["disabled_at"] is not None, "supplier_id": r["supplier_id"],
+        "email_verified": r["email_verified_at"] is not None,
         "supplier_name": r["supplier_name"], "supplier_verified": r["supplier_verified"], "vehicle_label": r["vehicle_label"],
     } for r in rows]  # fmt: skip
 
@@ -154,13 +216,9 @@ async def set_account_access(account_id: UUID, body: AccountAccess, request: Req
 
 @router.post("/api/accounts/{account_id}/reset-link", dependencies=[Depends(require_operator)])
 async def create_reset_link(account_id: UUID) -> dict:
-    token = secrets.token_urlsafe(32)
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         if not await conn.fetchval("SELECT 1 FROM accounts WHERE id = $1", account_id):
             raise HTTPException(404, "account not found")
-        await conn.execute("DELETE FROM password_resets WHERE account_id = $1", account_id)
-        await conn.execute("""INSERT INTO password_resets (token_hash, account_id, expires_at)
-                              VALUES ($1, $2, now() + make_interval(hours => $3))""",
-                           digest(token), account_id, RESET_LINK_HOURS)  # fmt: skip
+        token = await _one_time_token(conn, "password_resets", account_id, RESET_LINK_HOURS)
     return {"path": f"/reset?token={token}", "expires_in_hours": RESET_LINK_HOURS}

@@ -224,6 +224,7 @@ def lock_db(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", ADMIN_URL)
     monkeypatch.setattr(db, "STANDBY_POLL_S", 0.02)
     monkeypatch.setattr(db, "LOCK_CHECK_S", 0.02)
+    monkeypatch.setattr(db, "RIVAL_CHECKS", 100)  # about 2 s at this poll, like the 15 s a real worker waits
     get_common_settings.cache_clear()
     yield f"test-{uuid4().hex[:8]}"
     get_common_settings.cache_clear()
@@ -249,11 +250,12 @@ async def test_a_worker_takes_its_lock_back_after_postgres_drops_it(lock_db):
     admin = await asyncpg.connect(ADMIN_URL)
     await admin.execute("SELECT pg_terminate_backend($1)", dropped.get_server_pid())
 
-    async def relocked():
-        while worker.conn is dropped:
+    async def relocked():  # reconnecting comes first, and proves nothing: wait for the lock itself
+        while worker.conn is dropped or worker.conn.is_closed() or not await admin.fetchval(
+                "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid = $1", worker.conn.get_server_pid()):
             await asyncio.sleep(0.01)
 
-    await asyncio.wait_for(relocked(), timeout=5)
+    await asyncio.wait_for(relocked(), timeout=10)
     other = Singleton(lock_db)
     assert await other._try() is False
     keeper.cancel()
@@ -261,7 +263,19 @@ async def test_a_worker_takes_its_lock_back_after_postgres_drops_it(lock_db):
     await admin.close()
 
 
-async def test_a_worker_stops_if_someone_else_took_over(lock_db):
+async def test_a_lock_that_is_still_being_released_is_not_mistaken_for_a_rival(lock_db, monkeypatch):
+    worker = Singleton(lock_db)
+    answers = iter([False, False, True])
+
+    async def lingering_then_free():
+        return next(answers)
+
+    monkeypatch.setattr(worker, "_try", lingering_then_free)
+    await asyncio.wait_for(worker._take_back(), timeout=5)
+
+
+async def test_a_worker_stops_if_someone_else_took_over(lock_db, monkeypatch):
+    monkeypatch.setattr(db, "RIVAL_CHECKS", 5)  # the rival really is there, so a few checks settle it
     worker, rival = Singleton(lock_db), Singleton(lock_db)
     await worker.acquire()
     admin = await asyncpg.connect(ADMIN_URL)

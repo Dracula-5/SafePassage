@@ -101,7 +101,7 @@ class Driver:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--api", default="http://localhost:8000")
+    parser.add_argument("--api", default="http://localhost:3000")
     parser.add_argument("--name", default="1")
     parser.add_argument("--lon", type=float, required=True)
     parser.add_argument("--lat", type=float, required=True)

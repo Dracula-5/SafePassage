@@ -284,7 +284,7 @@ async def test_llm_calls_are_traced_to_langfuse_as_opentelemetry_generations():
     span = seen["body"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     attributes = {a["key"]: a["value"]["stringValue"] for a in span["attributes"]}
     assert span["name"] == "Triage" and len(span["traceId"]) == 32 and len(span["spanId"]) == 16
-    assert int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) == 120_000_000
+    assert abs(int(span["endTimeUnixNano"]) - int(span["startTimeUnixNano"]) - 120_000_000) < 1_000  # float rounding
     assert attributes["langfuse.observation.type"] == "generation" and attributes["gen_ai.request.model"] == "gemini-x"
     assert "sys" in attributes["langfuse.observation.input"] and attributes["langfuse.observation.output"] == "o"
 

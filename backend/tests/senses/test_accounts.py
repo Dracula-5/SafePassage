@@ -33,6 +33,8 @@ async def app(live_env, monkeypatch):
     monkeypatch.setenv("OPERATOR_TOKEN", OPERATOR_CODE)
     monkeypatch.setenv("ENROLMENT_CODE", DRIVER_CODE)
     monkeypatch.setenv("VALHALLA_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("SMTP_HOST", "")
+    monkeypatch.setenv("MAIL_FROM", "")
     clear_settings()
     yield create_app(("app.api_senses.router", "app.api_brain.router"))
     clear_settings()
@@ -295,6 +297,115 @@ async def test_an_expired_reset_link_is_refused(app, live_env):
 async def test_only_an_operator_can_make_a_reset_link(http):
     account = await sign_up(http)
     assert (await http.post(f"/api/accounts/{account['id']}/reset-link")).status_code == 401
+
+
+# ---------------------------------------------------------------- email, over a real SMTP conversation
+@pytest.fixture
+async def inbox(app, monkeypatch):
+    """A small real SMTP server on a local port: the app's smtplib talks to it over a socket."""
+    received: list[str] = []
+
+    async def session(reader, writer):
+        writer.write(b"220 test ready\r\n")
+        in_data, lines = False, []
+        while line := await reader.readline():
+            text = line.decode().rstrip("\r\n")
+            if in_data:
+                if text == ".":
+                    in_data = False
+                    received.append("\n".join(lines))
+                    lines = []
+                    writer.write(b"250 queued\r\n")
+                else:
+                    lines.append(text)
+            elif text.upper().startswith("DATA"):
+                in_data = True
+                writer.write(b"354 go on\r\n")
+            elif text.upper().startswith("QUIT"):
+                writer.write(b"221 bye\r\n")
+                break
+            else:
+                writer.write(b"250 ok\r\n")
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(session, "127.0.0.1", 0)
+    monkeypatch.setenv("SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("SMTP_PORT", str(server.sockets[0].getsockname()[1]))
+    monkeypatch.setenv("MAIL_FROM", "ReliefRoute <relief@example.org>")
+    monkeypatch.setenv("PUBLIC_URL", "https://relief.example.org")
+    clear_settings()
+    yield received
+    server.close()
+
+
+def token_in(message: str) -> str:
+    unfolded = message.replace("=\n", "").replace("=3D", "=")
+    return unfolded.split("token=")[1].split()[0]
+
+
+async def test_a_new_address_is_confirmed_by_its_emailed_link(inbox, app):
+    async with browser(app) as client:
+        account = await sign_up(client, email="confirm@example.org")
+        assert len(inbox) == 1 and "To: confirm@example.org" in inbox[0]
+        assert "https://relief.example.org/verify?token=" in inbox[0].replace("=\n", "").replace("=3D", "=")
+        assert (await client.post("/api/auth/verify", json={"token": "x" * 30})).status_code == 422
+        token = token_in(inbox[0])
+        assert (await client.post("/api/auth/verify", json={"token": token})).status_code == 204
+        assert (await client.post("/api/auth/verify", json={"token": token})).status_code == 422  # works once
+    async with browser(app) as operator:
+        await sign_up(operator, "operator", OPERATOR_CODE)
+        row = next(p for p in (await operator.get("/api/accounts")).json() if p["id"] == account["id"])
+        assert row["email_verified"] is True
+
+
+async def test_forgot_password_mails_a_link_that_resets_it(inbox, app):
+    async with browser(app) as client:
+        account = await sign_up(client, email="forgot@example.org")
+        inbox.clear()
+        assert (await client.post("/api/auth/forgot", json={"email": "FORGOT@example.org"})).status_code == 202
+        assert len(inbox) == 1 and "Subject: Reset your ReliefRoute password" in inbox[0]
+        new_password = "a brand new passphrase"
+        assert (await client.post("/api/auth/reset", json={"token": token_in(inbox[0]), "password": new_password})).status_code == 204
+        assert (await client.post("/api/auth/signin", json={"email": account["email"], "password": new_password})).status_code == 200
+
+
+async def test_forgot_password_does_not_reveal_who_has_an_account(inbox, app):
+    async with browser(app) as client:
+        await sign_up(client, email="known@example.org")
+        inbox.clear()
+        known = await client.post("/api/auth/forgot", json={"email": "known@example.org"})
+        unknown = await client.post("/api/auth/forgot", json={"email": "nobody@example.org"})
+    assert known.status_code == unknown.status_code == 202 and known.json() == unknown.json()
+    assert len(inbox) == 1  # the stranger's address got nothing
+
+
+async def test_a_removed_person_cannot_mail_themselves_back_in(inbox, app):
+    async with browser(app) as person, browser(app) as operator:
+        account = await sign_up(person, email="removed@example.org")
+        await sign_up(operator, "operator", OPERATOR_CODE)
+        await operator.post(f"/api/accounts/{account['id']}/access", json={"disabled": True})
+        inbox.clear()
+        await person.post("/api/auth/forgot", json={"email": "removed@example.org"})
+        assert inbox == []
+
+
+async def test_a_mail_outage_does_not_stop_sign_up(app, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("SMTP_PORT", "1")  # nothing listens here
+    monkeypatch.setenv("MAIL_FROM", "relief@example.org")
+    clear_settings()
+    async with browser(app) as client:
+        await sign_up(client)
+        assert (await client.get("/api/auth/me")).status_code == 200
+
+
+async def test_without_a_mail_provider_nothing_is_sent_and_the_screens_can_say_so(http, live_env):
+    assert (await http.get("/api/auth/options")).json() == {"email": False}
+    await sign_up(http, email="quiet@example.org")
+    assert (await http.post("/api/auth/forgot", json={"email": "quiet@example.org"})).status_code == 202
+    assert await live_env.fetchval("SELECT count(*) FROM password_resets") == 0
+    assert await live_env.fetchval("SELECT count(*) FROM email_checks") == 0
 
 
 # ---------------------------------------------------------------- live numbers

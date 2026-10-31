@@ -20,6 +20,12 @@ class CommonSettings(BaseSettings):
     enrolment_code: str | None = Field(default=None, description="See core/auth.py. Required in production")
     rate_limit_enabled: bool = True
     max_body_bytes: int = 1_000_000
+    public_url: str = "http://localhost:3000"  # the start of every link in an email
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    mail_from: str | None = None
     # Default timeout for any outbound HTTP call; individual clients may tighten it.
     http_timeout_s: float = 10.0
 

@@ -142,6 +142,7 @@ LIMITS = {
     ("POST", "/api/auth/signup"): Limit(30, 3600),
     ("POST", "/api/auth/signin"): Limit(30, 60),
     ("POST", "/api/auth/reset"): Limit(20, 3600),
+    ("POST", "/api/auth/forgot"): Limit(10, 3600),  # each one can send an email to someone else's inbox
 }
 NOT_LIMITED = ("/health",)
 REDIS_WAIT_S = 0.25
