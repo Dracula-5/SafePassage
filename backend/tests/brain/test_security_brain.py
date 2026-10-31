@@ -7,13 +7,14 @@ Bus tests need TEST_REDIS_URL, singleton tests TEST_DATABASE_URL, graph tests al
 import asyncio
 import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import asyncpg
 import pytest
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pypdf import PdfReader
-from reliefroute_contracts.events import PlanRequested, VehicleDeviation, envelope_adapter
+from reliefroute_contracts.events import HazardUpdated, PlanRequested, VehicleDeviation, envelope_adapter
 
 from app.agents import reasoning
 from app.agents.schemas import OrderDraft, OrderLineDraft
@@ -23,6 +24,7 @@ from app.core.db import Singleton
 from app.core.migrate import apply_all, grant_app_role
 from app.dispatch.documents import purchase_order_pdf
 from app.dispatch.messaging import SendResult
+from app.graph import worker
 from app.graph.monitor import RouteMonitor
 
 from .test_integration_closed_loop import active_route, published, run_to_dispatch  # noqa: F401 (fixture)
@@ -52,6 +54,70 @@ def test_a_name_in_a_pdf_is_printed_never_obeyed(tmp_path, name):
 def test_prompts_mark_outside_text_as_data():
     for system in (reasoning.SENTINEL_SYSTEM, reasoning.BRIEF_SYSTEM):
         assert reasoning.DATA_NOT_INSTRUCTIONS in system
+
+
+class FakePool:
+    def __init__(self, facilities_loaded: bool = True, covers_a_settlement: bool = True):
+        self.facilities_loaded, self.covers_a_settlement = facilities_loaded, covers_a_settlement
+
+    async def fetchval(self, sql, *_):
+        return self.covers_a_settlement if sql == worker.COVERS_A_SETTLEMENT_SQL else self.facilities_loaded
+
+
+def severe_flood(is_drill: bool = False) -> dict:
+    return bus.build_envelope("hazard.updated", HazardUpdated(
+        hazard_id=uuid4(), change="created", source="sachet", hazard_type="flood", severity="severe", version=1,
+        bbox=(80, 16, 81, 17), area_km2=100.0, is_drill=is_drill))  # fmt: skip
+
+
+@pytest.fixture
+def requested(monkeypatch):
+    calls = []
+
+    async def request_plan(*_, **__):
+        calls.append(1)
+        return {"id": "p"}, True
+
+    monkeypatch.setattr(worker.plans, "request_plan", request_plan)
+    return calls
+
+
+def handler_on(pool: FakePool) -> worker.Handler:
+    return worker.Handler(SimpleNamespace(deps=SimpleNamespace(pool=pool)), ["severe"])
+
+
+async def test_an_alert_on_a_first_start_waits_for_the_map_data(requested):
+    handler = handler_on(FakePool(facilities_loaded=False))
+    with pytest.raises(bus.OUTAGE_ERRORS):  # so the bus keeps it, however long loading takes
+        await handler(severe_flood())
+    assert requested == []
+
+    handler.runner.deps.pool.facilities_loaded = True
+    await handler(severe_flood())
+    assert requested == [1]
+
+
+async def test_a_forecast_over_empty_sea_gets_no_plan(requested):
+    await handler_on(FakePool(covers_a_settlement=False))(severe_flood())
+    assert requested == []
+
+
+async def test_a_drill_always_gets_a_plan_wherever_it_is_drawn(requested):
+    await handler_on(FakePool(covers_a_settlement=False))(severe_flood(is_drill=True))
+    assert requested == [1]
+
+
+@pytest.mark.integration
+async def test_the_settlement_check_knows_land_from_sea(world):  # noqa: F811
+    pool = world["pool"]
+    assert await pool.fetchval(worker.COVERS_A_SETTLEMENT_SQL, world["hazard"]) is True  # three places inside it
+    at_sea = await pool.fetchval(
+        """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, headline, geom, fetched_at, expires_at)
+           VALUES ('open_meteo', 'sea', 'sea', 'heavy_rain', 'severe', 'x', ST_Multi(ST_MakeEnvelope(84, 13, 84.5, 13.5, 4326)),
+                   now(), now() + interval '1 day') RETURNING id""")
+    assert await pool.fetchval(worker.COVERS_A_SETTLEMENT_SQL, at_sea) is False
+    await pool.execute("UPDATE hazards SET status = 'expired' WHERE id = $1", world["hazard"])
+    assert await pool.fetchval(worker.COVERS_A_SETTLEMENT_SQL, world["hazard"]) is False  # ended: nothing to plan
 
 
 # ---------------------------------------------------------------- event bus
@@ -293,6 +359,28 @@ async def test_an_operator_can_choose_to_send_drill_messages(world, published, m
     world["deps"].settings.drill_send_messages = True
     await run_to_dispatch(world)
     assert sent and all("DRILL" in body for body in sent)
+
+
+@pytest.mark.integration
+async def test_one_bad_location_cannot_stop_planning_for_everyone(world, published):  # noqa: F811
+    """Real Valhalla refuses a whole matrix over one point out at sea. Here it is a phone with a bad
+    fix and a supplier registered on the public portal, both in the Bay of Bengal."""
+    pool = world["pool"]
+    await pool.execute(
+        """INSERT INTO vehicles (label, driver_language, capacity_kg, last_position, last_seen_at)
+           VALUES ('AP-AT-SEA', 'en', 6000, ST_SetSRID(ST_MakePoint(81.5, 16.0), 4326), now())""")
+    facility = await pool.fetchval(
+        """INSERT INTO facilities (source, source_ref, kind, name, geom, fetched_at)
+           VALUES ('portal', 'portal:sea', 'warehouse', 'Sea Depot', ST_SetSRID(ST_MakePoint(81.5, 16.0), 4326), now()) RETURNING id""")
+    supplier = await pool.fetchval("INSERT INTO suppliers (facility_id, name) VALUES ($1, 'Sea Depot') RETURNING id", facility)
+    await pool.execute("""INSERT INTO stock (supplier_id, item_code, quantity, unit_weight_kg, reported_at, reported_via)
+                          VALUES ($1, 'WATER_L', 90000, 1, now(), 'portal')""", supplier)
+
+    await run_to_dispatch(world)
+
+    assert [r["label"] for r in await pool.fetch(
+        "SELECT v.label FROM routes r JOIN vehicles v ON v.id = r.vehicle_id")] == ["AP-T1"]
+    assert await pool.fetchval("SELECT count(*) FROM orders WHERE supplier_id = $1", supplier) == 0
 
 
 @pytest.mark.integration

@@ -141,6 +141,8 @@ def solve(problem: VrpProblem) -> VrpSolution:
     unreachable = problem.horizon_s + 1  # an arc this long can never fit in the horizon
 
     def travel(i: int, j: int) -> int:
+        if i == j:  # staying put, even where no road connects: otherwise a stranded truck's empty route
+            return 0  # is impossible, and that makes the whole model infeasible for every other truck
         value = problem.durations_s[i][j]
         return unreachable if value is None else math.ceil(value)
 

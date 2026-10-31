@@ -25,6 +25,23 @@ def test_capacity_forces_split_across_vehicles():
     assert all(r.load_kg <= 1000 for r in sol.routes)
 
 
+def test_a_stranded_truck_does_not_stop_the_others():
+    """Node 0 is a truck no road connects, so its whole row and column are unknown, itself included."""
+    durations = matrix(3)
+    durations[0] = [None, None, None]
+    for row in durations:
+        row[0] = None
+    p = VrpProblem(
+        durations_s=durations,
+        vehicles=[VrpVehicle(vehicle_id="stranded", start_node=0, end_node=0, capacity_kg=1000),
+                  VrpVehicle(vehicle_id="fine", start_node=1, end_node=1, capacity_kg=1000)],
+        stops=[VrpStop(stop_id="a", node=2, demand_kg=100)], horizon_s=24 * 3600, time_limit_s=1,
+    )
+    sol = solve(p)
+    assert sol.unserved == []
+    assert [r.vehicle_id for r in sol.routes] == ["fine"]
+
+
 def test_time_window_orders_visits():
     # b must be visited before 1000 s, a only after 3000 s, although a is closer.
     p = VrpProblem(

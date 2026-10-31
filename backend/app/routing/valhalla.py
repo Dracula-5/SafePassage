@@ -146,6 +146,47 @@ class ValhallaClient:
         exclude: Sequence[Ring] = (),
         costing: Costing = "truck",
     ) -> MatrixResult:
+        """Travel times between locations. Valhalla refuses a whole matrix if one location has no road
+        connected to the rest, so one phone's bad GPS fix, or a supplier registered out at sea on the
+        public portal, would stop planning for everyone. Those locations come back as unreachable,
+        like any other pair with no path, and the solvers plan around them."""
+        try:
+            return await self._matrix(sources, targets, exclude, costing)
+        except (NoRouteError, LocationNotRoutableError):
+            usable = await self._largest_connected_group([*sources, *targets], exclude, costing)
+        kept_sources = [i for i, loc in enumerate(sources) if loc in usable]
+        kept_targets = [j for j, loc in enumerate(targets) if loc in usable]
+        log.warning("matrix_dropped_unconnected_locations", locations=[
+            (loc.lon, loc.lat) for loc in dict.fromkeys([*sources, *targets]) if loc not in usable])
+        durations: list[list[float | None]] = [[None] * len(targets) for _ in sources]
+        distances: list[list[float | None]] = [[None] * len(targets) for _ in sources]
+        if kept_sources and kept_targets:
+            inner = await self._matrix([sources[i] for i in kept_sources], [targets[j] for j in kept_targets], exclude, costing)
+            for row, i in enumerate(kept_sources):
+                for column, j in enumerate(kept_targets):
+                    durations[i][j] = inner.durations_s[row][column]
+                    distances[i][j] = inner.distances_m[row][column]
+        return MatrixResult(durations_s=durations, distances_m=distances)
+
+    async def _largest_connected_group(self, locations: Sequence[Location], exclude: Sequence[Ring], costing: Costing) -> set[Location]:
+        """Only runs after a refusal. "Unconnected" means unconnected to the others, so a point cannot be
+        judged alone: each joins the first group it connects to, and the biggest group is the real network."""
+        groups: list[list[Location]] = []
+        for location in dict.fromkeys(locations):
+            for group in groups:
+                try:
+                    await self._matrix([location], [group[0]], exclude, costing)
+                except (NoRouteError, LocationNotRoutableError):
+                    continue
+                group.append(location)
+                break
+            else:
+                groups.append([location])
+        return set(max(groups, key=len))
+
+    async def _matrix(
+        self, sources: Sequence[Location], targets: Sequence[Location], exclude: Sequence[Ring], costing: Costing
+    ) -> MatrixResult:
         body = {
             "sources": [{"lon": s.lon, "lat": s.lat} for s in sources],
             "targets": [{"lon": t.lon, "lat": t.lat} for t in targets],

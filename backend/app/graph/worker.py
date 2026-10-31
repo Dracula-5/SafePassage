@@ -2,7 +2,8 @@
 
   plan.requested  -> start the graph (once per plan: pending -> planning is claimed atomically)
   plan.approved   -> resume the graph paused at the approval gate
-  hazard.updated  -> auto-create a plan for new drills and for severe/extreme flood-type hazards
+  hazard.updated  -> auto-create a plan for new drills and for severe/extreme flood-type hazards that
+                     are active and cover a settlement
 
 Run from backend/:  python -m app.graph.worker
 """
@@ -38,6 +39,16 @@ GROUP_MONITOR = f"{GROUP_BRAIN}-monitor"  # separate group: plan runs must not h
 CRASHED_AFTER_S = 60       # matches the bus's re-claim delay
 REQUEUE_EVERY_S = 30
 AUTO_PLAN_TYPES = {"flood", "cyclone", "heavy_rain", "landslide", "tsunami", "earthquake"}
+# A forecast cell over the Bay of Bengal has nobody to serve. It stays on the map, and an update that
+# brings it ashore is checked again. Planning it now would also use up the hazard's one auto-plan.
+COVERS_A_SETTLEMENT_SQL = """SELECT EXISTS (SELECT 1 FROM v_active_hazards h JOIN v_places p ON ST_Intersects(p.geom, h.geom)
+                                            WHERE h.id = $1)"""
+
+
+class ReferenceDataLoading(ConnectionError):
+    """On a first start, alerts arrive before the map data. A plan made now would report "no safe
+    relief point" when the truth is that nothing has loaded yet, and it would never be retried. The bus
+    treats this like an outage, so the alert stays pending and is retried once a minute."""
 
 
 class Handler:
@@ -76,6 +87,11 @@ class Handler:
             await self._guard(str(payload.plan_id), row["thread_id"], self.runner.resume(row["thread_id"], decision))
         elif envelope.event_type == HAZARD_UPDATED and payload.change in ("created", "updated"):
             if payload.is_drill or (payload.severity in self.severities and payload.hazard_type in AUTO_PLAN_TYPES):
+                if not await pool.fetchval("SELECT EXISTS (SELECT 1 FROM v_facilities)"):
+                    raise ReferenceDataLoading("no facilities loaded yet")
+                if not payload.is_drill and not await pool.fetchval(COVERS_A_SETTLEMENT_SQL, payload.hazard_id):
+                    log.info("plan_skipped_no_settlement", hazard_id=str(payload.hazard_id))
+                    return
                 summary, created = await plans.request_plan(
                     pool, trigger_kind="drill" if payload.is_drill else "hazard", trigger_ref=str(payload.hazard_id),
                     hazard_ids=[str(payload.hazard_id)], requested_by="system",
