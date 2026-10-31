@@ -103,7 +103,9 @@ test("an address is confirmed, and a forgotten password reset, by email", async 
   await expect(page).toHaveURL(/\/signin/);
 
   await page.getByRole("link", { name: "Forgot your password?" }).click();
-  // Next keeps the page you left mounted but hidden, so the sign-in form's Email field is still in the DOM.
+  // Next keeps the page you left mounted but hidden, so the sign-in form's Email field stays in the DOM.
+  // Wait for the new page first: until then the old field is the visible one, and typing there is lost.
+  await expect(page.getByRole("button", { name: "Send reset link" })).toBeVisible();
   await page.getByLabel("Email").locator("visible=true").fill(address);
   await page.getByRole("button", { name: "Send reset link" }).click();
   await expect(page.getByText("a link is on its way")).toBeVisible();
