@@ -32,7 +32,7 @@ Every source is a poller with a timeout, retries with jitter, and a circuit brea
 
 ## Suppliers
 
-The portal at `/portal` lets a supplier register at an existing OSM facility or at their GPS position, then report stock with a token. WhatsApp check-in works through a Twilio webhook, off until `TWILIO_AUTH_TOKEN` is set, with signatures verified.
+The supplier screen at `/supplier` lets a supplier register at an existing OSM facility or at their GPS position, then report stock with a token. WhatsApp check-in works through a Twilio webhook, off until `TWILIO_AUTH_TOKEN` is set, with signatures verified.
 
 Stock numbers come only from a supplier or AePDS. New suppliers start unverified, and the approval gate says so.
 
@@ -55,14 +55,14 @@ Next.js and MapLibre. Live hazards, facilities and vehicles, source freshness, t
 
 When the stream drops, the header shows "reconnecting", a banner warns the screen may be out of date, and everything is reloaded on reconnect. If the backend is unreachable, the left panel says so.
 
-## Driver PWA
+## Driver screen
 
-Served from the same origin at `/driver/`, so it works through one tunnel or domain.
+`/driver` is part of the web app, built for a phone.
 
-- Fixes are written to a local queue first and uploaded every 15 s. A dead zone loses nothing, and the queue holds about a day of fixes. See `driver-pwa/queue.js`.
-- The app shell is cached, so it opens without signal.
-- The assignment refreshes every 20 s with stop progress. A replacement route shows a banner and is read aloud.
-- Voice uses the phone's Web Speech voices, in Telugu, Hindi or English.
+- Real GPS goes up every 5 seconds through a local queue, so a dead zone loses nothing. Without signal it saves one fix every 30 s, and the queue holds about 16 hours.
+- Fixes use the phone's device token, not the session, so an expired session never interrupts a trip.
+- It keeps the screen awake, because a browser cannot send GPS while the phone sleeps. Background GPS needs a native app.
+- A service worker lets it open without signal. Instructions can be read aloud with the phone's own speech engine.
 
 ## Input limits
 

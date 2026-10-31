@@ -19,6 +19,7 @@ One worker carried both roles through Gates 3 and 4, on one integration branch w
 
 - **002** (`contracts/requests/A-plan-and-admin-views.md`): two read-only views, added as owner migrations.
 - **003** (`contracts/requests/A-security-hardening.md`): the access rules, new endpoints and limits. `openapi.yaml` does not describe these until it is applied.
+- **004** (`contracts/requests/B-accounts-and-one-web-app.md`): email accounts and the single web app.
 
 ## 2. Gate status
 
@@ -38,16 +39,19 @@ The local database holds live data only: this session's drills, plans and test v
 
 | Item | Needs |
 |---|---|
-| Live Gemini run: triage, brief, **Telugu translation** | A key in `backend/.env`, then restart the brain worker. Replans have never run with a live LLM |
-| Telugu voice on a phone | The key, and a phone with a Telugu speech pack |
+| Replans with a live LLM | Not run yet. Triage, plan briefs and Telugu translation have now run live on this machine, on 2026-10-31 |
+| Telugu voice on a phone | A real phone with a Telugu speech pack. The Telugu text itself is verified |
 | Real-phone GPS | A teammate **inside Andhra Pradesh**, through a tunnel. The road graph covers AP only, and vehicles over 200 km from the relief points are ignored |
-| Real water stock | A supplier check-in at `/portal`. `infra/demo/seed_demo_water.py` was not run here; it stays labelled, and running it means disclosing it |
+| Real water stock | A supplier check-in at `/supplier`. `infra/demo/seed_demo_water.py` was not run here; it stays labelled, and running it means disclosing it |
 | Deploy | A VM with 8 GB RAM and a domain name pointing at it. Then follow `docs/deploy.md`. No Vercel account is needed: the dashboard is now in the production stack |
 | Langfuse dashboards, SMS and WhatsApp | Langfuse and Twilio keys. The code is in place; messages are recorded as not sent until then |
-| Review contract requests 002 and 003 | The human owner |
+| Review contract requests 002, 003 and 004 |
 | Merge into `main` | The human owner. Ideally a PR from `integration/gate3` |
 
-Once Gemini and a real phone are verified, add the output to the gate reports and tag `phase2-*` and `phase3-*`.
+| FIRMS fire data | A valid MAP_KEY. NASA rejected the value in `infra/deploy/local.env`: real keys are 32 characters |
+| Email sending | A mail provider, to prove addresses and let people reset their own passwords |
+
+Once a real phone is verified, add the output to the gate reports and tag `phase2-*` and `phase3-*`.
 
 ## 4. Running on this machine (Windows)
 

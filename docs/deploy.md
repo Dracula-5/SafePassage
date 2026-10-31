@@ -1,6 +1,6 @@
 # Deploying ReliefRoute
 
-For whoever puts ReliefRoute online. Everything runs on one VM behind one address: the dashboard at `/`, the driver app at `/driver/` and the supplier portal at `/portal`. There is no separate frontend to host.
+For whoever puts ReliefRoute online. Everything runs on one VM behind one address: one web app where duty officers, drivers and suppliers each sign in and land on their own screen. There is no separate frontend to host.
 
 Budget about an hour the first time, most of it building the map data. Copying that data from a machine that already has it saves most of the wait.
 
@@ -71,7 +71,7 @@ curl https://relief.example.org/health        # {"status":"ok",...}
 
 Then open the address. A new database fills itself from the live sources. On the test run, hazards appeared within a minute, facilities took about 5 minutes and stock about 7. Alerts that arrive before the facilities wait for them, so the plan list stays honest. Plans only start for alerts that cover a settlement: forecast cells over the sea stay on the map without one.
 
-Give the operator token to duty officers and the enrolment code to drivers. Both are in `infra/deploy/.env`.
+Sign up first at `/signup` as a duty officer, using `OPERATOR_TOKEN` as the code. Then give `ENROLMENT_CODE` to drivers. Both are in `infra/deploy/.env`. Suppliers need no code.
 
 **6. Keep it safe**
 
@@ -81,10 +81,11 @@ Copy the `backups` volume off the VM on a schedule. [security.md](security.md) c
 
 ```bash
 git pull
-docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
+DC="docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env"
+$DC up -d --build && $DC restart caddy
 ```
 
-Migrations run by themselves first. Changing `PUBLIC_URL` also needs `--build`, because the dashboard is built with the address.
+Migrations run by themselves first. Caddy needs the restart because it reads its config once, and `up` does not notice a changed Caddyfile.
 
 ## Trying it on one PC first
 
@@ -94,8 +95,8 @@ On Windows, this runs the same images at **http://localhost:3000**, with no doma
 .\infra\dev\stack.ps1 prod        # stop it with: .\infra\dev\stack.ps1 prod-down
 ```
 
-It keeps its own database and its own secrets in `infra\deploy\local.env`. A browser accepts GPS from `localhost` without HTTPS, so the driver app works there too.
+It keeps its own database and its own secrets and keys in `infra\deploy\local.env`. A browser accepts GPS from `localhost` without HTTPS, so the driver screen works there too.
 
-## Hosting the dashboard on Vercel instead
+## Hosting the web app on Vercel instead
 
-Not needed, but possible. Set the project's root directory to `frontend`, and set `NEXT_PUBLIC_API_BASE` to the API's address and `NEXT_PUBLIC_REGION_BBOX` to the region. Then add the dashboard's `https://` address to `CORS_ORIGINS`.
+Not needed, but possible. Set the project's root directory to `frontend`, and set `API_ORIGIN` to the API's address and `NEXT_PUBLIC_REGION_BBOX` to the region. Next then forwards API calls, so sign-in cookies keep working.

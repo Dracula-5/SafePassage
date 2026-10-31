@@ -6,12 +6,12 @@ Everything on screen is live. The one exception is the what-if drill, which is l
 
 Do this 30 minutes ahead.
 
-- [ ] Stack up (`.\infra\dev\stack.ps1 up`), `GEMINI_API_KEY` set, and `http://localhost:8000/health` says ok.
+- [ ] Stack up (`.\infra\dev\stack.ps1 prod`), `GEMINI_API_KEY` set in `infra/deploy/local.env`, and `http://localhost:3000/health` says ok.
 - [ ] `GET /api/brain/health` shows Valhalla and the LLM healthy.
 - [ ] Dashboard loaded, source dots green. AePDS has stock (`/api/sources/health`).
-- [ ] **Have the operator token and enrolment code to hand.** Both are in `backend/.env`. The dashboard asks for the token once per tab, and each driver types the code once. `sim_driver` reads `ENROLMENT_CODE` from the environment.
+- [ ] **Sign up beforehand.** Create a duty officer and a driver account at `http://localhost:3000/signup`, with the codes in `infra/deploy/local.env`. `sim_driver` reads `ENROLMENT_CODE` from the environment.
 - [ ] **At least two vehicles online inside Andhra Pradesh**, for the reassign beat. Use real phones through a tunnel if a teammate is in the state; otherwise `sim_driver` (its vehicles are named `TEST-SIM-GPS`, so say so).
-- [ ] A real water check-in at `/portal` from a supplier or teammate. Otherwise water shows as an escalated shortfall, which is honest and worth pointing out. Do not run `infra/demo/seed_demo_water.py`: it is not real stock.
+- [ ] A real water check-in at `/supplier` from a supplier or teammate. Otherwise water shows as an escalated shortfall, which is honest but less impressive.
 - [ ] Rehearse one full drill, then cancel it.
 - [ ] Open three windows: dashboard, driver app on a phone, and a terminal.
 

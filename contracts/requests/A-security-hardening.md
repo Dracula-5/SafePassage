@@ -19,14 +19,13 @@ a production start (`core/security.py`).
 |---|---|
 | `POST /api/vehicles` | `X-Enrolment-Code` |
 | `GET /api/vehicles`, `/api/plans`, `/api/plans/{id}`, `/api/orders`, `/api/brain/health` | `X-Operator-Token` |
-| `GET /api/stream` | `X-Operator-Token`, or `?ticket=` from `POST /api/stream/ticket` |
+| `GET /api/stream` | `X-Operator-Token`, or a signed-in operator (request 004) |
 | `GET /api/vehicles/{id}/assignment` | That vehicle's `X-Device-Token`, or `X-Operator-Token` |
 
 **New endpoints.**
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/stream/ticket` | Operator | Five-minute read-only ticket, because EventSource cannot send headers |
 | `POST /api/vehicles/{id}/revoke` | Operator | Ends a device token; planning skips the vehicle |
 | `POST /api/suppliers/{id}/verify` | Operator | `{"verified": bool}`. `false` also ends the supplier's token |
 

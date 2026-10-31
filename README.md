@@ -37,8 +37,7 @@ flowchart LR
   VH[Valhalla road graph]
   OR[OR-Tools VRP + Shapely]
   LLM[Gemini]
-  UI[Dashboard: Next.js + MapLibre]
-  PWA[Driver PWA: voice instructions]
+  UI[Web app: dashboard, driver and supplier screens]
 
   S1 & S2 & S3 & S4 & S5 --> I --> DB
   S6 --> P --> DB
@@ -77,7 +76,7 @@ See [docs/brain.md](docs/brain.md) and [docs/senses.md](docs/senses.md) for the 
 | [AePDS](https://aepos.ap.gov.in/) | Real PDS rice and dal stock per mandal | Live, every 6 h. Pickup points are approximate because shop locations are not published. About 36 offices are skipped because their names can't be matched with certainty |
 | OpenStreetMap ([Geofabrik](https://download.geofabrik.de/asia/india.html)) | Roads, facilities, admin boundaries, census population tags | Official extract. Overpass is tried first for facilities |
 | Supplier portal, WhatsApp | Stock reported by real suppliers | Portal live. WhatsApp needs Twilio credentials |
-| Driver PWA | Real phone GPS | Live |
+| Driver screen | Real phone GPS | Live |
 | NASA FIRMS | Fires | Code ready, off until `FIRMS_MAP_KEY` is set |
 | IMD direct, CWC/India-WRIS, Data.gov.in godowns | | **Not wired.** IMD's rainfall categories are applied to Open-Meteo instead |
 
@@ -141,9 +140,7 @@ On Linux and macOS, from `backend/`, each in its own terminal, plus `npm run dev
 
 | What | Where |
 |---|---|
-| Dashboard | http://localhost:3000 |
-| Driver app | http://localhost:8000/driver/ |
-| Supplier portal | http://localhost:8000/portal |
+| ReliefRoute, for everyone | http://localhost:3000 |
 | API docs | http://localhost:8000/docs |
 
 The AePDS stock download takes 5 to 10 minutes after the first start.
@@ -153,10 +150,10 @@ The AePDS stock download takes 5 to 10 minutes after the first start.
 A browser only gives GPS over HTTPS, and the road graph only covers Andhra Pradesh. A phone inside the state can use a temporary tunnel:
 
 ```bash
-cloudflared tunnel --protocol http2 --url http://localhost:8000
+cloudflared tunnel --protocol http2 --url http://localhost:3000
 ```
 
-Open `https://<tunnel>/driver/` and enter the enrolment code from `backend/.env`. `stack.ps1` creates that code and the operator token on first run. If you start the backend another way, set both yourself, because the API has no protection without them. Stop the tunnel afterwards.
+Open `https://<tunnel>/signup` and create a driver account with the enrolment code from `backend/.env`. `stack.ps1` creates that code and the operator code on first run. If you start the backend another way, set both yourself, because the API has no protection without them. Stop the tunnel afterwards.
 
 Without a phone in the region, `backend/tests/tools/sim_driver.py` is a labelled test tool that drives a vehicle through the public API. Its vehicles are always named `TEST-SIM-GPS`.
 
@@ -188,11 +185,11 @@ To try the same images on a Windows PC at http://localhost:3000, run `.\infra\de
 
 [docs/security.md](docs/security.md) covers what is protected, who can do what, how to deploy safely, what to do when a phone is lost or a token leaks, and what is not covered. In short:
 
-- The operator token protects drills, plans, approvals, and anything showing drivers or goods. The dashboard asks for it once per session.
-- A driver needs an enrolment code to register, because replans assign vehicles without a human.
+- Everyone signs up and signs in with an email address, and lands on the screen for their role.
+- Anyone can create a supplier account. A duty officer account needs the operator code, and a driver account needs the enrolment code, because replans assign vehicles without a human.
 - A phone can only read its own route, and an operator can revoke it.
 - Drills never message real people unless `DRILL_SEND_MESSAGES=true`.
-- `/portal`, hazards and facilities stay public. New suppliers start unverified, and any plan using one needs a human.
+- Hazards and facilities stay public. New suppliers start unverified, and any plan using one needs a human.
 
 ## Repository
 
@@ -205,8 +202,7 @@ backend/app/ingestion  Pollers for every live source
 backend/app/telemetry  Vehicle registration and GPS
 backend/app/suppliers  Supplier portal
 contracts/             Database schema, events and REST contract shared by both halves
-frontend/              Dashboard
-driver-pwa/            Driver app, served at /driver/
+frontend/              The web app: sign-in, /dashboard, /driver and /supplier
 infra/                 Compose files, map data scripts, deployment
 docs/                  Design notes, demo script, gate reports
 ```

@@ -9,8 +9,8 @@ The system moves real goods towards people in a disaster, so the question that m
 | Threat | What stops it |
 |---|---|
 | A stranger registers a phone as a truck and is given relief goods | Registering needs the enrolment code. Replans auto-approve vehicles, so this gate matters most |
-| Someone presses Approve, or fakes a drill | Operator token on every action that changes anything |
-| A public page shows drivers' names and where trucks are | Operator token on those reads; a device can only see its own route |
+| Someone presses Approve, or fakes a drill | Only a duty officer account or the operator token can. An account needs the operator code to be created |
+| A public page shows drivers' names and where trucks are | Those reads need a duty officer; a device can only see its own route |
 | A drill tells real suppliers to prepare goods | Drills send no SMS or WhatsApp at all unless `DRILL_SEND_MESSAGES=true` |
 | A fake supplier claims stock that does not exist | New suppliers are unverified, and any plan using one needs a human, who sees that |
 | A lost or stolen phone | `POST /api/vehicles/{id}/revoke` ends its token. Planning skips it, and its route is replanned as offline |
@@ -31,14 +31,14 @@ The system moves real goods towards people in a disaster, so the question that m
 
 | Credential | Header | Held by | Allows |
 |---|---|---|---|
-| Operator token | `X-Operator-Token` | Duty officers | Drills, plans, approvals, revocation, and operational reads |
-| Stream ticket | `?ticket=` | The dashboard, automatically | Reading the live stream for 5 minutes. It is safe in a URL, unlike the token |
-| Enrolment code | `X-Enrolment-Code` | Drivers, told by phone | Registering a vehicle |
+| Account | `rr_session` cookie | Everyone, after signing in | What that person's role allows, for 7 days or until they sign out |
+| Operator code | Sign-up, or `X-Operator-Token` | Duty officers | Creating a duty officer account, and the same access for scripts |
+| Enrolment code | Sign-up, or `X-Enrolment-Code` | Drivers, told by phone | Creating a driver account |
 | Device token | `X-Device-Token` | One phone | That vehicle's GPS upload and its own route |
 | Supplier token | `X-Supplier-Token` | One supplier | That supplier's stock reports |
 | Twilio signature | `X-Twilio-Signature` | Twilio | The WhatsApp webhook |
 
-Hazards, facilities, source health, `/portal` and `/driver/` are public on purpose. Device and supplier tokens have 256 bits of randomness and only their SHA-256 hashes are stored.
+Hazards, facilities and source health are public on purpose, and so is creating a supplier account. Passwords are hashed with scrypt, and session cookies are stored only as hashes and cannot be read by scripts. Ten wrong passwords lock an account for 15 minutes. Device and supplier tokens have 256 bits of randomness and only their SHA-256 hashes are stored.
 
 ## Deploying
 
@@ -56,6 +56,8 @@ Locally, `.\infra\dev\stack.ps1 up` creates the token and code in `backend\.env`
 
 **A phone is lost, or a vehicle nobody recognises appears**
 
+In the dashboard, open Fleet and press Remove. From a script:
+
 ```bash
 curl -X POST $PUBLIC_URL/api/vehicles/$VEHICLE_ID/revoke -H "X-Operator-Token: $TOKEN"
 ```
@@ -63,6 +65,8 @@ curl -X POST $PUBLIC_URL/api/vehicles/$VEHICLE_ID/revoke -H "X-Operator-Token: $
 Its token stops working at once and planning skips it. If it was driving, the route is replanned after about 5 minutes, when it counts as offline.
 
 **A supplier cannot be trusted**
+
+In the dashboard, open Team and press Withdraw verification. From a script:
 
 ```bash
 curl -X POST $PUBLIC_URL/api/suppliers/$SUPPLIER_ID/verify -H "X-Operator-Token: $TOKEN" \
@@ -73,7 +77,7 @@ The same call with `true` vouches for a supplier. Stock they already reported st
 
 **A token or code leaked**
 
-Change `OPERATOR_TOKEN` or `ENROLMENT_CODE` in `infra/deploy/.env`, then run `docker compose ... up -d api`. Stream tickets stop working at the same moment, because they are signed with the operator token. Duty officers are asked for the new token on their next action. Registered phones are not affected by a new enrolment code.
+Change `OPERATOR_TOKEN` or `ENROLMENT_CODE` in `infra/deploy/.env`, then run `docker compose ... up -d api`. Existing accounts keep working, because the codes are only used at sign-up. Check the Team tab for anyone who should not be there, and use Remove access: it ends their session at once.
 
 **A database password leaked**
 
@@ -96,7 +100,7 @@ The restore replaces what is there. `migrate` puts the service role's access bac
 
 ## What is not covered
 
-- **A single shared operator token.** `decided_by` is what the operator typed, so an approval record shows who was named, not who proved it. Separate accounts need a login system.
+- **Email addresses are not proven.** No mail provider is set up, so an address is only what the person typed, and a forgotten password is reset by a one-time link that a duty officer creates in the Team tab and passes on. Connect a provider before relying on email as identity. A signed-in approval does record the account that made it.
 - **The supplier portal is open to anyone.** That is deliberate, so a real supplier can check in during a disaster. Limits and the unverified flag contain it, but fake entries can still appear for a human to reject.
 - **GPS can be faked by a registered phone.** The token proves which phone is reporting, not where it is.
 - **WhatsApp replays.** Twilio's signature has no timestamp, so a captured message could be resent. It only repeats the same stock figures.
