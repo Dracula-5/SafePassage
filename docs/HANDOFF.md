@@ -30,7 +30,7 @@ One worker carried both roles through Gates 3 and 4, on one integration branch w
 | 3 Closed loop and edge cases | 🟡 Built and proven live with labelled simulated vehicles |
 | 4 Polish, docs, deploy | 🟡 Docs done. Security reviewed and hardened. Production stack rehearsed end to end on this machine. Not deployed |
 
-Tests at the last run: **397 passed, 3 skipped** (SACHET rate-limiting this IP)**, on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md` and `docs/gates/A-G4-security.md`.
+Tests at the last run: **397 passed, 3 skipped** (SACHET rate-limiting this IP), on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md` and `docs/gates/A-G4-security.md`.
 
 The local database holds live data only: this session's drills, plans and test vehicles were cleared. Their PO PDFs, labelled DRILL, remain in `~/reliefroute-data/documents/`.
 
