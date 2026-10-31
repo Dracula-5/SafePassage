@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
 from datetime import UTC, datetime
 
@@ -47,7 +48,7 @@ class Driver:
         self.position = (args.lon, args.lat)
         self.route_id, self.line, self.at, self.frac = None, [], 0, 0.0
         body = {"label": f"{LABEL_PREFIX}-{args.name}", "driver_language": args.language, "capacity_kg": args.capacity_kg}
-        registered = http.post("/api/vehicles", json=body)
+        registered = http.post("/api/vehicles", json=body, headers={"X-Enrolment-Code": os.environ.get("ENROLMENT_CODE", "")})
         registered.raise_for_status()
         self.vehicle_id = registered.json()["vehicle"]["id"]
         self.token = registered.json()["device_token"]
@@ -62,7 +63,7 @@ class Driver:
 
     def follow_assignment(self) -> int:
         """Returns completed stops, or -1 with no assignment."""
-        response = self.http.get(f"/api/vehicles/{self.vehicle_id}/assignment")
+        response = self.http.get(f"/api/vehicles/{self.vehicle_id}/assignment", headers={"X-Device-Token": self.token})
         if response.status_code == 404:
             return -1
         response.raise_for_status()

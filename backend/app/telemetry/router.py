@@ -1,4 +1,4 @@
-"""POST /api/vehicles (register, patch 001) and POST /api/telemetry (real phone GPS).
+"""POST /api/vehicles (register, patch 001), POST /api/telemetry (real phone GPS) and revocation.
 
 Telemetry is a batch so the PWA can flush its offline queue; (vehicle_id, recorded_at) is
 unique, so a resent batch is counted as duplicates and never double-emitted. Each newly
@@ -13,24 +13,27 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from reliefroute_contracts.events import LonLat, VehicleTelemetry
 from reliefroute_contracts.streams import VEHICLE_TELEMETRY
 
 from app.core import bus
+from app.core.auth import require_enrolment, require_operator
 from app.core.db import get_pool
+from app.core.validation import Name
 
 from .tokens import hash_token, new_token
 
 router = APIRouter(tags=["senses"])
 MAX_CLOCK_SKEW = timedelta(minutes=5)   # reject fixes stamped in the future beyond this
 MAX_FIX_AGE = timedelta(days=2)         # offline queues older than this are not replayed
+MAX_ACCURACY_M = 100_000                # also keeps Infinity, which plain JSON cannot carry, out of the table
 
 
 class VehicleRegistration(BaseModel):
-    label: str = Field(min_length=1, max_length=100)
-    driver_name: str | None = Field(default=None, max_length=100)
+    label: Name = Field(min_length=1, max_length=100)
+    driver_name: Name | None = Field(default=None, max_length=100)
     driver_phone: str | None = Field(default=None, max_length=20, pattern=r"^\+[1-9]\d{6,14}$")
     driver_language: str = Field(min_length=2, max_length=10, pattern=r"^[a-z]{2,3}(-[A-Za-z0-9]+)?$")
     capacity_kg: float = Field(gt=0, le=60_000)
@@ -51,7 +54,7 @@ def vehicle_out(r) -> dict:
     }  # fmt: skip
 
 
-@router.post("/api/vehicles", status_code=201)
+@router.post("/api/vehicles", status_code=201, dependencies=[Depends(require_enrolment)])
 async def register_vehicle(body: VehicleRegistration) -> dict:
     token, digest = new_token()
     pool = await get_pool()
@@ -68,13 +71,25 @@ async def register_vehicle(body: VehicleRegistration) -> dict:
     return {"vehicle": vehicle_out(row), "device_token": token}
 
 
+@router.post("/api/vehicles/{vehicle_id}/revoke", dependencies=[Depends(require_operator)])
+async def revoke_vehicle(vehicle_id: UUID) -> dict:
+    """A lost phone or a registration nobody recognises: its token stops working and planning skips
+    it. A route it was driving goes quiet, so the monitor treats it as offline and replans."""
+    revoked = await (await get_pool()).fetchval(
+        """UPDATE vehicles SET device_token_hash = NULL, status = 'maintenance', updated_at = now()
+           WHERE id = $1 RETURNING id""", vehicle_id)
+    if revoked is None:
+        raise HTTPException(404, "vehicle not found")
+    return {"id": str(vehicle_id), "status": "maintenance"}
+
+
 class TelemetryFix(BaseModel):
     lon: float = Field(ge=-180, le=180)
     lat: float = Field(ge=-90, le=90)
     recorded_at: datetime
     speed_mps: float | None = Field(default=None, ge=0, le=100)
     heading_deg: float | None = Field(default=None, ge=0, lt=360)
-    accuracy_m: float | None = Field(default=None, ge=0)
+    accuracy_m: float | None = Field(default=None, ge=0, le=MAX_ACCURACY_M)
 
     @field_validator("recorded_at")
     @classmethod

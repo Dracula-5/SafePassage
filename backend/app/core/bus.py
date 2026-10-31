@@ -2,8 +2,10 @@
 
 publish() validates the envelope against the contract before XADD, so a malformed event
 never reaches the other side. consume() acks only after the handler returns, re-claims
-entries left pending by crashed consumers, and parks unparseable entries in a dead-letter
-stream instead of retrying them forever.
+entries left pending by crashed consumers, and parks entries it can never process in a
+dead-letter stream instead of retrying them forever: unparseable ones at once, and ones whose
+handler keeps failing after MAX_DELIVERIES. An outage is not the event's fault, so failures
+that look like one are retried for as long as the outage lasts.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import asyncpg
 import redis.asyncio as redis
 from pydantic import BaseModel, ValidationError
 from redis.exceptions import ResponseError
@@ -28,6 +31,13 @@ _client: redis.Redis | None = None
 RECLAIM_IDLE_MS = 60_000
 BLOCK_MS = 5_000
 DEAD_LETTER_PREFIX = "deadletter."
+DEAD_LETTER_MAXLEN = 1_000
+MAX_DELIVERIES = 5
+RETRY_AFTER_REDIS_ERROR_S = 2
+OUTAGE_ERRORS = (OSError, TimeoutError, redis.RedisError, asyncpg.PostgresConnectionError, asyncpg.InterfaceError,
+                 asyncpg.CannotConnectNowError)  # fmt: skip
+HEARTBEAT_EVERY_S = 30
+HEARTBEAT_TTL_S = 90
 
 Handler = Callable[[EventEnvelope], Awaitable[None]]
 
@@ -89,23 +99,39 @@ async def ensure_group(stream: str, group: str) -> None:
             raise
 
 
-async def _handle(stream: str, group: str, entry_id: str, fields: dict[str, str], handler: Handler) -> None:
+async def _park(stream: str, group: str, entry_id: str, data: str, error: str) -> None:
     client = get_redis()
+    await client.xadd(DEAD_LETTER_PREFIX + stream, {"data": data, "error": error[:2000]},
+                      maxlen=DEAD_LETTER_MAXLEN, approximate=True)  # fmt: skip
+    await client.xack(stream, group, entry_id)
+
+
+async def _deliveries(stream: str, group: str, entry_id: str) -> int:
+    pending = await get_redis().xpending_range(stream, group, min=entry_id, max=entry_id, count=1)
+    return pending[0]["times_delivered"] if pending else 0
+
+
+async def _handle(stream: str, group: str, entry_id: str, fields: dict[str, str], handler: Handler) -> None:
+    data = fields.get("data", "")
     try:
-        envelope = parse_envelope(fields.get("data", ""))
+        envelope = parse_envelope(data)
     except ValidationError as exc:
-        # Poison message: park it, ack it, keep the consumer moving.
-        await client.xadd(DEAD_LETTER_PREFIX + stream, {"data": fields.get("data", ""), "error": str(exc)[:2000]})
-        await client.xack(stream, group, entry_id)
+        await _park(stream, group, entry_id, data, str(exc))
         log.error("event_invalid_deadlettered", stream=stream, entry_id=entry_id)
         return
     try:
         await handler(envelope)
-    except Exception:
-        # Not acked: it stays pending and is re-claimed after RECLAIM_IDLE_MS.
-        log.exception("event_handler_failed", stream=stream, entry_id=entry_id, event_id=str(envelope.event_id))
+    except OUTAGE_ERRORS:
+        # Not acked: it stays pending and is re-claimed after RECLAIM_IDLE_MS, however long this lasts.
+        log.exception("event_handler_outage", stream=stream, entry_id=entry_id, event_id=str(envelope.event_id))
         return
-    await client.xack(stream, group, entry_id)
+    except Exception as exc:
+        log.exception("event_handler_failed", stream=stream, entry_id=entry_id, event_id=str(envelope.event_id))
+        if await _deliveries(stream, group, entry_id) >= MAX_DELIVERIES:
+            await _park(stream, group, entry_id, data, f"{type(exc).__name__}: {exc}")
+            log.error("event_gave_up_deadlettered", stream=stream, entry_id=entry_id)
+        return
+    await get_redis().xack(stream, group, entry_id)
 
 
 async def consume(
@@ -126,6 +152,37 @@ async def consume(
             for stream, entries in response or []:
                 for entry_id, fields in entries:
                     await _handle(stream, group, entry_id, fields, handler)
+        except ResponseError as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            # Redis lost its data (restarted without its volume). The sweeps catch up on what was missed.
+            log.warning("consumer_group_lost_recreating", group=group)
+            for stream in streams:
+                await ensure_group(stream, group)
         except (ConnectionError, TimeoutError, redis.ConnectionError, redis.TimeoutError) as exc:
             log.warning("redis_unavailable_retrying", error=str(exc))
-            await asyncio.sleep(2)
+            await asyncio.sleep(RETRY_AFTER_REDIS_ERROR_S)
+
+
+async def dead_letter_count() -> int:
+    client = get_redis()
+    return sum([await client.xlen(key) async for key in client.scan_iter(match=DEAD_LETTER_PREFIX + "*")])
+
+
+def _heartbeat_key(worker: str) -> str:
+    return f"heartbeat:{worker}"
+
+
+async def heartbeat(worker: str) -> None:
+    """Runs for the life of a worker. A worker that stops beating shows as stale on the dashboard:
+    otherwise a dead brain looks exactly like a quiet day."""
+    while True:
+        try:
+            await get_redis().set(_heartbeat_key(worker), datetime.now(UTC).isoformat(), ex=HEARTBEAT_TTL_S)
+        except (redis.RedisError, OSError) as exc:
+            log.warning("heartbeat_not_sent", worker=worker, error=str(exc))
+        await asyncio.sleep(HEARTBEAT_EVERY_S)
+
+
+async def last_heartbeat(worker: str) -> str | None:
+    return await get_redis().get(_heartbeat_key(worker))

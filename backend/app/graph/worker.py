@@ -20,7 +20,7 @@ from reliefroute_contracts.streams import (
 )
 
 from app.core import bus
-from app.core.db import close_pool, get_pool
+from app.core.db import Singleton, close_pool, get_pool
 from app.core.logging import configure_logging, get_logger
 from app.core.settings_brain import get_brain_settings
 from app.dispatch.messaging import Messenger
@@ -108,6 +108,8 @@ async def requeue_loop(pool) -> None:
 async def main() -> None:
     settings = get_brain_settings()
     configure_logging(settings.log_level)
+    singleton = Singleton("brain")
+    await singleton.acquire()  # a second worker waits here as a hot standby
     pool = await get_pool()
     async with httpx.AsyncClient(follow_redirects=True) as http, \
             AsyncPostgresSaver.from_conn_string(settings.database_url) as saver:
@@ -126,8 +128,11 @@ async def main() -> None:
                 bus.consume([VEHICLE_TELEMETRY, HAZARD_UPDATED, VEHICLE_DEVIATION], GROUP_MONITOR, consumer, monitor.handle),
                 monitor.run_sweeps(),
                 requeue_loop(pool),
+                singleton.keep(),
+                bus.heartbeat("brain"),
             )  # fmt: skip
         finally:
+            await singleton.release()
             await close_pool()
             await bus.close_redis()
 

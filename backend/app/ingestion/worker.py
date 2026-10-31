@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import time
 
 import httpx
 
-from app.core.db import close_pool, get_pool
-from app.core.bus import close_redis
+from app.core.db import Singleton, close_pool, get_pool
+from app.core.bus import close_redis, heartbeat
 from app.core.logging import configure_logging, get_logger
 
 from .base import Source
@@ -29,6 +30,7 @@ from .store import expire_due_hazards, publish_hazard_events
 
 log = get_logger(__name__)
 EXPIRY_SWEEP_S = 60
+PRUNE_EVERY_S = 24 * 3600
 RETRY_AFTER_FAILURE_S = 120
 
 
@@ -75,12 +77,24 @@ async def _loop(source: Source, http: httpx.AsyncClient) -> None:
         await asyncio.sleep(next_delay_s(source, ok))
 
 
-async def _sweeper() -> None:
+async def prune_telemetry(days: int) -> int:
+    """One truck reports about 8,600 fixes a day. agent_events keeps what mattered, for good."""
+    pool = await get_pool()
+    deleted = await pool.execute("DELETE FROM telemetry WHERE recorded_at < now() - make_interval(days => $1)", days)
+    return int(deleted.split()[-1])
+
+
+async def _sweeper(retention_days: int) -> None:
+    next_prune = 0.0
     while True:
         try:
             expired = await sweep_expired()
             if expired:
                 log.info("hazards_expired", count=expired)
+            if time.monotonic() >= next_prune:
+                next_prune = time.monotonic() + PRUNE_EVERY_S
+                if pruned := await prune_telemetry(retention_days):
+                    log.info("telemetry_pruned", count=pruned)
         except Exception:
             log.exception("sweep_crashed")
         await asyncio.sleep(EXPIRY_SWEEP_S)
@@ -92,14 +106,18 @@ async def main(once: bool) -> None:
     headers = {"User-Agent": settings.http_user_agent}
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as http:
         sources = build_sources(settings)
+        singleton = Singleton("ingestion")
         try:
             if once:
                 for source in sources:
                     await poll_once(source, http, await get_pool())
                 await sweep_expired()
                 return
-            await asyncio.gather(*(_loop(s, http) for s in sources), _sweeper())
+            await singleton.acquire()
+            await asyncio.gather(*(_loop(s, http) for s in sources), _sweeper(settings.telemetry_retention_days),
+                                 singleton.keep(), heartbeat("ingestion"))  # fmt: skip
         finally:
+            await singleton.release()
             await close_pool()
             await close_redis()
 

@@ -118,7 +118,7 @@ async def test_graph_pauses_for_approval_then_dispatches_idempotently(world):
     assert route["instructions"]["language"] == "te" and route["instructions"]["text"].startswith("[te] DRILL")
     assert route["min_hazard_clearance_m"] >= 100 and route["n"] > 10
     notes = await pool.fetch("SELECT status, error FROM notifications")
-    assert notes and all(n["status"] == "failed" and "Twilio credentials not configured" in n["error"] for n in notes)
+    assert notes and all(n["status"] == "failed" and "drills do not message" in n["error"] for n in notes)
     assert list(world["docs"].glob("*/PO-*.pdf"))
     assert await pool.fetchval("SELECT route_status::text FROM v_vehicle_assignment") == "planned"
 

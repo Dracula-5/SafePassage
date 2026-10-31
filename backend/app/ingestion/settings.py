@@ -39,6 +39,8 @@ class SensesSettings(CommonSettings):
     osm_extract_poll_s: int = 24 * 3600
     aepds_enabled: bool = True
     aepds_poll_s: int = 6 * 3600
+    twilio_auth_token: str | None = None      # signs the WhatsApp webhook; check-in is off when unset
+    telemetry_retention_days: int = Field(default=30, ge=1)
 
     @field_validator("region_bbox", mode="before")
     @classmethod

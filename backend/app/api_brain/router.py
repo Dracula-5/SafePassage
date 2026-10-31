@@ -15,16 +15,20 @@ from reliefroute_contracts.streams import PLAN_APPROVED
 from app.core import bus
 from app.core.auth import require_operator
 from app.core.db import get_pool
+from app.core.logging import scrub
 from app.core.settings_brain import get_brain_settings
+from app.core.validation import Name, Text
 from app.graph import plans
+from app.telemetry.access import require_vehicle_access
 
 router = APIRouter(tags=["brain"])
+MAX_ORDERS = 2_000
 
 
 class PlanTrigger(BaseModel):
     hazard_ids: list[UUID] = Field(default_factory=list, description="Empty: all active hazards")
-    reason: str | None = Field(default=None, max_length=500)
-    requested_by: str = Field(min_length=1, max_length=100)
+    reason: Text | None = Field(default=None, max_length=500)
+    requested_by: Name = Field(min_length=1, max_length=100)
 
 
 @router.post("/api/plans/trigger", status_code=202, dependencies=[Depends(require_operator)])
@@ -43,7 +47,7 @@ async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None,
     return summary
 
 
-@router.get("/api/plans")
+@router.get("/api/plans", dependencies=[Depends(require_operator)])
 async def list_plans(status: PlanStatus | None = None, limit: Annotated[int, Query(ge=1, le=200)] = 50) -> list[dict]:
     rows = await (await get_pool()).fetch(
         plans.PLAN_SUMMARY_SQL + " WHERE ($1::plan_status IS NULL OR status = $1) ORDER BY created_at DESC LIMIT $2",
@@ -58,8 +62,8 @@ async def _orders(pool, plan_id: UUID | None = None, status: str | None = None) 
                            FILTER (WHERE l.order_id IS NOT NULL), '[]') AS lines
            FROM orders o LEFT JOIN order_lines l ON l.order_id = o.id
            WHERE ($1::uuid IS NULL OR o.plan_id = $1) AND ($2::order_status IS NULL OR o.status = $2)
-           GROUP BY o.id ORDER BY o.created_at""",
-        plan_id, status,
+           GROUP BY o.id ORDER BY o.created_at DESC LIMIT $3""",
+        plan_id, status, MAX_ORDERS,
     )
     return [{
         "id": str(r["id"]), "plan_id": str(r["plan_id"]), "route_id": str(r["route_id"]) if r["route_id"] else None,
@@ -83,7 +87,7 @@ ROUTE_SQL = """SELECT id, vehicle_id, status::text, ST_AsGeoJSON(geom, 6) AS geo
                       min_hazard_clearance_m, stops, completed_stops, instructions FROM routes"""
 
 
-@router.get("/api/plans/{plan_id}")
+@router.get("/api/plans/{plan_id}", dependencies=[Depends(require_operator)])
 async def get_plan(plan_id: UUID) -> dict:
     pool = await get_pool()
     row = await pool.fetchrow(plans.PLAN_SUMMARY_SQL + " WHERE id = $1", plan_id)
@@ -113,8 +117,8 @@ async def get_plan(plan_id: UUID) -> dict:
 
 class ApprovalRequest(BaseModel):
     decision: Literal["approved", "rejected"]
-    decided_by: str = Field(min_length=1, max_length=100)
-    reason: str | None = Field(default=None, max_length=1000)
+    decided_by: Name = Field(min_length=1, max_length=100)
+    reason: Text | None = Field(default=None, max_length=1000)
 
 
 async def _close_expired(conn, plan_id: UUID, decided_by: str) -> None:
@@ -170,12 +174,12 @@ async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
             "reason": body.reason, "decided_at": row["decided_at"].isoformat()}
 
 
-@router.get("/api/orders")
+@router.get("/api/orders", dependencies=[Depends(require_operator)])
 async def list_orders(plan_id: UUID | None = None, status: OrderStatus | None = None) -> list[dict]:
     return await _orders(await get_pool(), plan_id, status.value if status else None)
 
 
-@router.get("/api/vehicles/{vehicle_id}/assignment")
+@router.get("/api/vehicles/{vehicle_id}/assignment", dependencies=[Depends(require_vehicle_access)])
 async def get_vehicle_assignment(vehicle_id: UUID) -> dict:
     pool = await get_pool()
     a = await pool.fetchrow("SELECT route_id, plan_id, is_drill FROM v_vehicle_assignment WHERE vehicle_id = $1", vehicle_id)
@@ -189,7 +193,7 @@ async def get_vehicle_assignment(vehicle_id: UUID) -> dict:
                              "audio_url": None}}  # fmt: skip
 
 
-@router.get("/api/brain/health")
+@router.get("/api/brain/health", dependencies=[Depends(require_operator)])
 async def brain_health() -> list[dict]:
     """A-side dependencies, in the SourceHealth shape. Reports configuration and a live Valhalla probe."""
     import httpx
@@ -203,7 +207,7 @@ async def brain_health() -> list[dict]:
             await ValhallaClient(settings.valhalla_url, http, retries=0, timeout_s=5).status()
             valhalla_ok, error = True, None
         except Exception as exc:  # report, never fail the health endpoint
-            valhalla_ok, error = False, f"{type(exc).__name__}: {exc}"[:200]
+            valhalla_ok, error = False, scrub(f"{type(exc).__name__}: {exc}")[:200]
     out.append({"source": "valhalla", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
                 "last_error": error, "ttl_seconds": 60, "fallback_source": None, "is_stale": not valhalla_ok})
     out.append({"source": "llm", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
@@ -214,4 +218,8 @@ async def brain_health() -> list[dict]:
     out.append({"source": "twilio", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
                 "last_error": None if twilio else "credentials not configured; messages are recorded, not sent",
                 "ttl_seconds": 60, "fallback_source": None, "is_stale": not twilio})
+    parked = await bus.dead_letter_count()
+    out.append({"source": "event_bus", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
+                "last_error": f"{parked} event(s) parked in dead-letter streams" if parked else None,
+                "ttl_seconds": 60, "fallback_source": None, "is_stale": bool(parked)})
     return out

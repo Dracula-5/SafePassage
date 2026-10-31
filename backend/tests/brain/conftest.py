@@ -13,6 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # Integration tests read TEST_DATABASE_URL / TEST_REDIS_URL and skip when they are unset.
 os.environ.setdefault("DATABASE_URL", "postgresql://unused@127.0.0.1:1/unused")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:1/0")
+# Decided here, not by whatever backend/.env holds on this machine. Tests that want these on set them.
+for name in ("OPERATOR_TOKEN", "ENROLMENT_CODE", "TWILIO_AUTH_TOKEN"):
+    os.environ[name] = ""
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 
 sys.path.insert(0, str(REPO_ROOT / "contracts" / "tools"))
 

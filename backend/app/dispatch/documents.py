@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -22,8 +23,11 @@ def purchase_order_pdf(path: Path, plan_id: str, order: OrderDraft, destination_
         Paragraph(f"Order key: {order.order_key} &nbsp; Idempotency key: {idempotency_key}", styles["Normal"]),
         Paragraph(f"Plan: {plan_id} &nbsp; Issued: {issued_at.isoformat(timespec='minutes')}", styles["Normal"]),
         Spacer(1, 12),
-        Paragraph(f"Supplier: {order.supplier_name}{'' if order.supplier_verified else ' (unverified)'}", styles["Normal"]),
-        Paragraph(f"Deliver to: {destination_name}", styles["Normal"]),
+        # Paragraph reads its text as markup, and these names come from the public portal and OSM:
+        # unescaped, one <img src=...> makes the PDF fetch a file, and one stray "<" stops the PDF.
+        Paragraph(f"Supplier: {escape(order.supplier_name)}{'' if order.supplier_verified else ' (unverified)'}",
+                  styles["Normal"]),
+        Paragraph(f"Deliver to: {escape(destination_name)}", styles["Normal"]),
         Spacer(1, 12),
     ]
     rows = [["Item", "Quantity"]] + [[line.item_code.value, f"{line.quantity:,.2f}"] for line in order.lines]

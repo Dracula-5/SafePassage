@@ -39,6 +39,9 @@ class BrainSettings(CommonSettings):
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_from_number: str | None = None
+    # A drill tells real suppliers to prepare goods unless it stays silent. Off, even with Twilio set.
+    drill_send_messages: bool = False
+    max_replans_per_hour: int = 6            # per vehicle, for off-route and stalled only
 
 
 @lru_cache

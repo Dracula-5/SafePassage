@@ -45,7 +45,7 @@ PORTAL_HTML = """<!doctype html>
  <label>kg per unit<input class="w" type="number" min="0" step="any" inputmode="decimal"></label>
  <button type="button" class="rm">x</button></div></template>
 
-<script>
+<script nonce="{{NONCE}}">
 const $ = (id) => document.getElementById(id);
 let gps = null;
 const token = () => localStorage.getItem("rr_supplier_token");
@@ -62,7 +62,7 @@ $("r-q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeo
   const q = $("r-q").value.trim(); if (q.length < 2) return;
   const params = new URLSearchParams({ q }); if (gps) { params.set("lon", gps[0]); params.set("lat", gps[1]); }
   const rows = await api("/portal/api/facilities?" + params);
-  $("r-fac").innerHTML = rows.map(r => `<option value="${r.id}">${r.name.replace(/</g,"&lt;")} (${r.kind}${r.distance_m != null ? ", " + (r.distance_m/1000).toFixed(1) + " km" : ""})</option>`).join("");
+  $("r-fac").replaceChildren(...rows.map(r => new Option(`${r.name} (${r.kind}${r.distance_m != null ? ", " + (r.distance_m/1000).toFixed(1) + " km" : ""})`, r.id)));
 }, 300); });
 $("r-gps").addEventListener("click", () => navigator.geolocation.getCurrentPosition(
   (p) => { gps = [p.coords.longitude, p.coords.latitude]; $("r-gps-msg").textContent = `using ${gps[1].toFixed(5)}, ${gps[0].toFixed(5)} (±${Math.round(p.coords.accuracy)} m)`; $("r-fac").selectedIndex = -1; },
@@ -90,7 +90,7 @@ $("s-submit").addEventListener("click", async () => {
   try {
     const levels = await api("/portal/api/stock", { method: "POST", headers: { "Content-Type": "application/json", "X-Supplier-Token": token() }, body: JSON.stringify({ lines }) });
     show($("s-msg"), true, "Stock saved.");
-    $("levels").innerHTML = levels.map(l => `<li>${l.item_code}: ${l.quantity} held, ${l.reserved} reserved, <b>${l.available}</b> available</li>`).join("");
+    $("levels").replaceChildren(...levels.map(l => Object.assign(document.createElement("li"), { textContent: `${l.item_code}: ${l.quantity} held, ${l.reserved} reserved, ${l.available} available` })));
   } catch (e) { show($("s-msg"), false, e.message); }
 });
 refreshWho();

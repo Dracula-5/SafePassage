@@ -5,8 +5,9 @@
 - POST /portal/api/register     create a supplier at an existing facility or at its GPS location
 - POST /portal/api/stock        contract endpoint; X-Supplier-Token; emits supplier.stock.updated
 - POST /portal/whatsapp         Twilio-compatible webhook, disabled unless TWILIO_AUTH_TOKEN is set
+- POST /api/suppliers/{id}/verify  operator decision: vouch for a supplier, or withdraw that and its token
 
-New suppliers start unverified; the Brain shows that to the human approver.
+New suppliers start unverified; any plan using one needs a human, who sees that.
 """
 
 from __future__ import annotations
@@ -14,17 +15,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import os
+import secrets
 from typing import Annotated
+from urllib.parse import parse_qsl
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from reliefroute_contracts.enums import ITEM_UNITS, StockReportChannel
 
+from app.core.auth import require_operator
 from app.core.db import get_pool
+from app.core.security import CSP
+from app.core.validation import Name
 
+from ..ingestion.settings import get_senses_settings
 from ..telemetry.tokens import hash_token, new_token
 from .page import PORTAL_HTML
 from .service import StockLine, parse_whatsapp_stock, publish_stock_events, report_stock
@@ -33,9 +39,21 @@ router = APIRouter(tags=["senses"])
 
 
 @router.get("/portal", response_class=HTMLResponse)
-async def portal_page() -> str:
+async def portal_page() -> HTMLResponse:
     items = "".join(f'<option value="{code.value}">{code.value} ({unit})</option>' for code, unit in ITEM_UNITS.items())
-    return PORTAL_HTML.replace("{{ITEM_OPTIONS}}", items)
+    nonce = secrets.token_urlsafe(16)  # the page's one inline script runs; anything injected does not
+    html = PORTAL_HTML.replace("{{ITEM_OPTIONS}}", items).replace("{{NONCE}}", nonce)
+    return HTMLResponse(html, headers={"Content-Security-Policy": CSP.replace("script-src 'self'", f"script-src 'nonce-{nonce}'")})
+
+
+def _in_region(lon: float, lat: float) -> bool:
+    x0, y0, x1, y1 = get_senses_settings().region_bbox
+    return x0 <= lon <= x1 and y0 <= lat <= y1
+
+
+def _like(text: str) -> str:
+    """Escape LIKE's wildcards: a search for "%" should find a percent sign, not every row."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @router.get("/portal/api/facilities")
@@ -50,13 +68,13 @@ async def search_facilities(
                        ELSE ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($2, $3::float8), 4326)::geography) END AS m
            FROM facilities WHERE name ILIKE '%' || $1 || '%'
            ORDER BY m NULLS LAST, name LIMIT 20""",
-        q, lon, lat,
+        _like(q), lon, lat,
     )  # fmt: skip
     return [{"id": str(r["id"]), "name": r["name"], "kind": r["kind"], "distance_m": r["m"]} for r in rows]
 
 
 class Registration(BaseModel):
-    name: str = Field(min_length=2, max_length=120)
+    name: Name = Field(min_length=2, max_length=120)
     contact_phone: str | None = Field(default=None, pattern=r"^\+[1-9]\d{6,14}$")
     contact_whatsapp: str | None = Field(default=None, pattern=r"^\+[1-9]\d{6,14}$")
     preferred_language: str = Field(default="en", pattern=r"^[a-z]{2,3}$")
@@ -64,7 +82,7 @@ class Registration(BaseModel):
     # Or register a new site at the supplier's own GPS position:
     lon: float | None = Field(default=None, ge=-180, le=180)
     lat: float | None = Field(default=None, ge=-90, le=90)
-    site_name: str | None = Field(default=None, max_length=120)
+    site_name: Name | None = Field(default=None, max_length=120)
 
     @model_validator(mode="after")
     def _one_location(self) -> "Registration":
@@ -75,6 +93,8 @@ class Registration(BaseModel):
 
 @router.post("/portal/api/register", status_code=201)
 async def register_supplier(body: Registration) -> dict:
+    if body.lon is not None and not _in_region(body.lon, body.lat):
+        raise HTTPException(422, f"that location is outside the mapped region ({get_senses_settings().region_name})")
     token, digest = new_token()
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
@@ -95,6 +115,22 @@ async def register_supplier(body: Registration) -> dict:
             facility_id, body.name, body.contact_phone, body.contact_whatsapp, body.preferred_language, digest,
         )  # fmt: skip
     return {"supplier_id": str(supplier_id), "facility_id": str(facility_id), "supplier_token": token, "verified": False}
+
+
+class SupplierDecision(BaseModel):
+    verified: bool
+
+
+@router.post("/api/suppliers/{supplier_id}/verify", dependencies=[Depends(require_operator)])
+async def verify_supplier(supplier_id: UUID, body: SupplierDecision) -> dict:
+    """Withdrawing verification also ends the token: the usual reason is that it can't be trusted."""
+    updated = await (await get_pool()).fetchval(
+        """UPDATE suppliers SET verified = $2, updated_at = now(),
+               portal_token_hash = CASE WHEN $2 THEN portal_token_hash END
+           WHERE id = $1 RETURNING id""", supplier_id, body.verified)  # fmt: skip
+    if updated is None:
+        raise HTTPException(404, "supplier not found")
+    return {"id": str(supplier_id), "verified": body.verified}
 
 
 class StockReport(BaseModel):
@@ -125,8 +161,8 @@ async def post_stock(body: StockReport, x_supplier_token: Annotated[str, Header(
 def twilio_signature_valid(auth_token: str, url: str, params: dict[str, str], signature: str) -> bool:
     """Twilio's documented scheme: HMAC-SHA1 over URL + sorted key/value pairs, base64."""
     data = url + "".join(k + params[k] for k in sorted(params))
-    expected = base64.b64encode(hmac.new(auth_token.encode(), data.encode(), hashlib.sha1).digest()).decode()
-    return hmac.compare_digest(expected, signature)
+    expected = base64.b64encode(hmac.new(auth_token.encode(), data.encode(), hashlib.sha1).digest())
+    return hmac.compare_digest(expected, signature.encode())  # bytes: a header can hold non-ASCII
 
 
 def _twiml(message: str) -> Response:
@@ -137,10 +173,11 @@ def _twiml(message: str) -> Response:
 
 @router.post("/portal/whatsapp")
 async def whatsapp_webhook(request: Request, x_twilio_signature: Annotated[str | None, Header()] = None) -> Response:
-    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    auth_token = get_senses_settings().twilio_auth_token
     if not auth_token:
         raise HTTPException(503, "WhatsApp check-in is disabled until TWILIO_AUTH_TOKEN is configured")
-    form = {k: str(v) for k, v in (await request.form()).items()}
+    # Twilio only sends urlencoded forms, so this needs neither request.form() nor python-multipart.
+    form = dict(parse_qsl((await request.body()).decode(errors="replace"), keep_blank_values=True))
     if not x_twilio_signature or not twilio_signature_valid(auth_token, str(request.url), form, x_twilio_signature):
         raise HTTPException(403, "invalid Twilio signature")
     sender = form.get("From", "").removeprefix("whatsapp:")
@@ -151,8 +188,8 @@ async def whatsapp_webhook(request: Request, x_twilio_signature: Annotated[str |
             return _twiml("This number is not registered. Register at the ReliefRoute portal first.")
         try:
             lines = parse_whatsapp_stock(form.get("Body", ""))
-        except ValueError as exc:
-            return _twiml(f"Could not read that. Send e.g. 'WATER_L 5000 1; RICE_KG 800 1'. ({exc})")
+        except ValueError:
+            return _twiml("Could not read that. Send e.g. 'WATER_L 5000 1; RICE_KG 800 1'.")
         events = await report_stock(conn, supplier_id, lines, StockReportChannel.WHATSAPP)
     await publish_stock_events(events)
     return _twiml("Stock updated: " + ", ".join(f"{e.item_code.value} {e.quantity:g}" for e in events))

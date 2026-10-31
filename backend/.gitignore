@@ -1,0 +1,3 @@
+# Environment files beyond the plain .env the root .gitignore already covers.
+.env.*
+!.env.example

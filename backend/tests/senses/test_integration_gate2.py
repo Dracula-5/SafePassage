@@ -13,6 +13,7 @@ import yaml
 from reliefroute_contracts.events import parse_envelope
 
 from app.core import bus
+from app.ingestion.settings import get_senses_settings
 from app.suppliers.router import twilio_signature_valid
 from app.suppliers.service import parse_whatsapp_stock
 
@@ -112,7 +113,8 @@ async def test_supplier_portal_flow(api, live_env):
 
 
 async def test_whatsapp_disabled_without_twilio(api, monkeypatch):
-    monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "")
+    get_senses_settings.cache_clear()
     assert (await api.post("/portal/whatsapp", data={"From": "whatsapp:+1", "Body": "x"})).status_code == 503
 
 

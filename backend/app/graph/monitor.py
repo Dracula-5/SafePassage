@@ -9,6 +9,10 @@ recorded just before a crash is redelivered, and the plan's idempotency key stop
   stalled          no real movement for a while, away from any stop
   offline          no fix for longer than the grace period (v_vehicle_status)
   hazard_on_route  a new or grown hazard crosses the road still ahead
+
+Off-route and stalled come from the driver's phone, so a faulty or stolen one could otherwise ask
+for a new plan every minute. Those two pause after max_replans_per_hour; the sweep picks the
+deviation up again when the hour has passed. A hazard ahead or a dead phone is never held back.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from .audit import Audit
 log = get_logger(__name__)
 MAX_FIX_AGE = timedelta(minutes=5)   # replayed offline-queue fixes describe the past, not the present
 MOVED_M = 50.0                       # GPS jitter below this is not movement
+CAPPED_KINDS = ("off_route", "stalled")
 
 TRACKED_SQL = """
 SELECT a.route_id::text, a.plan_id::text, a.vehicle_id::text, a.route_status::text, a.stops, a.is_drill, p.thread_id,
@@ -77,6 +82,7 @@ class RouteMonitor:
         self.s = deps.settings
         self.off_route_streak: dict[str, int] = {}
         self.anchor: dict[str, tuple[Point, datetime]] = {}  # last real movement per vehicle
+        self.held: set[str] = set()  # deviations already reported as paused
 
     async def handle(self, envelope: EventEnvelope) -> None:
         if envelope.event_type == VEHICLE_TELEMETRY:
@@ -255,6 +261,8 @@ class RouteMonitor:
             deviation.route_id, deviation.kind.value)  # fmt: skip
         if open_id is None:
             return  # already replanned
+        if deviation.kind.value in CAPPED_KINDS and await self._over_replan_cap(deviation, open_id):
+            return
         hazard_ids = [str(r["id"]) for r in await pool.fetch(
             """SELECT h.id FROM v_active_hazards h, plans p WHERE p.id = $1 AND h.id = ANY(p.hazard_ids)""", deviation.plan_id)]
         if deviation.hazard_id and str(deviation.hazard_id) not in hazard_ids:
@@ -265,3 +273,21 @@ class RouteMonitor:
         await pool.execute("UPDATE route_deviations SET replan_id = $2 WHERE id = $1", open_id, summary["id"])
         if created:
             log.info("replan_requested", plan_id=summary["id"], route_id=str(deviation.route_id), kind=deviation.kind.value)
+
+    async def _over_replan_cap(self, deviation: VehicleDeviation, open_id) -> bool:
+        pool = self.deps.pool
+        recent = await pool.fetchval(
+            """SELECT count(*) FROM route_deviations WHERE vehicle_id = $1 AND replan_id IS NOT NULL
+                 AND detected_at > now() - interval '1 hour'""", deviation.vehicle_id)  # fmt: skip
+        if recent < self.s.max_replans_per_hour:
+            self.held.discard(str(open_id))
+            return False
+        if str(open_id) not in self.held:
+            self.held.add(str(open_id))
+            log.warning("replans_paused", vehicle_id=str(deviation.vehicle_id), recent=recent)
+            thread_id = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", deviation.plan_id)
+            await Audit(pool, str(deviation.plan_id), thread_id)(
+                "replanner", "error", f"{recent} re-routes for this vehicle in the last hour: automatic re-routing is paused "
+                "for it. Call the driver; the phone's position may be wrong.", {"kind": deviation.kind.value},
+                [f"vehicle:{deviation.vehicle_id}"])
+        return True

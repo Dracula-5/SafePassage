@@ -16,12 +16,15 @@ from pydantic import BaseModel, Field, field_validator
 from redis.exceptions import RedisError
 from reliefroute_contracts.enums import FacilityKind, HazardSeverity, HazardType
 from shapely import Polygon
+from shapely.errors import GEOSException
 from shapely.geometry import shape
 from shapely.validation import explain_validity
 
+from app.core import bus
 from app.core.auth import require_operator
 from app.core.db import get_pool
 from app.core.logging import get_logger
+from app.core.validation import Name
 
 from ..suppliers.router import router as portal_router
 from ..telemetry.router import router as telemetry_router
@@ -42,6 +45,8 @@ GEOJSON = "application/geo+json"
 MAX_DRILL_AREA_KM2 = 50_000  # larger than any district; stops accidental continent-sized drills
 MAX_DRILL_VERTICES = 1_000
 MAX_FACILITIES = 5_000       # the map asks by viewport; an unbounded call would return every row
+MAX_HAZARDS = 2_000
+WORKERS = ("brain", "ingestion")
 
 
 def _bbox(value: str | None) -> tuple[float, float, float, float] | None:
@@ -91,8 +96,9 @@ async def list_hazards(
         WHERE (NOT $1 OR (h.status = 'active' AND (h.expires_at IS NULL OR h.expires_at > now())))
           AND ($2 OR h.source <> 'drill')
           AND ($3::float8 IS NULL OR h.geom && ST_MakeEnvelope($3, $4::float8, $5::float8, $6::float8, 4326))
-        ORDER BY array_position(ARRAY['extreme','severe','moderate','minor','unknown'], h.severity::text), h.fetched_at DESC""",
-        active, include_drill, *(box or (None, None, None, None)),
+        ORDER BY array_position(ARRAY['extreme','severe','moderate','minor','unknown'], h.severity::text), h.fetched_at DESC
+        LIMIT $7""",
+        active, include_drill, *(box or (None, None, None, None)), MAX_HAZARDS,
     )  # fmt: skip
     return JSONResponse({"type": "FeatureCollection", "features": [_hazard_feature(r) for r in rows]}, media_type=GEOJSON)
 
@@ -128,7 +134,7 @@ async def list_facilities(
     return JSONResponse({"type": "FeatureCollection", "features": features}, media_type=GEOJSON)
 
 
-@router.get("/api/vehicles")
+@router.get("/api/vehicles", dependencies=[Depends(require_operator)])  # names and live truck positions
 async def list_vehicles() -> list[dict]:
     rows = await (await get_pool()).fetch(
         """SELECT id, label, driver_name, driver_language, capacity_kg, status::text, last_seen_at,
@@ -147,7 +153,7 @@ class DrillRequest(BaseModel):
     geometry: dict
     hazard_type: HazardType
     severity: HazardSeverity
-    label: str = Field(min_length=1, max_length=200)
+    label: Name = Field(min_length=1, max_length=200)
     ttl_minutes: int = Field(default=120, ge=5, le=1440)
 
     @field_validator("geometry")
@@ -157,13 +163,13 @@ class DrillRequest(BaseModel):
             raise ValueError("geometry must be a GeoJSON Polygon")
         try:
             poly = shape(value)
-        except (KeyError, TypeError, ValueError, IndexError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, GEOSException) as exc:
             raise ValueError(f"invalid polygon: {exc}") from exc
         if not isinstance(poly, Polygon) or not poly.is_valid:
             raise ValueError(f"invalid polygon: {explain_validity(poly)}")
         if poly.area == 0:
             raise ValueError("polygon has no area")
-        if len(poly.exterior.coords) > MAX_DRILL_VERTICES:
+        if sum(len(ring.coords) for ring in (poly.exterior, *poly.interiors)) > MAX_DRILL_VERTICES:
             raise ValueError(f"polygon has more than {MAX_DRILL_VERTICES} vertices")
         x0, y0, x1, y1 = poly.bounds
         if not (-180 <= x0 and x1 <= 180 and -90 <= y0 and y1 <= 90):
@@ -213,7 +219,10 @@ async def cancel_drill(hazard_id: UUID) -> Response:
             raise HTTPException(404, "no drill hazard with that id")
         event = await set_hazard_status(conn, hazard_id, "cancelled")
     if event:
-        await publish_hazard_events([event])
+        try:
+            await publish_hazard_events([event])
+        except (RedisError, OSError) as exc:  # the drill is ended; the map catches up on its next reload
+            log.warning("drill_event_not_published", hazard_id=str(event.hazard_id), error=str(exc))
     return Response(status_code=204)
 
 
@@ -233,4 +242,19 @@ async def list_source_health() -> list[SourceHealthOut]:
     rows = await (await get_pool()).fetch(
         """SELECT source, breaker_state, last_success_at, last_failure_at, last_error, ttl_seconds,
                   fallback_source, is_stale FROM v_source_freshness ORDER BY source""")
-    return [SourceHealthOut(**dict(r)) for r in rows]
+    return [SourceHealthOut(**dict(r)) for r in rows] + await _worker_health()
+
+
+async def _worker_health() -> list[SourceHealthOut]:
+    """A dead worker raises no error anywhere: plans just stop. So it gets a line of its own."""
+    out = []
+    for worker in WORKERS:
+        try:
+            beat = await bus.last_heartbeat(worker)
+        except (RedisError, OSError):
+            beat = None
+        out.append(SourceHealthOut(
+            source=f"{worker}_worker", breaker_state="closed", last_success_at=beat, last_failure_at=None,
+            last_error=None if beat else "no heartbeat: this worker is not running", ttl_seconds=bus.HEARTBEAT_TTL_S,
+            fallback_source=None, is_stale=beat is None))  # fmt: skip
+    return out
