@@ -22,7 +22,7 @@ run: imports ok; 7 migrations; driver app True True; user 1000
 next build                                exit 0
 ```
 
-The image was built and started, but the full production stack was not run: there is not enough free disk on this machine for a second Valhalla and database.
+The image was built and started here, but the full production stack was not run: there was not enough free disk. **It was run later the same day: see [A-G4-security.md](A-G4-security.md).**
 
 ## Blocked, needing a person
 
@@ -32,7 +32,7 @@ The image was built and started, but the full production stack was not run: ther
 | Deploy dashboard | A Vercel account, and the backend's URL |
 | Real phone test | Someone inside Andhra Pradesh |
 
-A public deployment must set `OPERATOR_TOKEN`, or anyone can approve dispatches.
+In production the API now refuses to start without `OPERATOR_TOKEN` and `ENROLMENT_CODE`.
 
 ## Demo water stock
 

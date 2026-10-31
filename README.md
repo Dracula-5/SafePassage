@@ -156,7 +156,7 @@ A browser only gives GPS over HTTPS, and the road graph only covers Andhra Prade
 cloudflared tunnel --protocol http2 --url http://localhost:8000
 ```
 
-Open `https://<tunnel>/driver/`. **Stop the tunnel afterwards:** the API is reachable by anyone with that URL unless `OPERATOR_TOKEN` is set.
+Open `https://<tunnel>/driver/` and enter the enrolment code from `backend/.env`. `stack.ps1` creates that code and the operator token on first run. If you start the backend another way, set both yourself, because the API has no protection without them. Stop the tunnel afterwards.
 
 Without a phone in the region, `backend/tests/tools/sim_driver.py` is a labelled test tool that drives a vehicle through the public API. Its vehicles are always named `TEST-SIM-GPS`.
 
@@ -173,12 +173,19 @@ Integration tests run against real PostGIS, Redis and Valhalla in throwaway data
 
 ## Deploying
 
-[infra/deploy/](infra/deploy/) has a backend image and a compose file that runs the whole backend on one 8 GB VM. The dashboard goes on Vercel with `NEXT_PUBLIC_API_BASE` pointing at it and `NEXT_PUBLIC_REGION_BBOX` set.
+[infra/deploy/](infra/deploy/) runs the whole backend on one 8 GB VM behind HTTPS, with daily verified backups. The dashboard goes on Vercel with `NEXT_PUBLIC_API_BASE` pointing at it and `NEXT_PUBLIC_REGION_BBOX` set.
 
-Before exposing it:
-- Set `OPERATOR_TOKEN`. Drills, plan triggers and approvals then require it, and the dashboard asks for it once per session. Reading stays open.
-- Set `CORS_ORIGINS` to the dashboard's address.
-- `POST /api/vehicles` and `/portal` stay open so drivers and suppliers can sign up. New suppliers start unverified, and the human approver sees that.
+Fill in `infra/deploy/.env` from its example. In production the API refuses to start if a secret is missing or weak, so a deployment cannot end up open by accident.
+
+## Security
+
+[docs/security.md](docs/security.md) covers what is protected, who can do what, how to deploy safely, what to do when a phone is lost or a token leaks, and what is not covered. In short:
+
+- The operator token protects drills, plans, approvals, and anything showing drivers or goods. The dashboard asks for it once per session.
+- A driver needs an enrolment code to register, because replans assign vehicles without a human.
+- A phone can only read its own route, and an operator can revoke it.
+- Drills never message real people unless `DRILL_SEND_MESSAGES=true`.
+- `/portal`, hazards and facilities stay public. New suppliers start unverified, and any plan using one needs a human.
 
 ## Repository
 

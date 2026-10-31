@@ -74,4 +74,4 @@ Served from the same origin at `/driver/`, so it works through one tunnel or dom
 | Facilities query | Up to 5,000 rows |
 | Stock report | One line per item |
 
-`OPERATOR_TOKEN`, when set, protects drills, plan triggers and approvals. Device tokens and supplier tokens are stored only as hashes.
+`OPERATOR_TOKEN` protects drills, plans, approvals and operational reads, and `ENROLMENT_CODE` protects vehicle registration. Device tokens and supplier tokens are stored only as hashes. See [security.md](security.md).
