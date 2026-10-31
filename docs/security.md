@@ -14,6 +14,7 @@ The system moves real goods towards people in a disaster, so the question that m
 | A drill tells real suppliers to prepare goods | Drills send no SMS or WhatsApp at all unless `DRILL_SEND_MESSAGES=true` |
 | A fake supplier claims stock that does not exist | New suppliers are unverified, and any plan using one needs a human, who sees that |
 | A lost or stolen phone | `POST /api/vehicles/{id}/revoke` ends its token. Planning skips it, and its route is replanned as offline |
+| A bad GPS fix, or a supplier registered out at sea, stops planning for everyone | Valhalla refuses a whole matrix over one unconnected point, so that point is marked unreachable and the rest still plan |
 | A broken phone asks for a new route every minute | Off-route and stalled replans pause after 6 an hour per vehicle, and the human is told. Hazards are never held back |
 | A hostile name in a form reaches a PDF, a prompt or a screen | Names reject markup and control characters. PDFs escape them, screens escape them, and the dashboard has a content security policy |
 | Text in an alert or a name tricks the LLM | Prompts mark it as data. More importantly, the LLM cannot move goods: solvers plan, and Python decides who must approve |
@@ -41,16 +42,13 @@ Hazards, facilities, source health, `/portal` and `/driver/` are public on purpo
 
 ## Deploying
 
-The API refuses to start in production without the first three.
+[deploy.md](deploy.md) has the steps. What matters for security:
 
-1. Fill in `infra/deploy/.env` from `.env.example`. Make each secret with `openssl rand -hex 32`.
-2. Point `DOMAIN` at the VM. Caddy gets the HTTPS certificate by itself. Only ports 80 and 443 are opened.
-3. Set `CORS_ORIGINS` to the dashboard's `https://` address.
-4. Open the VM's firewall for 80 and 443 only.
-5. Copy `/backups` off the VM on a schedule. A backup on the same disk dies with the disk.
-6. Deploy the dashboard. It holds no secrets: `NEXT_PUBLIC_*` values are public, so never put a token in one.
-
-On Vercel, build with `NEXT_PUBLIC_API_BASE` set to the real API address, because the dashboard's security policy allows calls only to that address.
+1. `infra/deploy/setup.sh` writes strong secrets into `infra/deploy/.env`. The API refuses to start without them.
+2. `PUBLIC_URL` must start with `https://`. Caddy gets the certificate by itself.
+3. Open the VM's firewall for 80 and 443 only, plus SSH.
+4. Copy the `backups` volume off the VM on a schedule. A backup on the same disk dies with the disk.
+5. The dashboard holds no secrets: `NEXT_PUBLIC_*` values are public, so never put a token in one.
 
 Locally, `.\infra\dev\stack.ps1 up` creates the token and code in `backend\.env`, and containers listen on `127.0.0.1` only. A tunnel for a phone test therefore exposes a protected API, but still close it afterwards.
 
@@ -59,7 +57,7 @@ Locally, `.\infra\dev\stack.ps1 up` creates the token and code in `backend\.env`
 **A phone is lost, or a vehicle nobody recognises appears**
 
 ```bash
-curl -X POST https://$DOMAIN/api/vehicles/$VEHICLE_ID/revoke -H "X-Operator-Token: $TOKEN"
+curl -X POST $PUBLIC_URL/api/vehicles/$VEHICLE_ID/revoke -H "X-Operator-Token: $TOKEN"
 ```
 
 Its token stops working at once and planning skips it. If it was driving, the route is replanned after about 5 minutes, when it counts as offline.
@@ -67,7 +65,7 @@ Its token stops working at once and planning skips it. If it was driving, the ro
 **A supplier cannot be trusted**
 
 ```bash
-curl -X POST https://$DOMAIN/api/suppliers/$SUPPLIER_ID/verify -H "X-Operator-Token: $TOKEN" \
+curl -X POST $PUBLIC_URL/api/suppliers/$SUPPLIER_ID/verify -H "X-Operator-Token: $TOKEN" \
      -H "Content-Type: application/json" -d '{"verified": false}'
 ```
 

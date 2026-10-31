@@ -7,7 +7,7 @@ Run on 2026-10-31, on branch `integration/gate3`.
 - **`README.md`:** setup for Windows, macOS and Linux, Mermaid architecture diagram, and a data-source table that states what is live and what was never wired.
 - **`docs/senses.md`** and **`docs/demo-script.md`:** a timed script for the edge cases, a table of what to do when something fails on stage, and likely questions.
 - **`infra/dev/stack.ps1`:** one command to run everything on Windows.
-- **`infra/deploy/`:** backend image and a compose file that runs the whole backend on one VM.
+- **`infra/deploy/`:** backend and dashboard images, and a compose file that runs everything on one VM behind one address. See [deploy.md](../deploy.md).
 - **Final audit:** 0 findings.
 
 ## Deployment checks
@@ -29,7 +29,7 @@ The image was built and started here, but the full production stack was not run:
 | Item | Needs |
 |---|---|
 | Deploy backend | A VM with 8 GB RAM, or Fly.io/Railway accounts |
-| Deploy dashboard | A Vercel account, and the backend's URL |
+| Deploy dashboard | Nothing more: it is now in the production stack |
 | Real phone test | Someone inside Andhra Pradesh |
 
 In production the API now refuses to start without `OPERATOR_TOKEN` and `ENROLMENT_CODE`.

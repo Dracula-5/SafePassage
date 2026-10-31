@@ -30,7 +30,7 @@ One worker carried both roles through Gates 3 and 4, on one integration branch w
 | 3 Closed loop and edge cases | 🟡 Built and proven live with labelled simulated vehicles |
 | 4 Polish, docs, deploy | 🟡 Docs done. Security reviewed and hardened. Production stack rehearsed end to end on this machine. Not deployed |
 
-Tests at the last run: **397 passed, 3 skipped** (SACHET rate-limiting this IP), on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md` and `docs/gates/A-G4-security.md`.
+Tests at the last run: **409 passed, 3 skipped** (SACHET rate-limiting this IP), on real PostGIS, Redis and Valhalla. PWA queue: 6 passed. Self-audit: 0 findings. Evidence is in `docs/gates/A-G3.md` and `docs/gates/A-G4-security.md`.
 
 The local database holds live data only: this session's drills, plans and test vehicles were cleared. Their PO PDFs, labelled DRILL, remain in `~/reliefroute-data/documents/`.
 
@@ -42,7 +42,7 @@ The local database holds live data only: this session's drills, plans and test v
 | Telugu voice on a phone | The key, and a phone with a Telugu speech pack |
 | Real-phone GPS | A teammate **inside Andhra Pradesh**, through a tunnel. The road graph covers AP only, and vehicles over 200 km from the relief points are ignored |
 | Real water stock | A supplier check-in at `/portal`. `infra/demo/seed_demo_water.py` was not run here; it stays labelled, and running it means disclosing it |
-| Deploy | A VM with 8 GB RAM, a domain name pointing at it, and a Vercel account. Then fill in `infra/deploy/.env` and follow `docs/security.md` |
+| Deploy | A VM with 8 GB RAM and a domain name pointing at it. Then follow `docs/deploy.md`. No Vercel account is needed: the dashboard is now in the production stack |
 | Langfuse dashboards, SMS and WhatsApp | Langfuse and Twilio keys. The code is in place; messages are recorded as not sent until then |
 | Review contract requests 002 and 003 | The human owner |
 | Merge into `main` | The human owner. Ideally a PR from `integration/gate3` |
@@ -57,7 +57,11 @@ The project is in `C:\Users\dheer\OneDrive\Desktop\safepassage`. It sits in a On
 .\infra\dev\stack.ps1 up        # containers, migrations, API, both workers, dashboard
 .\infra\dev\stack.ps1 status
 .\infra\dev\stack.ps1 down      # keeps the data
+.\infra\dev\stack.ps1 prod      # the production images instead, everything at http://localhost:3000
+.\infra\dev\stack.ps1 prod-down # stops those and keeps their data
 ```
+
+`up` and `prod` each stop the other, because they share port 3000. They have separate databases and separate secrets: `backend\.env` for `up`, and `infra\deploy\local.env` for `prod`.
 
 | Thing | Location |
 |---|---|
@@ -84,6 +88,7 @@ Valhalla takes about 35 minutes to build on Windows, compared with 5 on macOS, b
 - **Valhalla limits that matter:** 400 km per matrix pair, 2,500 pairs, 20 locations per route. `infra/valhalla/raise_limits.py` must run after a first build, or real hazard polygons are rejected.
 - **Next 16:** MapLibre's worker is copied to `frontend/public/maplibre` on `npm install`. Don't remove that step.
 - **Simulated vehicles** come from `backend/tests/tools/sim_driver.py` and are always named `TEST-SIM-GPS`. It never runs at runtime. Set `ENROLMENT_CODE` first. Above about 500 m/s it jumps past the 300 m arrival circle and never reaches a stop.
+- **Auto-plans need a settlement.** An alert gets a plan only once it is active and covers a place in `v_places`, and it waits while facilities are loading. Drills always get one.
 - **Drills are silent.** They record each message as not sent, even with Twilio configured, unless `DRILL_SEND_MESSAGES=true`.
 - **`backend/requirements/constraints.txt` pins every version** for the image and CI. Refresh it when a dependency changes.
 
@@ -94,5 +99,4 @@ Valhalla takes about 35 minutes to build on Windows, compared with 5 on macOS, b
 - Scheduling the next wave automatically; today it is shown to the human.
 - A second brain worker, which needs real locks around crash recovery.
 - A public source for shelter capacity, so demand isn't split evenly across relief points.
-- Skipping auto-plans for forecast cells over the sea. They end as "no safe relief point" and fill the plan list; with Gemini on, each also costs a triage call.
 - Named operator accounts, so an approval proves who made it rather than who was typed. See "What is not covered" in `docs/security.md`.

@@ -173,9 +173,16 @@ Integration tests run against real PostGIS, Redis and Valhalla in throwaway data
 
 ## Deploying
 
-[infra/deploy/](infra/deploy/) runs the whole backend on one 8 GB VM behind HTTPS, with daily verified backups. The dashboard goes on Vercel with `NEXT_PUBLIC_API_BASE` pointing at it and `NEXT_PUBLIC_REGION_BBOX` set.
+[docs/deploy.md](docs/deploy.md) has the steps. Everything runs on one 8 GB VM behind one HTTPS address, with daily verified backups:
 
-Fill in `infra/deploy/.env` from its example. In production the API refuses to start if a secret is missing or weak, so a deployment cannot end up open by accident.
+```bash
+sh infra/deploy/setup.sh https://your-domain     # writes strong secrets, checks the machine
+docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
+```
+
+In production the API refuses to start if a secret is missing or weak, so a deployment cannot end up open by accident.
+
+To try the same images on a Windows PC at http://localhost:3000, run `.\infra\dev\stack.ps1 prod`.
 
 ## Security
 

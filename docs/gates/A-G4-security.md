@@ -5,7 +5,7 @@ Run on 2026-10-31, on branch `integration/gate3`, at the owner's request to comp
 ## Test results
 
 ```
-397 passed, 3 skipped, 4 warnings in 439.39s
+409 passed, 3 skipped, 4 warnings in 616.35s
 SKIPPED [3] tests\brain\live_sources.py:37: SACHET polygon endpoint is rate-limiting this IP
 audit_runtime.py: 0 finding(s)
 driver-pwa queue tests: 6 passed
@@ -102,10 +102,45 @@ Every test passed before these appeared.
 4. **The documented restore command would have re-run the backup.** That service has its own entrypoint. Corrected and run.
 5. **The token prompt nagged.** A wrong or cancelled token prompted repeatedly. It now stays quiet until a button is pressed.
 
+## Full deployment from empty
+
+Later the same day the dashboard joined the production stack, so everything now runs behind one address. The stack was then started the way a new VM would be: production images, empty databases, no restored data, all ingestion running, at `http://localhost:3000`.
+
+```
+.\infra\dev\stack.ps1 prod               all 10 services up in 158 s, including the first image build
+hazards                                    within a minute
+facilities                                 about 5 minutes
+stock                                      about 7 minutes: 709 rows, 536 suppliers
+```
+
+**Drill through that address, with labelled trucks and real AePDS stock:**
+
+```
+18:48:28 approve with no token: 401
+18:48:28 approve: 200
+18:48:29 dispatched: 5 orders, 1 route(s), 320 km, 12 stops
+18:48:29 its own route: 200 | another truck's token on it: 401
+13:18:33 replanner Deviation on TEST-SIM-GPS-B: off route (96424 m from the route)
+13:18:33 replanner off route: 5 order(s) to re-route, 0 line(s) stranded on the vehicle
+13:18:40 supervisor Auto-approved: re-route of goods already approved
+18:48:42 replan: dispatched | needed a human: False
+18:48:42 truck other sees the new route: 200
+```
+
+Times in `replanner` and `supervisor` lines are UTC, the others IST. All five application services logged no errors, permission failures or read-only failures, apart from the expected wait described below.
+
+**Real Chrome on `http://localhost:3000`:** no policy violations on the dashboard, driver app or portal, stream live, portal search working, and an injected script blocked.
+
+**Three more bugs, found only by running from empty:**
+
+1. **False "no safe relief point" on a first start.** Alerts arrive before facilities. Nine real plans said this when the truth was that nothing had loaded, and they were never retried. Alerts now wait: on the rerun they were held 33 times with no false plan.
+2. **Red plans for empty sea.** 24 of 25 live forecast cells were over the Bay of Bengal, each spending the hazard's one auto-plan, so a cyclone that later came ashore could not get a new one. Plans now need the alert to cover a settlement. Drills are exempt. Real alerts still qualify: 20 of 28 SACHET alerts did.
+3. **One bad location stopped planning for everyone.** Valhalla refuses a whole matrix if one point has no connected road. A phone with a bad fix in the sea failed a replan while a healthy truck stood by, and it blamed the routing service. A supplier registered at sea on the public portal would have done the same to every plan. The client now finds the point and marks it unreachable. A second bug hid behind it: a stranded truck's empty route counted as impossible, which made the whole model infeasible. Both are fixed, and the same bad fix then moved the goods to the other truck in 7 seconds.
+
 ## Not verified
 
-- **A real domain and a real certificate.** Caddy used its local CA for `localhost`.
-- **The off-route replan in production configuration.** The simulator was too fast to reach a stop in that run. The offline replan writes the same tables and passed; off-route passed live in `A-G3.md` and in tests.
-- **Ingestion in production configuration.** It was not started, to avoid a second poller hitting SACHET. Its bulk load ran as the service role only in `test_the_service_role_can_run_the_system`.
+- **A real domain and a real certificate.** Caddy has only used `localhost`, with its local CA and over plain HTTP.
+- **A real VM.** The stack ran under Docker Desktop on Windows. `setup.sh` ran in a Linux container, where its checks correctly reported no Docker and too little RAM.
+- **Vercel hosting** of the dashboard, now optional.
 - **An independent security audit.** This was a review by the people who built it.
 - **Gemini and a real phone in Andhra Pradesh,** as before.
