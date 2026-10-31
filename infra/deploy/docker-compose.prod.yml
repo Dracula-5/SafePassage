@@ -1,4 +1,4 @@
-# The whole system on one VM, behind one address: dashboard, API, driver app and supplier portal. Needs
+# The whole system on one VM, behind one address: the web app and the API behind it. Needs
 # 8 GB of RAM and the map data. docs/deploy.md has the steps; in short, from the repo root:
 #   sh infra/deploy/setup.sh https://your-domain
 #   docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
@@ -55,7 +55,6 @@ services:
       context: ../..
       dockerfile: infra/deploy/frontend.Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE: ${PUBLIC_URL:?set PUBLIC_URL}
         NEXT_PUBLIC_REGION_BBOX: ${REGION_BBOX:?set REGION_BBOX}
     cap_drop: [ALL]
     read_only: true

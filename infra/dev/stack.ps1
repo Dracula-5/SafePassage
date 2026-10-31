@@ -4,8 +4,8 @@
 # prod: the real production images on this PC, everything at http://localhost:3000, with their own
 # empty database and secrets in infra\deploy\local.env. prod-down: stops them and keeps the data.
 # Expects the venv at $HOME\reliefroute-venv (see README); RELIEFROUTE_VENV overrides it.
-# The first `up` creates an operator token and a driver enrolment code in backend\.env, so an open
-# tunnel can never mean an open API.
+# The first `up` creates an operator code and a driver enrolment code in backend\.env, so an open
+# tunnel can never mean an open API. Both are typed once, at sign-up.
 param([ValidateSet("up", "down", "status", "prod", "prod-down")][string]$Action = "status")
 
 $repo = Resolve-Path "$PSScriptRoot\..\.."
@@ -73,8 +73,9 @@ switch ($Action) {
         Pop-Location
         Ensure-LocalProdEnv
         Compose-Prod up -d --build
-        "Dashboard http://localhost:3000  driver http://localhost:3000/driver/  supplier http://localhost:3000/portal"
-        "The dashboard asks for OPERATOR_TOKEN and the driver app for ENROLMENT_CODE; both are in infra\deploy\local.env"
+        Compose-Prod restart caddy  # it reads its config once, and `up` does not notice a changed Caddyfile
+        "ReliefRoute http://localhost:3000"
+        "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in infra\deploy\local.env"
         "A new database fills from the live sources: facilities in about 5 minutes, stock in about 7"
     }
     "prod-down" {
@@ -100,8 +101,8 @@ switch ($Action) {
             @{ name = "frontend"; process = Start-Part "frontend" $npm @("run", "dev", "--", "-H", "127.0.0.1") "$repo\frontend" }
         )
         $parts | ForEach-Object { @{ name = $_.name; pid = $_.process.Id } } | ConvertTo-Json | Set-Content $pids
-        "API http://localhost:8000  dashboard http://localhost:3000  driver http://localhost:8000/driver/  logs $logs"
-        "The dashboard asks for OPERATOR_TOKEN and the driver app for ENROLMENT_CODE; both are in backend\.env"
+        "ReliefRoute http://localhost:3000  API http://localhost:8000  logs $logs"
+        "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in backend\.env"
     }
     "down" {
         Stop-Parts

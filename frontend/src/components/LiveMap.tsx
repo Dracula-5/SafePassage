@@ -10,13 +10,7 @@ import { useEffect, useRef } from "react";
 
 import { api, FacilityProperties, FeatureCollection, HazardProperties, PlanRoute, Vehicle } from "@/lib/api";
 
-export const SEVERITY_COLORS: Record<string, string> = {
-  extreme: "#b3002d",
-  severe: "#e8590c",
-  moderate: "#f2b705",
-  minor: "#4c9be8",
-  unknown: "#868e96",
-};
+import { SEVERITY_COLORS } from "./Dashboard";
 
 const FACILITY_KINDS = ["hospital", "shelter", "warehouse", "godown", "school", "depot"];
 const FACILITY_MIN_ZOOM = 9; // below this, tens of thousands of points would be requested

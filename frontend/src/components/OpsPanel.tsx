@@ -1,22 +1,26 @@
 "use client";
 
-// Right-hand operations panel: plans, the human approval gate, and the live agent timeline.
-// The timeline comes from GET /api/stream (SSE). EventSource retries a dropped connection by itself;
-// once its ticket has expired it gives up (readyState CLOSED), and connect() starts over with a new one.
+// Right-hand operations panel: plans and the human approval gate, the live reasoning timeline, and the team.
+// The timeline comes from GET /api/stream (SSE), which resumes with Last-Event-ID by itself.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AgentEvent, Escalation, PlanDetail, plansApi, PlanSummary, streamUrl, Vehicle } from "@/lib/api";
+import { Account, AgentEvent, Escalation, PlanDetail, plansApi, PlanSummary, STREAM_URL, Vehicle } from "@/lib/api";
+import { ago } from "@/lib/format";
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: "#868e96", planning: "#1971c2", awaiting_approval: "#e8590c", approved: "#2f9e44", dispatched: "#2b8a3e",
-  rejected: "#c92a2a", failed: "#c92a2a", unreachable: "#c92a2a", superseded: "#868e96",
-};
+import { REFRESH_MS } from "./LiveStatus";
+import TeamPanel from "./TeamPanel";
+
 const RECONNECT_MS = 3000;
+const STATUS_TONES: Record<string, string> = {
+  pending: "grey", planning: "blue", awaiting_approval: "orange", approved: "green", dispatched: "green",
+  rejected: "red", failed: "red", unreachable: "red", superseded: "grey",
+};
 const EVENT_ICONS: Record<string, string> = {
   node_started: "▶", node_finished: "■", tool_call: "⚙", tool_result: "⇣", decision: "✔", critic_rejection: "✖",
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
 };
+const TABS = ["Plans", "Activity", "Team"] as const;
 
 /** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
 function escalationLines(escalations: Escalation[]): string[] {
@@ -41,17 +45,18 @@ function escalationLines(escalations: Escalation[]): string[] {
 
 interface Props {
   selectedPlanId: string | null;
+  account: Account;
   onSelectPlan: (plan: PlanDetail | null) => void;
   onVehicle: (v: Vehicle) => void;
   onHazardChange: () => void;
 }
 
-export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHazardChange }: Props) {
+export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehicle, onHazardChange }: Props) {
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Plans");
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [live, setLive] = useState<"connecting" | "live" | "reconnecting">("connecting");
-  const [approver, setApprover] = useState("");
   const [reason, setReason] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [degraded, setDegraded] = useState<string | null>(null);
@@ -77,6 +82,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
 
   useEffect(() => {
     const first = setTimeout(refreshPlans, 0);
+    const poll = setInterval(() => { if (!document.hidden) refreshPlans(); }, REFRESH_MS);
     let source: EventSource | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
@@ -86,21 +92,9 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
       pending = setTimeout(refreshPlans, 500);
     };
     let lost = false;
-    const reconnect = () => {
-      lost = true;
-      setLive("reconnecting");
-      if (!closed) retry = setTimeout(connect, RECONNECT_MS);
-    };
-    const connect = async () => {
-      let url: string;
-      try {
-        url = await streamUrl();
-      } catch {
-        reconnect();
-        return;
-      }
+    const connect = () => {
       if (closed) return;
-      const stream = new EventSource(url);
+      const stream = new EventSource(STREAM_URL);
       source = stream;
       stream.onopen = () => {
         setLive("live");
@@ -114,7 +108,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
       stream.onerror = () => {
         lost = true;
         setLive("reconnecting");
-        if (stream.readyState === EventSource.CLOSED) reconnect();
+        if (stream.readyState === EventSource.CLOSED) retry = setTimeout(connect, RECONNECT_MS);
       };
       // The server sends its own `error` event when Postgres or Redis hiccups; the stream stays open.
       stream.addEventListener("error", (e) => {
@@ -122,7 +116,6 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
         if (data) setDegraded((JSON.parse(data) as { message: string }).message);
       });
       stream.addEventListener("plan", refreshSoon);
-      stream.addEventListener("source_health", () => callbacks.current.onHazardChange());
       stream.addEventListener("agent_event", (e) => {
         const ev = JSON.parse((e as MessageEvent).data) as AgentEvent;
         setEvents((prev) => [ev, ...prev.filter((p) => p.id !== ev.id)].slice(0, 300));
@@ -135,6 +128,7 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
     return () => {
       closed = true;
       clearTimeout(first);
+      clearInterval(poll);
       if (pending) clearTimeout(pending);
       if (retry) clearTimeout(retry);
       source?.close();
@@ -153,9 +147,9 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
   }
 
   async function decide(decision: "approved" | "rejected") {
-    if (!detail || !approver.trim()) return;
+    if (!detail) return;
     try {
-      await plansApi.decide(detail.id, decision, approver.trim(), reason.trim());
+      await plansApi.decide(detail.id, decision, account.name, reason.trim());
       setMsg(`Plan ${decision}.`);
       setReason("");
       await refreshPlans();
@@ -164,77 +158,100 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
     }
   }
 
-  const shown = events.filter((e) => !selectedPlanId || e.plan_id === selectedPlanId);
-
+  const awaiting = plans.filter((p) => p.status === "awaiting_approval").length;
+  const shown = selectedPlanId ? events.filter((e) => e.plan_id === selectedPlanId) : events;
   return (
-    <aside className="panel ops">
-      <h2>
-        Plans <span className={`live ${live}`}>{live === "live" ? "● live" : live === "connecting" ? "○ connecting" : "○ reconnecting…"}</span>
-      </h2>
-      {live === "reconnecting" && <div className="error small">Live updates interrupted. Retrying; this screen may be out of date.</div>}
-      {degraded && <div className="error small">Backend reports: {degraded}.</div>}
-      {plans.length === 0 && <p className="muted small">No plans yet. Publish a drill or wait for a severe hazard.</p>}
-      <ul className="plans">
-        {plans.map((p) => (
-          <li key={p.id} className={p.id === selectedPlanId ? "selected" : ""} onClick={() => select(p.id)}>
-            <span className="badge" style={{ background: STATUS_COLORS[p.status] ?? "#495057" }}>{p.status.replace("_", " ")}</span>
-            {p.is_drill && <span className="badge drill">DRILL</span>}
-            {p.parent_plan_id && <span className="badge replan">↻ REPLAN</span>}
-            <span className="small">{new Date(p.created_at).toLocaleTimeString()} · {p.trigger_kind}</span>
-          </li>
+    <aside className="pane right">
+      <nav className="tabs" aria-label="Right panel">
+        {TABS.map((t) => (
+          <button key={t} className={tab === t ? "tab active" : "tab"} onClick={() => setTab(t)}>
+            {t}{t === "Plans" && awaiting > 0 && <span className="count">{awaiting}</span>}
+          </button>
         ))}
-      </ul>
+      </nav>
+      <div className="pane-body">
+        {live === "reconnecting" && <div className="alert danger small">Live updates interrupted. Retrying; this panel may be out of date.</div>}
+        {degraded && <div className="alert danger small">The server reports: {degraded}.</div>}
+        {msg && <div className="alert small">{msg}</div>}
 
-      {detail && (
-        <section className="detail">
-          {detail.summary && <p>{detail.summary}</p>}
-          {detail.triage && (
-            <p className="small"><b>Triage:</b> {detail.triage.priority}, {detail.triage.planning_horizon_hours} h. {detail.triage.rationale}</p>
-          )}
-          {detail.unreachable_reason && <div className="error small">{detail.unreachable_reason}</div>}
-          {detail.escalations.length > 0 && (
-            <div className="small warn">
-              <b>Escalated to humans:</b>
-              <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
-            </div>
-          )}
-          {detail.critic.length > 0 && (
-            <p className="small"><b>Critic:</b> {detail.critic.map((c) => `#${c.attempt} ${c.passed ? "pass" : "reject (" + c.violations.length + ")"}`).join(" → ")}</p>
-          )}
-          <p className="small">
-            {detail.routes.length} route(s) · {detail.orders.length} order(s)
-            {detail.routes.map((r) => ` · ${(r.distance_m / 1000).toFixed(0)} km, clearance ${r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m, ${r.status}, ${r.completed_stops}/${r.stops.length} stops`)}
-          </p>
-          {detail.status === "awaiting_approval" && (
-            <div className="approve">
-              <b>Human approval required</b>
-              <input placeholder="Your name (recorded)" value={approver} onChange={(e) => setApprover(e.target.value)} maxLength={100} />
-              <input placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
-              <div className="row">
-                <button className="ok" disabled={!approver.trim()} onClick={() => decide("approved")}>Approve dispatch</button>
-                <button className="danger" disabled={!approver.trim()} onClick={() => decide("rejected")}>Reject</button>
-              </div>
-            </div>
-          )}
-          {detail.approval && (
-            <p className="small">Decision: <b>{detail.approval.decision}</b> by {detail.approval.decided_by} at {new Date(detail.approval.decided_at).toLocaleTimeString()}</p>
-          )}
-        </section>
-      )}
-      {msg && <p className="small">{msg}</p>}
+        {tab === "Plans" && (
+          <>
+            {plans.length === 0 && <p className="empty">No plans yet. Draw a drill on the map, or wait for a severe alert over a populated area.</p>}
+            <ul className="plan-list">
+              {plans.map((p) => (
+                <li key={p.id}>
+                  <button className={p.id === selectedPlanId ? "plan selected" : "plan"} onClick={() => select(p.id)}>
+                    <span className={`status ${STATUS_TONES[p.status] ?? "grey"}`}>{p.status.replace("_", " ")}</span>
+                    {p.is_drill && <span className="badge drill">DRILL</span>}
+                    {p.parent_plan_id && <span className="badge replan">REROUTE</span>}
+                    <span className="small muted plan-time">{ago(p.created_at)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
 
-      <h2>Agent reasoning {selectedPlanId ? "(selected plan)" : "(all)"}</h2>
-      <ol className="timeline">
-        {shown.map((e) => (
-          <li key={e.id} className={`ev ${e.event_type}`}>
-            <span className="icon">{EVENT_ICONS[e.event_type] ?? "•"}</span>
-            <span className="node">{e.node}</span>
-            <span className="small muted">{new Date(e.created_at).toLocaleTimeString()}</span>
-            <div className="small">{e.message}</div>
-            {e.source_ids.length > 0 && <div className="tiny muted">sources: {e.source_ids.slice(0, 4).join(", ")}{e.source_ids.length > 4 ? "…" : ""}</div>}
-          </li>
-        ))}
-      </ol>
+            {detail && (
+              <section className="plan-detail">
+                {detail.summary && <p>{detail.summary}</p>}
+                {detail.triage && <p className="small"><b>Priority {detail.triage.priority}</b>, {detail.triage.planning_horizon_hours} h horizon. {detail.triage.rationale}</p>}
+                {detail.unreachable_reason && <div className="alert danger small">{detail.unreachable_reason}</div>}
+                {detail.escalations.length > 0 && (
+                  <div className="alert warn small">
+                    <b>Needs a person</b>
+                    <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
+                  </div>
+                )}
+                {detail.routes.map((r) => (
+                  <div className="route-card" key={r.id}>
+                    <b>{(r.distance_m / 1000).toFixed(0)} km</b> · {(r.duration_s / 3600).toFixed(1)} h · {(r.load_kg / 1000).toFixed(1)} t
+                    <div className="progress" aria-label={`${r.completed_stops} of ${r.stops.length} stops`}>
+                      <span style={{ width: `${(100 * r.completed_stops) / r.stops.length}%` }} />
+                    </div>
+                    <small className="muted">{r.completed_stops}/{r.stops.length} stops · {r.status} · keeps {r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m from hazards</small>
+                  </div>
+                ))}
+                {detail.critic.length > 0 && (
+                  <p className="small muted">Safety check: {detail.critic.map((c) => `attempt ${c.attempt} ${c.passed ? "passed" : `rejected (${c.violations.length} problems)`}`).join(", ")}</p>
+                )}
+                {detail.status === "awaiting_approval" && (
+                  <div className="approve">
+                    <b>Your decision is needed</b>
+                    <small className="muted">Recorded as {account.name} ({account.email}).</small>
+                    <input placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
+                    <div className="row">
+                      <button className="primary" onClick={() => decide("approved")}>Approve dispatch</button>
+                      <button className="danger" onClick={() => decide("rejected")}>Reject</button>
+                    </div>
+                  </div>
+                )}
+                {detail.approval && (
+                  <p className="small"><b>{detail.approval.decision}</b> by {detail.approval.decided_by}, {ago(detail.approval.decided_at)}</p>
+                )}
+              </section>
+            )}
+          </>
+        )}
+
+        {tab === "Activity" && (
+          <>
+            <p className="small muted">{selectedPlanId ? "Showing the selected plan." : "Every step the system takes, as it happens."}</p>
+            <ol className="timeline">
+              {shown.map((e) => (
+                <li key={e.id} className={`ev ${e.event_type}`}>
+                  <span className="ev-icon" aria-hidden="true">{EVENT_ICONS[e.event_type] ?? "•"}</span>
+                  <span>
+                    <span className="ev-head"><b>{e.node}</b> <small className="muted">{new Date(e.created_at).toLocaleTimeString()}</small></span>
+                    <span className="small block">{e.message}</span>
+                  </span>
+                </li>
+              ))}
+              {shown.length === 0 && <li className="empty">Nothing yet. Steps appear here the moment they happen.</li>}
+            </ol>
+          </>
+        )}
+
+        {tab === "Team" && <TeamPanel me={account} />}
+      </div>
     </aside>
   );
 }

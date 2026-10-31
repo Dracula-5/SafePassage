@@ -4,6 +4,4 @@
 !backend/requirements
 !backend/app
 !backend/migrations
-!driver-pwa
 **/__pycache__
-driver-pwa/tests

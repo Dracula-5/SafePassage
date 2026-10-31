@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ReliefRoute",
-  description: "Live hazard-aware relief logistics",
+  description: "Live disaster alerts turned into safe relief deliveries, with a person approving every dispatch.",
+  icons: { icon: "/icon.svg" },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,8 +1,8 @@
-// Run: node --test driver-pwa/tests/queue.test.js   (also run by backend/tests/senses/test_driver_pwa.py)
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const q = require("../queue.js");
+// Run: node --test frontend/tests/queue.test.mjs   (also run by backend/tests/senses/test_driver_pwa.py)
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import * as q from "../src/lib/queue.mjs";
 
 const fixes = (n) => Array.from({ length: n }, (_, i) => ({ recorded_at: i }));
 

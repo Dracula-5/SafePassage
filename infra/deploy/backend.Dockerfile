@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir -c backend/requirements/constraints.txt -e ./cont
     -r backend/requirements/brain.txt -r backend/requirements/senses.txt
 COPY backend/app ./backend/app
 COPY backend/migrations ./backend/migrations
-COPY driver-pwa ./driver-pwa
 
 # documents must exist here: a new named volume takes its owner from the image, or PO PDFs can't be written.
 RUN useradd --create-home relief && mkdir -p /data/documents && chown -R relief /data
