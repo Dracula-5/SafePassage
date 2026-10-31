@@ -67,9 +67,21 @@ function operatorToken(): string | null {
   }
 }
 
-/** Asks once for the operator token when a protected endpoint refuses (deployments only). */
-function askForToken(): boolean {
+function forgetToken(): void {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage is blocked: nothing was kept.
+  }
+}
+
+let declined = false; // Cancelled once: the public map stays usable, and polling must not ask again.
+
+/** Asks for the operator token when a protected endpoint refuses. Pressing a button asks again. */
+function askForToken(method: string): boolean {
+  if (declined && method === "GET") return false;
   const token = window.prompt("Operator token");
+  declined = !token;
   if (!token) return false;
   try {
     sessionStorage.setItem(TOKEN_KEY, token);
@@ -84,7 +96,13 @@ async function request<T>(path: string, init?: RequestInit, retried = false): Pr
   const token = operatorToken();
   const headers = { ...init?.headers, ...(token ? { "X-Operator-Token": token } : {}) };
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", ...init, headers });
-  if (res.status === 401 && !retried && askForToken()) return request<T>(path, init, true);
+  if (res.status === 401 && !retried) {
+    // Several calls fail together on first load: whichever comes second finds the token already there.
+    if (operatorToken() !== token || askForToken(init?.method ?? "GET")) return request<T>(path, init, true);
+  } else if (res.status === 401) {
+    forgetToken(); // Refused even with a token: wrong one. Asking again on every poll would help nobody.
+    declined = true;
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${init?.method ?? "GET"} ${path} failed: HTTP ${res.status} ${body.slice(0, 200)}`);
@@ -193,6 +211,9 @@ export const plansApi = {
   vehicles: () => request<Vehicle[]>("/api/vehicles"),
 };
 
-export function streamUrl(): string {
-  return `${API_BASE}/api/stream`;
+/** EventSource cannot send the token, so each connection gets a short-lived read-only ticket. */
+export async function streamUrl(): Promise<string> {
+  if (declined) throw new Error("no operator token"); // This retries in the background, so it must not ask.
+  const { ticket } = await request<{ ticket: string | null }>("/api/stream/ticket", { method: "POST" });
+  return `${API_BASE}/api/stream${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""}`;
 }

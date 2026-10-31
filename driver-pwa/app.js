@@ -35,7 +35,8 @@ $("do-register").onclick = async () => {
   const body = { label: $("label").value.trim(), driver_name: $("name").value.trim() || undefined,
     driver_phone: $("phone").value.trim() || undefined, driver_language: $("lang").value, capacity_kg: Number($("cap").value) };
   try {
-    store.vehicle = await api("/api/vehicles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const headers = { "Content-Type": "application/json", "X-Enrolment-Code": $("code").value.trim() };
+    store.vehicle = await api("/api/vehicles", { method: "POST", headers, body: JSON.stringify(body) });
     show(); startGps();
   } catch (e) { $("reg-msg").className = "err"; $("reg-msg").textContent = e.message; }
 };
@@ -51,7 +52,7 @@ function startGps() {
       speed_mps: p.coords.speed ?? null, heading_deg: p.coords.heading != null && p.coords.heading < 360 ? p.coords.heading : null,
       accuracy_m: p.coords.accuracy });
     show();
-  }, (e) => { $("gps").innerHTML = `<span class="bad">${e.message}</span>`; }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  }, (e) => { $("gps").textContent = e.message; }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
 }
 
 async function flush() {
@@ -86,7 +87,7 @@ async function loadAssignment() {
   const v = store.vehicle;
   if (!v || !navigator.onLine) return;
   try {
-    const a = await api(`/api/vehicles/${v.vehicle.id}/assignment`);
+    const a = await api(`/api/vehicles/${v.vehicle.id}/assignment`, { headers: { "X-Device-Token": v.device_token } });
     instructions = a.instructions;
     const changed = routeId !== null && routeId !== a.route.id; // the Replanner sent a replacement
     routeId = a.route.id;
@@ -100,6 +101,7 @@ async function loadAssignment() {
     if (changed) speakInstructions();
   } catch (e) {
     if (e.status === 404) { instructions = null; routeId = null; $("assignment").innerHTML = "<p>No assignment yet. Keep this screen open; it refreshes automatically.</p>"; $("speak").hidden = true; }
+    if (e.status === 401) { instructions = null; routeId = null; $("assignment").innerHTML = '<p class="bad">This device is no longer registered. Call your dispatcher.</p>'; $("speak").hidden = true; }
   }
 }
 

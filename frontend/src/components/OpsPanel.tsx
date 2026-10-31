@@ -1,7 +1,8 @@
 "use client";
 
 // Right-hand operations panel: plans, the human approval gate, and the live agent timeline.
-// The timeline comes from GET /api/stream (SSE, resumes with Last-Event-ID automatically).
+// The timeline comes from GET /api/stream (SSE). EventSource retries a dropped connection by itself;
+// once its ticket has expired it gives up (readyState CLOSED), and connect() starts over with a new one.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -11,6 +12,7 @@ const STATUS_COLORS: Record<string, string> = {
   pending: "#868e96", planning: "#1971c2", awaiting_approval: "#e8590c", approved: "#2f9e44", dispatched: "#2b8a3e",
   rejected: "#c92a2a", failed: "#c92a2a", unreachable: "#c92a2a", superseded: "#868e96",
 };
+const RECONNECT_MS = 3000;
 const EVENT_ICONS: Record<string, string> = {
   node_started: "▶", node_finished: "■", tool_call: "⚙", tool_result: "⇣", decision: "✔", critic_rejection: "✖",
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
@@ -75,44 +77,67 @@ export default function OpsPanel({ selectedPlanId, onSelectPlan, onVehicle, onHa
 
   useEffect(() => {
     const first = setTimeout(refreshPlans, 0);
-    const source = new EventSource(streamUrl());
+    let source: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
     let pending: ReturnType<typeof setTimeout> | null = null;
     const refreshSoon = () => {
       if (pending) clearTimeout(pending);
       pending = setTimeout(refreshPlans, 500);
     };
     let lost = false;
-    source.onopen = () => {
-      setLive("live");
-      setDegraded(null);
-      if (lost) {  // anything could have changed while the stream was down
-        lost = false;
-        refreshPlans();
-        callbacks.current.onHazardChange();
-      }
-    };
-    source.onerror = () => {
+    const reconnect = () => {
       lost = true;
       setLive("reconnecting");
+      if (!closed) retry = setTimeout(connect, RECONNECT_MS);
     };
-    // The server sends its own `error` event when Postgres or Redis hiccups; the stream stays open.
-    source.addEventListener("error", (e) => {
-      const data = (e as MessageEvent).data;
-      if (data) setDegraded((JSON.parse(data) as { message: string }).message);
-    });
-    source.addEventListener("plan", refreshSoon);
-    source.addEventListener("source_health", () => callbacks.current.onHazardChange());
-    source.addEventListener("agent_event", (e) => {
-      const ev = JSON.parse((e as MessageEvent).data) as AgentEvent;
-      setEvents((prev) => [ev, ...prev.filter((p) => p.id !== ev.id)].slice(0, 300));
-      refreshSoon();
-    });
-    source.addEventListener("vehicle", (e) => callbacks.current.onVehicle(JSON.parse((e as MessageEvent).data)));
-    source.addEventListener("hazard", () => callbacks.current.onHazardChange());
+    const connect = async () => {
+      let url: string;
+      try {
+        url = await streamUrl();
+      } catch {
+        reconnect();
+        return;
+      }
+      if (closed) return;
+      const stream = new EventSource(url);
+      source = stream;
+      stream.onopen = () => {
+        setLive("live");
+        setDegraded(null);
+        if (lost) {  // anything could have changed while the stream was down
+          lost = false;
+          refreshPlans();
+          callbacks.current.onHazardChange();
+        }
+      };
+      stream.onerror = () => {
+        lost = true;
+        setLive("reconnecting");
+        if (stream.readyState === EventSource.CLOSED) reconnect();
+      };
+      // The server sends its own `error` event when Postgres or Redis hiccups; the stream stays open.
+      stream.addEventListener("error", (e) => {
+        const data = (e as MessageEvent).data;
+        if (data) setDegraded((JSON.parse(data) as { message: string }).message);
+      });
+      stream.addEventListener("plan", refreshSoon);
+      stream.addEventListener("source_health", () => callbacks.current.onHazardChange());
+      stream.addEventListener("agent_event", (e) => {
+        const ev = JSON.parse((e as MessageEvent).data) as AgentEvent;
+        setEvents((prev) => [ev, ...prev.filter((p) => p.id !== ev.id)].slice(0, 300));
+        refreshSoon();
+      });
+      stream.addEventListener("vehicle", (e) => callbacks.current.onVehicle(JSON.parse((e as MessageEvent).data)));
+      stream.addEventListener("hazard", () => callbacks.current.onHazardChange());
+    };
+    connect();
     return () => {
+      closed = true;
       clearTimeout(first);
       if (pending) clearTimeout(pending);
-      source.close();
+      if (retry) clearTimeout(retry);
+      source?.close();
     };
   }, [refreshPlans]);
 

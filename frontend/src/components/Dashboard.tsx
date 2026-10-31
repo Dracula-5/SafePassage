@@ -41,7 +41,8 @@ export default function Dashboard() {
 
   const refresh = useCallback(async () => {
     try {
-      const [h, s, v] = await Promise.all([api.hazards(), api.sourceHealth(), plansApi.vehicles()]);
+      // Vehicles need the operator token; hazards and source health are public and must still show.
+      const [h, s, v] = await Promise.all([api.hazards(), api.sourceHealth(), plansApi.vehicles().catch(() => [])]);
       setHazards(h);
       setHealth(s);
       setVehicles(v);
