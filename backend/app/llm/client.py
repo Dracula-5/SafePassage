@@ -120,33 +120,41 @@ class GeminiBackend:
     """Google Gemini via the public REST API (generateContent), over an ordered list of models.
 
     Gemini models come and go (404 when retired) and are often overloaded (503/429 or slow).
-    Each call tries the models in order with its own breaker and time budget; the model that
-    answers moves to the front, and `model` names it for the audit trail.
+    Each call tries the models in order; the model that answers moves to the front, and `model`
+    names it for the audit trail. Waiting on the chain used to hold a plan for minutes, so a retired
+    model is dropped for good, one that failed rests for REST_S, and a call gives up after budget_s.
+    A plan then carries on with the labelled rule-based step instead of leaving a truck waiting.
     """
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
     SKIP_STATUS = {404, 429, 500, 503}
+    RETIRED_STATUS = 404
+    REST_S = 120
+    ANSWER_TIMEOUT_S = 25.0
 
-    def __init__(self, api_key: str, models: list[str], http: httpx.AsyncClient, timeout_s: float = 30.0,
-                 temperature: float = 0.2):
+    def __init__(self, api_key: str, models: list[str], http: httpx.AsyncClient, timeout_s: float = ANSWER_TIMEOUT_S,
+                 temperature: float = 0.2, budget_s: float = 45.0):
         self.api_key = api_key
         self.models = list(models)
         self.http = http
         self.timeout_s = timeout_s
+        self.budget_s = budget_s
         self.temperature = temperature
-        self.breakers = {m: CircuitBreaker(f"gemini:{m}", failure_threshold=2, reset_after_s=300) for m in self.models}
+        self.breakers: dict[str, CircuitBreaker] = {}
         self.breaker = CircuitBreaker("gemini")  # used only for list_models
 
     @property
     def model(self) -> str:
         return self.models[0] if self.models else ""
 
-    async def _call(self, model: str, body: dict) -> str:
-        breaker = self.breakers.setdefault(model, CircuitBreaker(f"gemini:{model}", failure_threshold=2, reset_after_s=300))
+    async def _call(self, model: str, body: dict, timeout_s: float | None = None) -> str:
+        breaker = self.breakers.setdefault(model, CircuitBreaker(f"gemini:{model}", failure_threshold=1, reset_after_s=self.REST_S))
         resp = await resilient_request(
             self.http, "POST", f"{self.BASE}/models/{model}:generateContent", breaker,
-            timeout_s=self.timeout_s, retries=0, json=body, headers={"x-goog-api-key": self.api_key},
+            timeout_s=timeout_s or self.timeout_s, retries=0, json=body, headers={"x-goog-api-key": self.api_key},
         )  # fmt: skip
+        if resp.status_code == self.RETIRED_STATUS and model in self.models:
+            self.models.remove(model)
         if resp.status_code in self.SKIP_STATUS:
             breaker.record_failure()
             raise SourceUnavailable(f"gemini:{model}", f"HTTP {resp.status_code}")
@@ -166,9 +174,14 @@ class GeminiBackend:
             "generationConfig": {"temperature": self.temperature, "responseMimeType": "application/json"},
         }
         errors = []
+        deadline = time.monotonic() + self.budget_s
         for model in list(self.models):
+            left = deadline - time.monotonic()
+            if left < 1:
+                errors.append(f"gave up after {self.budget_s:.0f} s")
+                break
             try:
-                text = await self._call(model, body)
+                text = await self._call(model, body, min(self.timeout_s, left))
             except SourceUnavailable as exc:
                 errors.append(f"{model}: {exc.reason}")
                 log.warning("gemini_model_unavailable", model=model, reason=exc.reason)

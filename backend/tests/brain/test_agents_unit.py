@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from shapely import LineString, box
 
@@ -10,8 +11,9 @@ from app.agents.procurement import StockRow, allocate
 from app.agents.reasoning import numbers_in, translate_instructions
 from app.agents.schemas import PlannedRoute, PopulationEstimate, ReliefPoint, RouteStop, Routing, Triage
 from app.agents.standards import STANDARDS
+from app.core.resilience import SourceUnavailable
 from app.graph import fallbacks
-from app.llm.client import LLMClient, LLMOutputError, extract_json
+from app.llm.client import GeminiBackend, LLMClient, LLMOutputError, extract_json
 from app.llm.factory import pick_gemini_model
 from app.solvers.geometry import HazardShape
 
@@ -147,6 +149,60 @@ async def test_gemini_backend_falls_through_unavailable_models():
     backend = GeminiBackend("k", ["busy", "gone", "good"], httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     assert await backend.complete("s", [("user", "p")]) == '{"ok": true}'
     assert backend.model == "good" and backend.models[0] == "good"
+
+
+def gemini_with(replies: dict[str, object]) -> tuple[GeminiBackend, list[str], httpx.AsyncClient]:
+    """Each model answers as scripted: an HTTP status, an exception, or text."""
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = request.url.path.split("/models/")[1].split(":")[0]
+        asked.append(model)
+        reply = replies[model]
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, int):
+            return httpx.Response(reply, json={})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": reply}]}}]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return GeminiBackend("key", list(replies), http), asked, http
+
+
+async def test_a_retired_gemini_model_is_never_tried_again():
+    backend, asked, http = gemini_with({"retired": 404, "good": "ok"})
+    async with http:
+        await backend.complete("s", [("user", "p")])
+        await backend.complete("s", [("user", "p")])
+    assert asked == ["retired", "good", "good"] and backend.models == ["good"]
+
+
+async def test_an_overloaded_gemini_model_rests_instead_of_slowing_every_call():
+    backend, asked, http = gemini_with({"busy": 503, "slow": httpx.ReadTimeout("slow"), "good": "ok"})
+    async with http:
+        await backend.complete("s", [("user", "p")])
+        backend.models = ["busy", "slow", "good"]  # even if they stay first in line
+        await backend.complete("s", [("user", "p")])
+    assert asked == ["busy", "slow", "good", "good"]
+
+
+async def test_gemini_gives_up_within_its_budget_so_a_plan_is_not_held():
+    backend, asked, http = gemini_with({"slow": httpx.ReadTimeout("slow"), "never": "ok"})
+    backend.budget_s = 0.5  # under a second is too short to start another model
+    async with http:
+        with pytest.raises(SourceUnavailable, match="gave up"):
+            await backend.complete("s", [("user", "p")])
+    assert asked == []
+
+
+async def test_every_model_resting_fails_at_once_and_a_plan_uses_its_rule_based_step():
+    backend, asked, http = gemini_with({"a": 503, "b": 503})
+    async with http:
+        with pytest.raises(SourceUnavailable):
+            await backend.complete("s", [("user", "p")])
+        with pytest.raises(SourceUnavailable, match="circuit open"):
+            await backend.complete("s", [("user", "p")])
+    assert asked == ["a", "b"]
 
 
 def test_nearby_candidates_limits_radius_and_count():

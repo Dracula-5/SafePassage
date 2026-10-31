@@ -16,6 +16,7 @@ _pool: asyncpg.Pool | None = None
 _lock = asyncio.Lock()
 STANDBY_POLL_S = 5
 LOCK_CHECK_S = 15
+RIVAL_CHECKS = 3  # a dropped session can hold its lock for a moment, so one refusal does not prove a rival
 LOST_LOCK_ERRORS = (OSError, TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError)
 
 
@@ -79,13 +80,20 @@ class Singleton:
                 continue
             except LOST_LOCK_ERRORS:
                 log.warning("singleton_lock_lost", name=self.name)
-            while True:
-                try:
-                    if await self._try():
-                        break
-                    raise RuntimeError(f"another {self.name} took over while Postgres was restarting")
-                except LOST_LOCK_ERRORS:
-                    await asyncio.sleep(STANDBY_POLL_S)
+            await self._take_back()
+
+    async def _take_back(self) -> None:
+        refused = 0
+        while True:
+            try:
+                if await self._try():
+                    return
+                refused += 1
+            except LOST_LOCK_ERRORS:  # Postgres is still on its way back
+                refused = 0
+            if refused >= RIVAL_CHECKS:
+                raise RuntimeError(f"another {self.name} took over while Postgres was restarting")
+            await asyncio.sleep(STANDBY_POLL_S)
 
     async def release(self) -> None:
         if self.conn is not None:

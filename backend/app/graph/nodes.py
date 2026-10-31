@@ -72,6 +72,7 @@ def _ids(prefix: str, ids: list[str]) -> list[str]:
 
 
 STOPPED_WITH_REASON = ("unreachable", "failed", "superseded")
+ROUTING_DOWN = "routing service unavailable, so no route can be verified as safe: escalated to humans"
 ALTERNATE_HUB_RADIUS_FACTOR = 4
 ALTERNATE_HUB_CANDIDATES = 40
 AREA_MARGIN_DEG = 0.5  # about 50 km: hazards farther than this from every location cannot affect the trip
@@ -258,7 +259,11 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                 try:
                     matrix = await deps.valhalla.matrix([Location(lon=lo, lat=la) for _, lo, la in part], targets, exclude=rings)
                     rows = matrix.durations_s
-                except (ValhallaError, SourceUnavailable) as exc:
+                except SourceUnavailable as exc:
+                    # The router is down, which says nothing about the roads: blaming the suppliers would be false.
+                    await audit("procurement", "error", f"Routing service unavailable: {exc}")
+                    return _stop(state, "failed", ROUTING_DOWN)
+                except ValhallaError as exc:
                     await audit("procurement", "error", f"Valhalla matrix chunk failed ({exc}); those suppliers count as unreachable")
                     rows = [[None] * len(targets) for _ in part]
                 for i, (sid, _, _) in enumerate(part):
@@ -311,7 +316,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                                         shift_s=int(s.max_shift_hours * 3600), onboard_vehicle_id=onboard_vehicle)  # fmt: skip
         except (ValhallaError, SourceUnavailable) as exc:
             await audit("route_planner", "error", f"Routing service unavailable: {exc}")
-            return _stop(state, "failed", "routing service unavailable, so no route can be verified as safe: escalated to humans")
+            return _stop(state, "failed", ROUTING_DOWN)
         await audit("route_planner", "decision",
                     f"Attempt {state['attempt']}: {len(routing.routes)} route(s), {len(routing.unserved_order_keys)} "
                     f"unserved order part(s), {len(routing.deferred_part_keys)} part(s) deferred to the next wave, "

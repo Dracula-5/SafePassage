@@ -47,9 +47,9 @@ async def test_valhalla_down_stops_the_plan_without_guessing_a_route(world):  # 
     async with httpx.AsyncClient() as http:
         world["deps"].valhalla = dead_valhalla(http)
         _, row = await start(world)
-    assert row["status"] == "failed" and "no supplier has reachable stock" in row["unreachable_reason"]
+    assert row["status"] == "failed" and "routing service unavailable" in row["unreachable_reason"]
     timeline = await events(world["pool"], world["plan"])
-    assert any("those suppliers count as unreachable" in e["message"] for e in timeline)
+    assert any("Routing service unavailable" in e["message"] for e in timeline)
     assert await world["pool"].fetchval("SELECT count(*) FROM routes") == 0
 
 

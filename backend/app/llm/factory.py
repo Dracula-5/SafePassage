@@ -62,7 +62,7 @@ async def build_llm(settings: BrainSettings, http: httpx.AsyncClient) -> LLMClie
     candidates = ranked[:6]
     backend.timeout_s = 15  # probes only; real calls get the full budget below
     answers = await asyncio.gather(*(backend.probe(m) for m in candidates))
-    backend.timeout_s = 30
+    backend.timeout_s = GeminiBackend.ANSWER_TIMEOUT_S
     healthy = [m for m, ok in zip(candidates, answers, strict=True) if ok]
     backend.models = healthy + [m for m in ranked if m not in healthy]
     if not backend.models:
