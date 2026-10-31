@@ -1,9 +1,16 @@
-# HTTPS for the API. Caddy gets and renews the certificate for DOMAIN by itself, and it replaces any
-# X-Forwarded-For a client sends, so the rate limiter sees real addresses. It streams /api/stream
-# unbuffered without being told. Keep this free of `encode`: compression would hold back the stream.
-{$DOMAIN} {
+# One address for everything. With an https:// PUBLIC_URL, Caddy gets and renews the certificate by
+# itself. It replaces any X-Forwarded-For a client sends, so the rate limiter sees real addresses, and it
+# streams /api/stream unbuffered without being told. Keep this free of `encode`: compression would hold
+# back the stream.
+{$PUBLIC_URL} {
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy api:8000
+	@backend path /api/* /health /driver /driver/* /portal /portal/*
+	handle @backend {
+		reverse_proxy api:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
 }

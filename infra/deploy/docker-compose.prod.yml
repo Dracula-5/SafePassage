@@ -1,6 +1,6 @@
-# The whole backend on one VM. Needs 8 GB of RAM and the data folder built by infra/valhalla/build.sh
-# and infra/osm/*.sh. Run from the repo root:
-#   cp infra/deploy/.env.example infra/deploy/.env   # then fill it in
+# The whole system on one VM, behind one address: dashboard, API, driver app and supplier portal. Needs
+# 8 GB of RAM and the map data. docs/deploy.md has the steps; in short, from the repo root:
+#   sh infra/deploy/setup.sh https://your-domain
 #   docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env up -d --build
 #
 # Only Caddy is reachable from outside, on 80 and 443. The API refuses to start with unsafe settings
@@ -21,7 +21,7 @@ x-backend: &backend
   read_only: true
   tmpfs: [/tmp]
   pids_limit: 512
-  env_file: .env
+  env_file: ${ENV_FILE:-.env}
   environment: &backend-env
     APP_ENV: production
     DATABASE_URL: postgresql://reliefroute_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/reliefroute
@@ -40,11 +40,35 @@ services:
     image: caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
-    environment: { DOMAIN: "${DOMAIN:?set DOMAIN}" }
+    environment: { PUBLIC_URL: "${PUBLIC_URL:?set PUBLIC_URL}" }
     ports: ["80:80", "443:443"]
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"]
     networks: { edge: { ipv4_address: 172.30.0.2 } }
-    depends_on: { api: { condition: service_healthy } }
+    depends_on:
+      api: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+
+  frontend:
+    <<: *hardening
+    image: reliefroute-frontend
+    build:
+      context: ../..
+      dockerfile: infra/deploy/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ${PUBLIC_URL:?set PUBLIC_URL}
+        NEXT_PUBLIC_REGION_BBOX: ${REGION_BBOX:?set REGION_BBOX}
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp, /app/.next/cache]
+    pids_limit: 256
+    environment: { HOSTNAME: 0.0.0.0 }
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   db:
     <<: *hardening

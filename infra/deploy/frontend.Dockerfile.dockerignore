@@ -1,0 +1,7 @@
+# BuildKit reads <Dockerfile>.dockerignore. .env files stay out: .env.local would override the build arguments.
+**
+!frontend
+frontend/node_modules
+frontend/.next
+frontend/.env*
+frontend/*.tsbuildinfo

@@ -85,11 +85,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Production compose is valid when filled in
         run: |
-          sed -E 's/^(DOMAIN|POSTGRES_PASSWORD|APP_DB_PASSWORD|REDIS_PASSWORD)=.*/\1=check/' infra/deploy/.env.example > infra/deploy/.env
+          sed -E 's/^(POSTGRES_PASSWORD|APP_DB_PASSWORD|REDIS_PASSWORD)=.*/\1=check/; s|^PUBLIC_URL=.*|PUBLIC_URL=https://relief.example.org|' infra/deploy/.env.example > infra/deploy/.env
           docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env config -q
       - name: Production compose refuses to run with a secret missing
         run: |
           ! docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env.example config -q
+
+      - name: Backend image builds
+        run: docker build -f infra/deploy/backend.Dockerfile -t reliefroute-backend .
+      - name: Dashboard image builds
+        run: >
+          docker build -f infra/deploy/frontend.Dockerfile -t reliefroute-frontend
+          --build-arg NEXT_PUBLIC_API_BASE=https://relief.example.org
+          --build-arg NEXT_PUBLIC_REGION_BBOX=76.6,12.5,84.9,20.1 .
 
   secrets:
     runs-on: ubuntu-latest

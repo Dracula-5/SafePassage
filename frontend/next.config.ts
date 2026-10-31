@@ -22,6 +22,8 @@ const csp = [
 
 const nextConfig: NextConfig = {
   /* config options here */
+  // Only in the Linux image (frontend.Dockerfile): on Windows this step can need symlink rights.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false,
@@ -32,7 +34,8 @@ const nextConfig: NextConfig = {
         { key: "Content-Security-Policy", value: csp },
         { key: "X-Content-Type-Options", value: "nosniff" },
         { key: "X-Frame-Options", value: "DENY" },
-        { key: "Referrer-Policy", value: "no-referrer" },
+        // The map's tile servers expect to see which site is asking; this sends the origin and no path.
+        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         { key: "Permissions-Policy", value: "geolocation=(), camera=(), microphone=()" },
       ],
     }];
