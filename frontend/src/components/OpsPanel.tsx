@@ -180,7 +180,7 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
             <ul className="plan-list">
               {plans.map((p) => (
                 <li key={p.id}>
-                  <button className={p.id === selectedPlanId ? "plan selected" : "plan"} onClick={() => select(p.id)}>
+                  <button className={p.id === selectedPlanId ? "plan selected" : "plan"} data-plan={p.id} onClick={() => select(p.id)}>
                     <span className={`status ${STATUS_TONES[p.status] ?? "grey"}`}>{p.status.replace("_", " ")}</span>
                     {p.is_drill && <span className="badge drill">DRILL</span>}
                     {p.parent_plan_id && <span className="badge replan">REROUTE</span>}

@@ -149,6 +149,7 @@ export interface TeamMember extends Account {
   supplier_name: string | null;
   supplier_verified: boolean | null;
   vehicle_label: string | null;
+  email_verified: boolean;
 }
 
 const json = { "Content-Type": "application/json" };
@@ -162,6 +163,9 @@ export const authApi = {
   signOut: () => send<void>("/api/auth/signout", { method: "POST" }),
   reset: (token: string, password: string) =>
     send<void>("/api/auth/reset", { method: "POST", headers: json, body: JSON.stringify({ token, password }) }),
+  options: () => send<{ email: boolean }>("/api/auth/options"),
+  forgot: (email: string) => send<unknown>("/api/auth/forgot", { method: "POST", headers: json, body: JSON.stringify({ email }) }),
+  verify: (token: string) => send<void>("/api/auth/verify", { method: "POST", headers: json, body: JSON.stringify({ token }) }),
 };
 
 export const teamApi = {

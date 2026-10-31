@@ -46,7 +46,7 @@ export default function TeamPanel({ me }: { me: Account }) {
         {(team ?? []).map((p) => (
           <li key={p.id} className={p.disabled ? "person disabled" : "person"}>
             <b>{p.name}</b>{p.id === me.id && <small className="muted"> (you)</small>}
-            <small className="block muted">{p.email}</small>
+            <small className="block muted">{p.email}{p.email_verified ? " · confirmed" : ""}</small>
             <small className="block muted">
               {ROLE_NAMES[p.role]}{p.vehicle_label ? ` · ${p.vehicle_label}` : ""}{p.supplier_name ? ` · ${p.supplier_name}` : ""} · seen {ago(p.last_signin_at)}
             </small>

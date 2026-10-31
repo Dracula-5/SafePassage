@@ -89,7 +89,7 @@ export function SignInForm() {
         <button className="primary" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
       </form>
       <p className="auth-foot">New here? <Link href="/signup">Create an account</Link></p>
-      <p className="auth-foot small muted">Forgot your password? Ask a duty officer for a reset link.</p>
+      <p className="auth-foot small"><Link href="/forgot">Forgot your password?</Link></p>
     </AuthLayout>
   );
 }
@@ -143,6 +143,52 @@ export function SignUpForm() {
         <button className="primary" disabled={busy}>{busy ? "Creating your account…" : "Create account"}</button>
       </form>
       <p className="auth-foot">Already have an account? <Link href="/signin">Sign in</Link></p>
+    </AuthLayout>
+  );
+}
+
+export function ForgotForm() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [mailOn, setMailOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    authApi.options().then((o) => setMailOn(o.email), () => setMailOn(false));
+  }, []);
+  const { error, busy, submit } = useSubmit(async () => {
+    await authApi.forgot(email);
+    setSent(true);
+  });
+  return (
+    <AuthLayout title="Forgot your password?" subtitle={mailOn === false ? "A duty officer can help." : "We will email you a link to choose a new one."}>
+      {mailOn === false ? (
+        <div className="alert" role="status">Ask a duty officer for a reset link. They can make one in the Team tab.</div>
+      ) : sent ? (
+        <div className="alert ok" role="status">If that address has an account, a link is on its way. Check your spam folder too.</div>
+      ) : (
+        <form className="form" onSubmit={submit}>
+          <label>Email<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          {error && <div className="alert danger" role="alert">{error}</div>}
+          <button className="primary" disabled={busy || mailOn === null}>{busy ? "Sending…" : "Send reset link"}</button>
+        </form>
+      )}
+      <p className="auth-foot"><Link href="/signin">Back to sign in</Link></p>
+    </AuthLayout>
+  );
+}
+
+export function VerifyEmail() {
+  const params = useSearchParams();
+  const token = params.get("token") ?? "";
+  const [state, setState] = useState<"checking" | "done" | "failed">("checking");
+  useEffect(() => {
+    authApi.verify(token).then(() => setState("done"), () => setState("failed"));
+  }, [token]);
+  return (
+    <AuthLayout title="Confirm your email" subtitle="Thank you for checking.">
+      {state === "checking" && <p className="muted">Checking your link…</p>}
+      {state === "done" && <div className="alert ok" role="status">Your email is confirmed.</div>}
+      {state === "failed" && <div className="alert danger" role="alert">This link has expired or was already used.</div>}
+      <p className="auth-foot"><Link href="/">Continue to ReliefRoute</Link></p>
     </AuthLayout>
   );
 }
