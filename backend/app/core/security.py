@@ -139,7 +139,9 @@ LIMITS = {
     ("POST", "/portal/whatsapp"): Limit(120, 60),
     ("GET", "/portal/api/facilities"): Limit(60, 60),
     ("GET", "/api/stream"): Limit(30, 60),
-    ("POST", "/api/stream/ticket"): Limit(30, 60),
+    ("POST", "/api/auth/signup"): Limit(30, 3600),
+    ("POST", "/api/auth/signin"): Limit(30, 60),
+    ("POST", "/api/auth/reset"): Limit(20, 3600),
 }
 NOT_LIMITED = ("/health",)
 REDIS_WAIT_S = 0.25

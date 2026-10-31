@@ -41,7 +41,8 @@ class LangfuseTracer:
         ]  # fmt: skip
         try:
             resp = await self.http.post(self.url, json={"batch": batch}, auth=self.auth, timeout=TIMEOUT_S)
-            if resp.status_code >= 300:
+            # 207 means "see each item": a batch can be refused inside a response that looks like success.
+            if resp.status_code >= 300 or (resp.status_code == 207 and resp.json().get("errors")):
                 log.warning("langfuse_rejected", status=resp.status_code, body=resp.text[:200])
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             log.warning("langfuse_unreachable", error=str(exc))

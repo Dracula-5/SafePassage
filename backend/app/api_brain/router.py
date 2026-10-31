@@ -6,7 +6,7 @@ import json
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from reliefroute_contracts.enums import OrderStatus, PlanStatus
 from reliefroute_contracts.events import PlanApproved
@@ -16,6 +16,7 @@ from app.core import bus
 from app.core.auth import require_operator
 from app.core.db import get_pool
 from app.core.logging import scrub
+from app.core.sessions import account_for
 from app.core.settings_brain import get_brain_settings
 from app.core.validation import Name, Text
 from app.graph import plans
@@ -45,6 +46,20 @@ async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None,
                                           requested_by=body.requested_by,
                                           idempotency_key=f"manual:{idempotency_key}" if idempotency_key else None)  # fmt: skip
     return summary
+
+
+@router.get("/api/overview", dependencies=[Depends(require_operator)])
+async def overview() -> dict:
+    """The operations numbers on the dashboard, asked for every 5 seconds. Every figure is a live count."""
+    row = await (await get_pool()).fetchrow(
+        """SELECT (SELECT count(*) FROM plans WHERE status = 'awaiting_approval') AS plans_awaiting,
+                  (SELECT count(*) FROM routes WHERE status IN ('planned', 'active')) AS routes_live,
+                  (SELECT COALESCE(sum(load_kg), 0) FROM routes WHERE status IN ('planned', 'active')) AS kg_on_routes,
+                  (SELECT count(*) FROM orders WHERE status IN ('dispatched', 'in_transit')) AS orders_open,
+                  (SELECT count(*) FROM orders WHERE status = 'delivered') AS orders_delivered,
+                  (SELECT count(*) FROM v_vehicle_status WHERE NOT is_offline AND status <> 'maintenance') AS trucks_online,
+                  (SELECT count(*) FROM v_vehicle_status WHERE status <> 'maintenance') AS trucks_total""")
+    return dict(row)
 
 
 @router.get("/api/plans", dependencies=[Depends(require_operator)])
@@ -132,7 +147,10 @@ async def _close_expired(conn, plan_id: UUID, decided_by: str) -> None:
 
 
 @router.post("/api/plans/{plan_id}/approve", dependencies=[Depends(require_operator)])
-async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
+async def decide_plan(plan_id: UUID, body: ApprovalRequest, request: Request) -> dict:
+    # A signed-in operator's name comes from their account, so the record shows who really decided.
+    account = await account_for(request)
+    decided_by = f"{account['name']} <{account['email']}>" if account else body.decided_by
     pool = await get_pool()
     expired = False
     async with pool.acquire() as conn, conn.transaction():
@@ -148,11 +166,11 @@ async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
                       AND NOT EXISTS (SELECT 1 FROM v_active_hazards h WHERE h.id = ANY(p.hazard_ids))
                FROM plans p WHERE p.id = $1""", plan_id)  # fmt: skip
         if expired:
-            await _close_expired(conn, plan_id, body.decided_by)
+            await _close_expired(conn, plan_id, decided_by)
         else:
             row = await conn.fetchrow(
                 """INSERT INTO approvals (plan_id, decision, decided_by, reason) VALUES ($1, $2, $3, $4) RETURNING *""",
-                plan_id, body.decision, body.decided_by, body.reason)
+                plan_id, body.decision, decided_by, body.reason)
             await conn.execute("UPDATE plans SET status = $2::plan_status, updated_at = now() WHERE id = $1",
                                plan_id, body.decision)  # fmt: skip
             thread_id = await conn.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan_id)
@@ -160,17 +178,17 @@ async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
                 """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
                    VALUES ($1, $2, 'human', 'approval_decided', $3, $4)""",
                 plan_id, thread_id,
-                f"{body.decision.upper()} by {body.decided_by}" + (f": {body.reason}" if body.reason else ""),
-                {"decision": body.decision, "decided_by": body.decided_by},
+                f"{body.decision.upper()} by {decided_by}" + (f": {body.reason}" if body.reason else ""),
+                {"decision": body.decision, "decided_by": decided_by},
             )  # fmt: skip
     if expired:  # raised here so the transaction above commits the closed plan
         raise HTTPException(409, "every hazard of this plan has ended; it was closed without dispatching")
     # The paused graph resumes on plan.approved. A rejection ends the plan here; the paused
     # thread is simply never resumed.
     if body.decision == "approved":
-        await bus.try_publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=body.decided_by,
+        await bus.try_publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=decided_by,
                                                           decided_at=row["decided_at"]), dedupe_key=str(plan_id))  # fmt: skip
-    return {"id": str(row["id"]), "plan_id": str(plan_id), "decision": body.decision, "decided_by": body.decided_by,
+    return {"id": str(row["id"]), "plan_id": str(plan_id), "decision": body.decision, "decided_by": decided_by,
             "reason": body.reason, "decided_at": row["decided_at"].isoformat()}
 
 

@@ -1,31 +1,32 @@
 """Who may do what.
 
-  operator token   X-Operator-Token: drills, plans, approvals, and reads that expose drivers or goods
-  stream ticket    ?ticket=: those same reads for EventSource, which cannot send headers
-  enrolment code   X-Enrolment-Code: registering a vehicle; handed to drivers out of band
-  device token     X-Device-Token (telemetry/): one vehicle's own GPS and assignment
+  signed-in account  rr_session cookie (core/sessions.py): what people use, in the web app
+  operator token     X-Operator-Token: the same access for scripts and the runbook in docs/security.md
+  enrolment code     driver sign-up, and X-Enrolment-Code on POST /api/vehicles
+  device token       X-Device-Token (telemetry/): one vehicle's own GPS and assignment
 
-Each is off when its setting is unset, for local development. A production start refuses to run
-without them (security.production_problems): the approval gate means nothing if anyone on the
-internet can press Approve, and a replan auto-approves vehicles, so a stranger's phone must never
-get onto the fleet.
+Anyone may create a supplier account, which is unverified until an operator vouches for it. An operator
+account needs the operator token and a driver account the enrolment code, typed at sign-up: the approval
+gate means nothing if anyone on the internet can press Approve, and a replan auto-approves vehicles, so a
+stranger's phone must never get onto the fleet.
+
+The token and code are off when unset, for local development. A production start refuses to run without
+them (security.production_problems).
 """
 
 from __future__ import annotations
 
-import hashlib
 import hmac
-import time
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
-from fastapi import Header, HTTPException, Query, Request
+from fastapi import Header, HTTPException, Request
 
 from .config import get_common_settings
 from .logging import get_logger
+from .sessions import account_for
 
 log = get_logger(__name__)
-STREAM_TICKET_TTL_S = 300
-MAX_TICKET_EXPIRY_DIGITS = 12
 
 
 def same_secret(expected: str, given: str | None) -> bool:
@@ -42,10 +43,15 @@ def refuse(request: Request, kind: str, detail: str) -> HTTPException:
     return HTTPException(401, detail)
 
 
+async def is_operator(request: Request) -> bool:
+    account = await account_for(request)
+    return account is not None and account["role"] == "operator"
+
+
 async def require_operator(request: Request, x_operator_token: Annotated[str | None, Header()] = None) -> None:
     expected = get_common_settings().operator_token
-    if expected and not same_secret(expected, x_operator_token):
-        raise refuse(request, "operator", "operator token required")
+    if expected and not same_secret(expected, x_operator_token) and not await is_operator(request):
+        raise refuse(request, "operator", "sign in as an operator")
     if request.method != "GET":
         log.info("operator_action", method=request.method, path=request.url.path, client=client_ip(request))
 
@@ -56,31 +62,11 @@ async def require_enrolment(request: Request, x_enrolment_code: Annotated[str | 
         raise refuse(request, "enrolment", "enrolment code required: ask your dispatcher for it")
 
 
-def _sign_ticket(key: str, expires: int) -> str:
-    return hmac.new(key.encode(), f"stream:{expires}".encode(), hashlib.sha256).hexdigest()
+def require_role(role: str) -> Callable[[Request], Awaitable[dict]]:
+    async def signed_in(request: Request) -> dict:
+        account = await account_for(request)
+        if account is None or account["role"] != role:
+            raise refuse(request, role, f"sign in with a {role} account")
+        return account
 
-
-def stream_ticket() -> dict:
-    """Short-lived and read-only, so it is safe in a URL where the operator token would not be."""
-    key = get_common_settings().operator_token
-    if not key:
-        return {"ticket": None, "expires_in": None}
-    expires = int(time.time()) + STREAM_TICKET_TTL_S
-    return {"ticket": f"{expires}.{_sign_ticket(key, expires)}", "expires_in": STREAM_TICKET_TTL_S}
-
-
-def valid_stream_ticket(key: str, ticket: str | None) -> bool:
-    expires, _, signature = (ticket or "").partition(".")
-    if not (expires.isascii() and expires.isdigit() and len(expires) <= MAX_TICKET_EXPIRY_DIGITS):
-        return False
-    return int(expires) > time.time() and same_secret(_sign_ticket(key, int(expires)), signature)
-
-
-async def require_stream_access(
-    request: Request,
-    ticket: Annotated[str | None, Query(max_length=128)] = None,
-    x_operator_token: Annotated[str | None, Header()] = None,
-) -> None:
-    key = get_common_settings().operator_token
-    if key and not (same_secret(key, x_operator_token) or valid_stream_ticket(key, ticket)):
-        raise refuse(request, "stream", "operator token or a fresh stream ticket required")
+    return signed_in

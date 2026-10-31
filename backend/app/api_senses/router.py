@@ -26,9 +26,9 @@ from app.core.db import get_pool
 from app.core.logging import get_logger
 from app.core.validation import Name
 
+from ..accounts.router import router as accounts_router
 from ..suppliers.router import router as portal_router
 from ..telemetry.router import router as telemetry_router
-from .driver_app import router as driver_router
 from .stream import router as stream_router
 from ..ingestion.store import publish_hazard_events, set_hazard_status, upsert_hazard
 from ..ingestion.models import NormalizedHazard
@@ -40,7 +40,7 @@ router = APIRouter(tags=["senses"])
 router.include_router(telemetry_router)
 router.include_router(portal_router)
 router.include_router(stream_router)
-router.include_router(driver_router)
+router.include_router(accounts_router)
 GEOJSON = "application/geo+json"
 MAX_DRILL_AREA_KM2 = 50_000  # larger than any district; stops accidental continent-sized drills
 MAX_DRILL_VERTICES = 1_000
@@ -84,6 +84,18 @@ def _hazard_feature(r) -> dict:
             "is_drill": r["source"] == "drill", "is_stale": r["is_stale"],
         },
     }  # fmt: skip
+
+
+@router.get("/api/status")
+async def public_status() -> dict:
+    """Small enough to ask for every 5 seconds. `hazards_changed` says when the map's data needs reloading."""
+    pool = await get_pool()
+    hazards = await pool.fetchrow(
+        """SELECT count(*) AS active, count(*) FILTER (WHERE severity IN ('severe', 'extreme')) AS severe,
+                  max(updated_at) AS changed FROM v_active_hazards""")
+    sources = await pool.fetchrow("SELECT count(*) AS total, count(*) FILTER (WHERE NOT is_stale) AS fresh FROM v_source_freshness")
+    return {"hazards_active": hazards["active"], "hazards_severe": hazards["severe"], "sources_fresh": sources["fresh"],
+            "sources_total": sources["total"], "hazards_changed": f"{hazards['active']}:{_iso(hazards['changed'])}"}  # fmt: skip
 
 
 @router.get("/api/hazards")

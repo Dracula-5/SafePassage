@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import ValidationError
 
 from app.api_senses import stream
-from app.core import auth, bus, security
+from app.core import bus, security
 from app.core.config import CommonSettings, get_common_settings
 from app.core.logging import scrub
 from app.core.security import BodyLimit, Limit, RateLimit, SecurityHeaders, production_problems
@@ -86,7 +86,7 @@ async def test_operational_data_needs_the_operator_token(client, path):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("path", ["/health", "/api/hazards", "/api/facilities", "/api/sources/health", "/portal", "/driver/"])
+@pytest.mark.parametrize("path", ["/health", "/api/hazards", "/api/facilities", "/api/sources/health", "/api/status"])
 async def test_public_information_stays_public(client, path):
     assert (await client.get(path)).status_code == 200
 
@@ -136,11 +136,8 @@ async def test_only_an_operator_decides_who_is_a_verified_supplier(client, live_
 
 # ---------------------------------------------------------------- the live stream
 @pytest.mark.integration
-async def test_the_stream_refuses_without_a_ticket(client):
+async def test_the_stream_refuses_a_stranger(client):
     assert (await client.get("/api/stream")).status_code == 401
-    assert (await client.get("/api/stream?ticket=123.abc")).status_code == 401
-    assert (await client.post("/api/stream/ticket")).status_code == 401
-    assert (await client.post("/api/stream/ticket", headers=OPERATOR)).json()["expires_in"] == auth.STREAM_TICKET_TTL_S
 
 
 @pytest.mark.integration
@@ -162,21 +159,6 @@ async def test_a_closed_stream_gives_its_slot_back(monkeypatch):
 @pytest.mark.parametrize("given", [None, "", "abc", "٣٤", "-1", "9" * 30, str(2**63)])
 def test_a_junk_last_event_id_starts_fresh_instead_of_crashing_the_query(given):
     assert stream._resume_from(given) is None
-
-
-def test_stream_tickets_expire_and_cannot_be_forged(monkeypatch):
-    key = "k" * 40
-    monkeypatch.setenv("OPERATOR_TOKEN", key)
-    get_common_settings.cache_clear()
-    good = auth.stream_ticket()["ticket"]
-    get_common_settings.cache_clear()
-    expires, _, signature = good.partition(".")
-    assert auth.valid_stream_ticket(key, good)
-    assert not auth.valid_stream_ticket("other-key", good)
-    assert not auth.valid_stream_ticket(key, f"{int(expires) + 999}.{signature}")  # extending it breaks the signature
-    assert not auth.valid_stream_ticket(key, f"1.{auth._sign_ticket(key, 1)}")     # genuinely signed, long expired
-    for junk in (None, "", ".", "x.y", "9" * 500 + ".z", "٣.z"):
-        assert not auth.valid_stream_ticket(key, junk)
 
 
 # ---------------------------------------------------------------- input that breaks things
@@ -279,16 +261,6 @@ async def test_every_response_carries_the_security_headers(client):
     assert headers["cache-control"] == "no-store"
     assert "default-src 'self'" in headers["content-security-policy"]
     assert "strict-transport-security" not in headers  # development is plain http
-
-
-@pytest.mark.integration
-async def test_the_portal_script_runs_by_nonce_and_nothing_else_can(client):
-    page = await client.get("/portal")
-    csp = page.headers["content-security-policy"]
-    nonce = csp.split("'nonce-")[1].split("'")[0]
-    assert f'<script nonce="{nonce}">' in page.text
-    assert "unsafe-inline" not in csp.split("script-src")[1].split(";")[0]
-    assert nonce not in (await client.get("/portal")).text
 
 
 def limited_app(limit: Limit) -> FastAPI:

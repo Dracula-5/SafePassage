@@ -8,9 +8,8 @@ Events (contracts/openapi.yaml):
   source_health  a source whose freshness or breaker state changed
   plan           a plan whose status changed, from A's v_plan_status view
 
-EventSource cannot send headers, so a dashboard swaps its operator token for a short-lived ticket
-at POST /api/stream/ticket. Connections are capped: each one polls the database every second, so
-without a cap a few hundred idle tabs would use up the pool.
+Connections are capped: each one polls the database every second, so without a cap a few hundred idle
+tabs would use up the pool.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from redis.exceptions import RedisError
 from reliefroute_contracts.events import parse_envelope
 from reliefroute_contracts.streams import HAZARD_UPDATED
 
-from app.core.auth import require_operator, require_stream_access, stream_ticket
+from app.core.auth import require_operator
 from app.core.bus import get_redis
 from app.core.db import get_pool
 from app.core.logging import get_logger
@@ -154,12 +153,7 @@ def _resume_from(last_event_id: str | None) -> int | None:
     return value if value <= MAX_EVENT_ID else None
 
 
-@router.post("/api/stream/ticket", dependencies=[Depends(require_operator)])
-async def new_stream_ticket() -> dict:
-    return stream_ticket()
-
-
-@router.get("/api/stream", dependencies=[Depends(require_stream_access)])
+@router.get("/api/stream", dependencies=[Depends(require_operator)])
 async def stream(
     request: Request,
     plan_id: Annotated[UUID | None, Query()] = None,

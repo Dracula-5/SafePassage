@@ -7,12 +7,17 @@ left alone: Telugu and Hindi need them.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Annotated
 
 from pydantic import AfterValidator
 
 BIDI_CONTROLS = frozenset("‪‫‬‭‮⁦⁧⁨⁩")
+
+
+EMAIL = re.compile(r"[^@\s<>]+@[^@\s<>.]+(\.[^@\s<>.]+)+")
+MAX_EMAIL_CHARS = 254
 
 
 def _no_controls(value: str, allowed: str = "") -> str:
@@ -35,5 +40,13 @@ def _name(value: str) -> str:
     return value.strip()
 
 
+def _email(value: str) -> str:
+    value = value.strip().lower()  # one address, one account, however it was typed
+    if len(value) > MAX_EMAIL_CHARS or not EMAIL.fullmatch(value):
+        raise ValueError("enter a valid email address")
+    return value
+
+
+Email = Annotated[str, AfterValidator(_email)]
 Text = Annotated[str, AfterValidator(_text)]  # free text: reasons, notes
 Name = Annotated[str, AfterValidator(_name)]  # one line that labels something: people, vehicles, sites

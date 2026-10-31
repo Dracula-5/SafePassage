@@ -109,7 +109,6 @@ async def test_endpoint_rejections_and_operator_token(live_env, monkeypatch):
         assert (await client.post("/portal/api/stock", json={"lines": []}, headers={"X-Supplier-Token": "x"})).status_code == 422
         assert (await client.post("/api/drill", json=drill([[10, 50], [10.1, 50], [10.1, 50.1], [10, 50]]))).status_code == 422
         assert (await client.delete(f"/api/drill/{uuid4()}")).status_code == 404
-        assert (await client.get("/driver/../../.env")).status_code == 404
 
         monkeypatch.setenv("OPERATOR_TOKEN", "s3cret")
         get_common_settings.cache_clear()

@@ -79,7 +79,6 @@ async def test_vehicle_registration_and_telemetry(api, live_env):
 
 
 async def test_supplier_portal_flow(api, live_env):
-    assert "supplier check-in" in (await api.get("/portal")).text
     fac = await live_env.fetchval(
         """INSERT INTO facilities (source, source_ref, kind, name, geom, fetched_at)
            VALUES ('osm', 'way/1', 'warehouse', 'Krishna Cold Storage', ST_SetSRID(ST_MakePoint(80.6, 16.5), 4326), now())
@@ -185,10 +184,3 @@ async def test_sse_emits_plan_status_changes_once_each(live_env, monkeypatch):
     plans = [json.loads(c.split("data: ", 1)[1]) for c in chunks if "event: plan" in c]
     assert sorted(p["status"] for p in plans) == ["dispatched", "pending", "planning"]  # the unchanged parent only once
     assert {p["parent_plan_id"] for p in plans} == {None, str(parent)}
-
-
-async def test_driver_app_is_served_without_path_traversal(api):
-    assert "ReliefRoute Driver" in (await api.get("/driver/")).text
-    assert (await api.get("/driver/sw.js")).headers["service-worker-allowed"] == "/driver/"
-    for bad in ("/driver/../backend/.env", "/driver/%2e%2e/backend/.env", "/driver/README.md"):
-        assert (await api.get(bad)).status_code == 404, bad

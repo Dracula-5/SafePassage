@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import Header, Request
 
-from app.core.auth import refuse, same_secret
+from app.core.auth import is_operator, refuse, same_secret
 from app.core.config import get_common_settings
 from app.core.db import get_pool
 
@@ -25,7 +25,7 @@ async def require_vehicle_access(
     x_operator_token: Annotated[str | None, Header()] = None,
 ) -> None:
     expected = get_common_settings().operator_token
-    if not expected or same_secret(expected, x_operator_token):
+    if not expected or same_secret(expected, x_operator_token) or await is_operator(request):
         return
     if x_device_token:
         owner = await (await get_pool()).fetchval(

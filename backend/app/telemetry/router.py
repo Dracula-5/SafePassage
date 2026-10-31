@@ -19,7 +19,7 @@ from reliefroute_contracts.events import LonLat, VehicleTelemetry
 from reliefroute_contracts.streams import VEHICLE_TELEMETRY
 
 from app.core import bus
-from app.core.auth import require_enrolment, require_operator
+from app.core.auth import require_enrolment, require_operator, require_role
 from app.core.db import get_pool
 from app.core.validation import Name
 
@@ -54,8 +54,7 @@ def vehicle_out(r) -> dict:
     }  # fmt: skip
 
 
-@router.post("/api/vehicles", status_code=201, dependencies=[Depends(require_enrolment)])
-async def register_vehicle(body: VehicleRegistration) -> dict:
+async def _create_vehicle(body: VehicleRegistration, account_id: UUID | None = None) -> dict:
     token, digest = new_token()
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
@@ -63,11 +62,53 @@ async def register_vehicle(body: VehicleRegistration) -> dict:
             raise HTTPException(422, "home_facility_id does not exist")
         vehicle_id = await conn.fetchval(
             """INSERT INTO vehicles (label, driver_name, driver_phone, driver_language, capacity_kg, home_facility_id,
-                                     device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
+                                     device_token_hash, account_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
             body.label, body.driver_name, body.driver_phone, body.driver_language, body.capacity_kg,
-            body.home_facility_id, digest,
+            body.home_facility_id, digest, account_id,
         )  # fmt: skip
         row = await conn.fetchrow(VEHICLE_SELECT + " WHERE id = $1", vehicle_id)
+    return {"vehicle": vehicle_out(row), "device_token": token}
+
+
+@router.post("/api/vehicles", status_code=201, dependencies=[Depends(require_enrolment)])
+async def register_vehicle(body: VehicleRegistration) -> dict:
+    return await _create_vehicle(body)
+
+
+Driver = Annotated[dict, Depends(require_role("driver"))]
+
+
+async def _own_vehicle(account: dict):
+    return await (await get_pool()).fetchrow(VEHICLE_SELECT + " WHERE id = (SELECT id FROM vehicles WHERE account_id = $1)",
+                                             account["id"])  # fmt: skip
+
+
+@router.get("/api/driver/vehicle")
+async def my_vehicle(account: Driver) -> dict:
+    row = await _own_vehicle(account)
+    if row is None:
+        raise HTTPException(404, "no vehicle registered yet")
+    return vehicle_out(row)
+
+
+@router.post("/api/driver/vehicle", status_code=201)
+async def register_my_vehicle(body: VehicleRegistration, account: Driver) -> dict:
+    """The enrolment code was checked at sign-up, so a signed-in driver does not type it again."""
+    if await _own_vehicle(account):
+        raise HTTPException(409, "this account already has a vehicle")
+    return await _create_vehicle(body.model_copy(update={"driver_name": body.driver_name or account["name"]}), account["id"])
+
+
+@router.post("/api/driver/vehicle/device")
+async def use_this_device(account: Driver) -> dict:
+    """Signing in on a new phone: this phone reports from now on, and the old one's token stops working."""
+    row = await _own_vehicle(account)
+    if row is None:
+        raise HTTPException(404, "no vehicle registered yet")
+    if row["status"] == "maintenance":
+        raise HTTPException(403, "this vehicle was taken off the fleet: call your dispatcher")
+    token, digest = new_token()
+    await (await get_pool()).execute("UPDATE vehicles SET device_token_hash = $2, updated_at = now() WHERE id = $1", row["id"], digest)
     return {"vehicle": vehicle_out(row), "device_token": token}
 
 

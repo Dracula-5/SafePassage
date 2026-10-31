@@ -287,6 +287,16 @@ async def test_langfuse_receives_a_trace_and_generation():
     assert generation["body"]["traceId"] == trace["body"]["id"] and generation["body"]["model"] == "gemini-x"
 
 
+async def test_langfuse_refusing_items_inside_a_207_is_noticed(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(207, json={"successes": [], "errors": [{"id": "1", "status": 400, "message": "bad"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await LangfuseTracer("pk", "sk", "https://lf.example", http).record(
+            name="Triage", model="m", system="s", prompt="p", output=None, latency_ms=1, attempts=1, error=None)
+    assert "langfuse_rejected" in capsys.readouterr().out
+
+
 async def test_langfuse_outage_never_reaches_the_plan():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("down")
