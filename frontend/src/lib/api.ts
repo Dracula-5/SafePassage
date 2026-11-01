@@ -121,6 +121,7 @@ export const api = {
     request<FeatureCollection<FacilityProperties>>(
       `/api/facilities?bbox=${bbox.map((v) => v.toFixed(4)).join(",")}&kind=${kinds.join(",")}`,
     ),
+  warehouses: () => request<FeatureCollection<FacilityProperties>>("/api/facilities?kind=warehouse,godown,depot"),
   sourceHealth: () => request<SourceHealth[]>("/api/sources/health"),
   overview: () => request<Overview>("/api/overview"),
   createDrill: (input: DrillInput) => post<GeoJSON.Feature>("/api/drill", input),
@@ -206,6 +207,7 @@ export interface PlanSummary {
   requires_approval: boolean;
   summary: string | null;
   evacuation: boolean;
+  next_wave: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -261,6 +263,8 @@ export interface PlanDetail extends PlanSummary {
   approval: { decision: string; decided_by: string; reason: string | null; decided_at: string } | null;
   unreachable_reason: string | null;
   escalations: Escalation[];
+  needs_person: string[];
+  waves_left: number;
   triage: { priority: string; planning_horizon_hours: number; rationale: string; key_risks: string[] } | null;
 }
 

@@ -85,7 +85,7 @@ Valhalla takes about 35 minutes to build on Windows, compared with 5 on macOS, b
 
 - **Never burst SACHET polygon downloads.** It blocks the IP with 403s for hours. The poller is throttled and has the area-name fallback. It is blocked here too, so 3 live tests skip.
 - **Live runs find what fixtures can't.** Six real bugs appeared only on real data, after 252 tests were passing. See `docs/gates/A-G3.md`. Run a real drill after any change to planning.
-- **Forecast rain cells are about 3,000 km² and are not road closures.** Only `routing/repository.py`'s road-blocking rule decides what blocks a route.
+- **Forecast rain cells are about 3,000 km² and are not road closures.** Only `routing/repository.py`'s road-blocking rule decides what blocks a route. A real zone over 5,000 km², such as a GDACS cyclone swath, is a warning too: a route may cross it, but a person decides.
 - **Draw drills over a town with a census tag,** or the plan correctly stops at "no census population". Tenali and Vijayawada work. Coverage is about 2.7% of settlements.
 - **Gemini:** models get retired or overloaded often. The fallback chain handles this; `LLM_MODEL` pins one.
 - **AePDS responses are about 50 MB** and can take minutes, one commodity at a time, every 6 h. 36 offices are still skipped and logged by name.
@@ -98,6 +98,8 @@ Valhalla takes about 35 minutes to build on Windows, compared with 5 on macOS, b
 - **Orders are cut to fit most of the fleet** (`planner.part_size_kg`). Sized for the largest truck, a part fits only that truck: an 8-tonne truck beside a 12-tonne one got nothing, and goods went unserved.
 - **A truck with a real person goes first.** The solver pays 6 hours to start a fully simulated one. A driver who accepted a duty officer's request for that place goes before everyone (`telemetry/requests.py`, `planner.start_cost_s`).
 - **Evacuations** (`graph/evacuation.py`, contract request 007) are ordinary plans and routes with `routes.kind = 'evacuation'`, so the Route Monitor and driver screen need no special case, apart from `reroute`, because there are no goods to replan. The way out avoids every active zone, not only closures.
+- **Map tiles come through `frontend/src/app/tiles`,** not straight from the browser. OpenStreetMap answers 403 to a browser that hides its Referer, so this sends a proper User-Agent, and falls back to CARTO if refused.
+- **Plans approve themselves by rule** (`agents/approval.py`, contract request 008). Anything unclear goes to a person. `recommend_human_review` was true on 58 of 62 real plans until its prompt was narrowed, so check it stays rare.
 - **Every test drill uses Gemini's free quota.** Several in a row brought HTTP 429 on all models. The plan continues with labelled rule-based text.
 - **Auto-plans need a settlement.** An alert gets a plan only once it is active and covers a place in `v_places`, and it waits while facilities are loading. Drills always get one.
 - **Drills are silent.** They record each message as not sent, even with Twilio configured, unless `DRILL_SEND_MESSAGES=true`.

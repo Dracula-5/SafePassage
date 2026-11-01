@@ -14,6 +14,7 @@ import { plate } from "@/lib/format";
 import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./ops/constants";
 
 const FACILITY_KINDS = ["hospital", "shelter", "warehouse", "godown", "school", "depot"];
+const STORAGE_KINDS = ["warehouse", "godown", "depot"];
 const FACILITY_MIN_ZOOM = 9; // below this, tens of thousands of points would be requested
 
 // Worker file served from public/ by scripts/copy-maplibre-worker.mjs (postinstall).
@@ -76,10 +77,10 @@ export default function LiveMap(props: Props) {
         sources: {
           osm: {
             type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tiles: [`${window.location.origin}/tiles/{z}/{x}/{y}.png`],
             tileSize: 256,
             maxzoom: 19,
-            attribution: "&copy; OpenStreetMap contributors",
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
           },
         },
         layers: [{ id: "osm", type: "raster", source: "osm" }],
@@ -247,16 +248,17 @@ export default function LiveMap(props: Props) {
     const m = map.current;
     if (!m) return;
     const source = m.getSource("facilities") as GeoJSONSource | undefined;
-    if (m.getZoom() < FACILITY_MIN_ZOOM) {
-      source?.setData(EMPTY);
-      latest.current.onFacilitiesStatus(`zoom in to level ${FACILITY_MIN_ZOOM} to load facilities`);
-      return;
-    }
+    const close = m.getZoom() >= FACILITY_MIN_ZOOM;
     const b = m.getBounds();
     try {
-      const fc = await api.facilities([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], FACILITY_KINDS);
+      const fc = await api.facilities(
+        [Math.max(b.getWest(), -180), Math.max(b.getSouth(), -90), Math.min(b.getEast(), 180), Math.min(b.getNorth(), 90)],
+        close ? FACILITY_KINDS : STORAGE_KINDS,
+      );
       source?.setData(fc as unknown as GeoJSON.FeatureCollection);
-      latest.current.onFacilitiesStatus(`${fc.features.length} facilities in view`);
+      latest.current.onFacilitiesStatus(close
+        ? `${fc.features.length} facilities in view`
+        : `${fc.features.length} warehouses and godowns in view. Zoom in for hospitals, schools and shelters`);
     } catch (err) {
       latest.current.onFacilitiesStatus(`facilities unavailable: ${(err as Error).message}`);
     }

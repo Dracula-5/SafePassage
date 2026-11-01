@@ -27,3 +27,10 @@ def compute_demand(population: PopulationEstimate, points: list[ReliefPoint], ho
                           f"{horizon_days:g} days ({std.source})",
                 ))  # fmt: skip
     return Demand(population=population, horizon_days=horizon_days, relief_points=shared, lines=lines)
+
+
+def still_needed(demand: Demand, ordered: dict[tuple[str, str], float]) -> Demand:
+    """Take off what is already ordered for this alert, so a later wave never sends the same goods twice."""
+    left = [line.model_copy(update={"quantity": line.quantity - ordered.get((line.destination_facility_id, line.item_code.value), 0)})
+            for line in demand.lines]  # fmt: skip
+    return demand.model_copy(update={"lines": [line for line in left if line.quantity > 0]})

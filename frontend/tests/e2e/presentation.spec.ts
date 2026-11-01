@@ -22,6 +22,26 @@ async function listPlans<T>(page: Page, headers?: Record<string, string>): Promi
   }
 }
 
+async function dispatchedPlan(page: Page, hazard: string, headers: Record<string, string> = {}): Promise<string> {
+  const decided = new Set<string>();
+  let planId = "";
+  await expect.poll(async () => {
+    const plans = await listPlans<{ id: string; status: string; evacuation: boolean; hazard_ids: string[] }>(page, headers);
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && !p.evacuation);
+    planId = plan?.id ?? "";
+    if (plan?.status === "awaiting_approval" && !decided.has(plan.id)) {
+      decided.add(plan.id);
+      const response = await page.request.post(`/api/plans/${plan.id}/approve`, {
+        headers,
+        data: { decision: "approved", decided_by: "E2E" },
+      });
+      expect(response.ok()).toBe(true);
+    }
+    return plan?.status;
+  }, { timeout: 300_000 }).toBe("dispatched");
+  return planId;
+}
+
 async function signUp(page: Page, role: "operator" | "driver" | "supplier", name: string, who: string = role) {
   await page.goto(`/signup?role=${role}`);
   await page.getByLabel("Full name").fill(name);
@@ -48,6 +68,23 @@ async function signUp(page: Page, role: "operator" | "driver" | "supplier", name
     expect(role === "supplier" || account.approved).toBe(true);
   }
 }
+
+test("the map comes through this site, with warehouses showing at any zoom", async ({ browser }) => {
+  const page = await browser.newPage();
+  const tiles: number[] = [];
+  const elsewhere: string[] = [];
+  page.on("response", (response) => {
+    if (response.url().includes("/tiles/")) tiles.push(response.status());
+    else if (/openstreetmap|cartocdn/.test(response.url())) elsewhere.push(response.url());
+  });
+  await signUp(page, "operator", "E2E Demo Map", "map");
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect.poll(() => tiles.length).toBeGreaterThan(4);
+  expect(tiles.every((status) => status === 200)).toBe(true);
+  expect(elsewhere).toEqual([]);
+  await expect(page.getByText(/\d+ warehouses and godowns in view/)).toBeVisible();
+  await page.close();
+});
 
 test("a duty officer sees that the fleet is simulated, and can add a driver", async ({ page, context }) => {
   await signUp(page, "operator", "E2E Demo Officer");
@@ -100,6 +137,10 @@ test("a duty officer can look up any driver or supplier", async ({ browser }) =>
   await page.getByLabel("Search").fill("TEST-SIM water depot Vijayawada");
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(page.locator("tbody tr td").nth(1)).toContainText(/\d Water|Nothing available/);  // rehearsals use the water up
+
+  await page.getByRole("button", { name: "Warehouses" }).click();
+  await page.getByLabel("Search").fill("godown");
+  await expect(page.locator("tbody tr").first()).toContainText(/godown/i);
 
   await page.getByRole("link", { name: "Team & Access" }).click();
   await expect(page.getByRole("row", { name: new RegExp(email("operator")) })).toBeVisible();
@@ -248,16 +289,9 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
   expect(drill.status()).toBe(201);
   const hazard = (await drill.json()).id as string;
 
-  let planId = "";
-  await expect.poll(async () => {
-    const plans = await listPlans<{ id: string; status: string; hazard_ids: string[] }>(officer);
-    planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.status === "awaiting_approval")?.id ?? "";
-    return planId;
-  }, { timeout: 240_000 }).not.toBe("");
+  const planId = await dispatchedPlan(officer, hazard);
   await officer.getByRole("link", { name: "Plans & Approvals" }).click();
   await officer.locator(`[data-plan="${planId}"]`).click();
-  await officer.getByRole("button", { name: "Approve dispatch" }).click();
-  await officer.getByRole("button", { name: "Yes, dispatch" }).click();
   const card = officer.getByTestId("route-card").first();  // routes are only written when a plan is dispatched
   await expect(card.locator(".badge.sim")).toBeVisible({ timeout: 60_000 });
   await expect(card.getByRole("link", { name: "Driver screen" })).toBeVisible();
@@ -268,6 +302,45 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
 
   expect((await officer.request.delete(`/api/drill/${hazard}`)).status()).toBe(204);
   await shop.close();
+  await desk.close();
+});
+
+test("a big clear job goes out by itself, and the rules keep what is left", async ({ browser }) => {
+  test.skip(!process.env.E2E_ROUTING, "needs the road map: set E2E_ROUTING=1");
+  test.setTimeout(300_000);
+
+  const desk = await browser.newContext();
+  const officer = await desk.newPage();
+  await officer.goto("/signin");
+  await officer.getByLabel("Email").fill(email("operator"));
+  await officer.getByLabel("Password").fill(PASSWORD);
+  await officer.getByRole("button", { name: "Sign in" }).click();
+  await expect(officer).toHaveURL(/\/dashboard/);
+
+  const zone = [[78, 15.79], [78.08, 15.79], [78.08, 15.86], [78, 15.86], [78, 15.79]];
+  const drill = await officer.request.post("/api/drill", { data: {
+    geometry: { type: "Polygon", coordinates: [zone] }, hazard_type: "flood", severity: "severe", label: `E2E clear ${RUN}`, ttl_minutes: 30,
+  } });
+  expect(drill.status()).toBe(201);
+  const hazard = (await drill.json()).id as string;
+
+  let planId = "";
+  await expect.poll(async () => {
+    const plans = await listPlans<{ id: string; status: string; trigger_kind: string; hazard_ids: string[] }>(officer);
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
+    planId = plan?.id ?? "";
+    return plan?.status;
+  }, { timeout: 180_000 }).toBe("dispatched");
+
+  await officer.locator(`[data-plan="${planId}"]`).click();
+  await expect(officer.getByText("Approved by the rules", { exact: false })).toBeVisible();
+  await expect(officer.getByTestId("route-card").first()).toBeVisible();
+  await expect(officer.getByRole("button", { name: "Approve dispatch" })).toHaveCount(0);
+  await expect(officer.getByText("Still to send", { exact: true })).toBeVisible();
+  await expect(officer.getByText("The rules send the next wave", { exact: false })).toBeVisible();
+  await expect(officer.getByText("Needs a person", { exact: true })).toHaveCount(0);
+
+  expect((await officer.request.delete(`/api/drill/${hazard}`)).status()).toBe(204);
   await desk.close();
 });
 
@@ -298,13 +371,7 @@ test("a signed-in driver with simulated GPS gets a route ahead of the simulated 
   expect(drill.status()).toBe(201);
   const hazard = (await drill.json()).id as string;
 
-  let planId = "";
-  await expect.poll(async () => {
-    const plans = await listPlans<{ id: string; status: string; trigger_kind: string; hazard_ids: string[] }>(driver, headers);
-    planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill" && p.status === "awaiting_approval")?.id ?? "";
-    return planId;
-  }, { timeout: 240_000 }).not.toBe("");
-  await driver.request.post(`/api/plans/${planId}/approve`, { headers, data: { decision: "approved", decided_by: "E2E" } });
+  await dispatchedPlan(driver, hazard, headers);
   await expect(driver.getByText("Next stop")).toBeVisible({ timeout: 120_000 });
   await expect(driver.getByText("DRILL. This is not a real dispatch.")).toBeVisible();
 

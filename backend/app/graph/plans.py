@@ -11,6 +11,10 @@ from reliefroute_contracts.streams import PLAN_APPROVED, PLAN_REQUESTED
 
 from app.core import bus
 
+NEXT_WAVE = "next wave"  # who asked for a plan that graph/waves.py started
+NOTHING_LEFT = "nothing left to send"  # a wave that stops here is finished: there is nothing to try again
+REVALIDATION = "revalidation"  # who asked for a plan that replaces one gone stale
+
 
 def _json(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
@@ -72,6 +76,33 @@ async def request_plan(pool: asyncpg.Pool, *, trigger_kind: str, trigger_ref: st
     return summary_out(row), created
 
 
+async def ordered_so_far(pool: asyncpg.Pool, hazard_ids: list[str]) -> dict[tuple[str, str], float]:
+    """Per destination and item, what plans for these alerts have ordered. A cancelled order is not coming."""
+    rows = await pool.fetch(
+        """SELECT o.destination_facility_id::text AS destination, l.item_code::text AS item, sum(l.quantity) AS quantity
+           FROM orders o JOIN order_lines l ON l.order_id = o.id JOIN plans p ON p.id = o.plan_id
+           WHERE p.hazard_ids && $1::uuid[] AND o.status <> 'cancelled'
+           GROUP BY 1, 2""", hazard_ids)  # fmt: skip
+    return {(r["destination"], r["item"]): float(r["quantity"]) for r in rows}
+
+
+async def standing_triage(pool: asyncpg.Pool, plan_id: str) -> dict | None:
+    """A next wave serves the same alert, so the assessment already made stands: asking again spends the free
+    quota, and a busy LLM would stop the wave for nothing. None for any other plan, or if that was only a fallback."""
+    return await pool.fetchval(
+        """SELECT earlier.triage FROM plans wave JOIN plans earlier ON earlier.hazard_ids && wave.hazard_ids
+           WHERE wave.id = $1 AND wave.requested_by = $2 AND earlier.id <> wave.id AND earlier.triage IS NOT NULL
+             AND earlier.triage->>'rationale' NOT LIKE 'RULE-BASED%'
+           ORDER BY earlier.created_at DESC LIMIT 1""", plan_id, NEXT_WAVE)  # fmt: skip
+
+
+async def fresh_plans_lately(pool: asyncpg.Pool, hazard_ids: list[str]) -> int:
+    """Plans made in the last hour because an earlier one went stale before it could leave."""
+    return await pool.fetchval(
+        """SELECT count(*) FROM plans WHERE requested_by = $1 AND hazard_ids && $2::uuid[]
+           AND created_at > now() - interval '1 hour'""", REVALIDATION, hazard_ids)  # fmt: skip
+
+
 async def abandoned_thread(pool: asyncpg.Pool, plan_id: str, idle_s: float) -> str | None:
     """Thread of a plan left mid-run by a worker that died: claimed, but no progress for a while."""
     return await pool.fetchval(
@@ -101,11 +132,12 @@ async def requeue_stuck_plans(pool: asyncpg.Pool, idle_s: float) -> int:
 
 
 PLAN_SUMMARY_SQL = """SELECT id, parent_plan_id, thread_id, status::text, trigger_kind::text, trigger_ref, hazard_ids, is_drill,
-       requires_approval, summary, created_at, updated_at FROM plans"""
+       requires_approval, summary, requested_by, created_at, updated_at FROM plans"""
 
 
 def summary_out(r: asyncpg.Record) -> dict:
     return {"id": str(r["id"]), "parent_plan_id": str(r["parent_plan_id"]) if r["parent_plan_id"] else None,
             "status": r["status"], "trigger_kind": r["trigger_kind"], "hazard_ids": [str(h) for h in r["hazard_ids"]],
             "is_drill": r["is_drill"], "requires_approval": r["requires_approval"], "summary": r["summary"],
-            "evacuation": (r["trigger_ref"] or "").startswith("evacuation:"), "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}
+            "evacuation": (r["trigger_ref"] or "").startswith("evacuation:"), "next_wave": r["requested_by"] == NEXT_WAVE,
+            "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}

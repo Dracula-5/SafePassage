@@ -35,7 +35,7 @@ from app.agents import data
 from app.agents.procurement import haversine_m
 from app.core.logging import get_logger
 from app.core.resilience import CircuitBreaker, SourceUnavailable
-from app.routing.repository import blocks_roads, fetch_active_hazards, fetch_road_hazards
+from app.routing.repository import blocks_roads, fetch_active_hazards, fetch_road_hazards, is_wide
 from app.routing.valhalla import Location, RouteResult, ValhallaClient, ValhallaError
 from app.solvers.geometry import HazardShape, exclusion_rings, verify_route
 
@@ -98,7 +98,7 @@ class WayOut:
 
 
 ZONES_SQL = """SELECT h.id = $1 AS target, ST_AsBinary(h.geom) AS wkb, h.is_drill, h.hazard_type::text AS hazard_type,
-                      h.severity::text AS severity
+                      h.severity::text AS severity, ST_Area(h.geom::geography) / 1e6 AS km2
                FROM v_active_hazards h
                WHERE ST_DWithin(h.geom, COALESCE(ST_SetSRID(ST_MakePoint($3::float8, $4::float8), 4326),
                                                  (SELECT t.geom FROM v_active_hazards t WHERE t.id = $1)), $2::float8)"""
@@ -115,7 +115,7 @@ async def _spots(pool: asyncpg.Pool, hazard_id: str, outside_every_zone: bool, k
     if not zones and not near:
         return []
     danger = unary_union([make_valid(from_wkb(z["wkb"])) for z in zones
-                          if outside_every_zone or blocks_roads(z["hazard_type"], z["severity"], z["is_drill"])])  # fmt: skip
+                          if outside_every_zone or blocks_roads(z["hazard_type"], z["severity"], z["is_drill"], z["km2"])])  # fmt: skip
     target = Point(near) if near else make_valid(from_wkb(next(z["wkb"] for z in zones if z["target"])))
     x0, y0, x1, y1 = target.bounds
     rows = await pool.fetch(SPOT_SQL, kinds, x0 - SEARCH_DEG, y0 - SEARCH_DEG, x1 + SEARCH_DEG, y1 + SEARCH_DEG)
@@ -147,8 +147,9 @@ async def way_out(deps: "Deps", start: tuple[float, float], safe: Spot, avoid_ev
     ends = [Point(start), Point(safe.lon, safe.lat)]
     if any(h.hazard_id in closures and h.geom.contains(ends[1]) for h in zones):
         return None
-    # A zone holding either end can't be avoided: a truck caught inside one has to drive out of it.
-    avoid: list[HazardShape] = [h for h in zones if not any(h.geom.contains(end) for end in ends)
+    # A zone holding either end can't be avoided: a truck caught inside one has to drive out of it. Nor can
+    # a wide warning: no road goes round a third of the state, and it takes the router minutes to try.
+    avoid: list[HazardShape] = [h for h in zones if not any(h.geom.contains(end) for end in ends) and not is_wide(h.geom)
                                 and (avoid_every_zone or h.hazard_id in closures)]  # fmt: skip
     router = _router(deps)
     try:

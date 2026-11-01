@@ -28,6 +28,7 @@ const FILTERS = [
   { key: "all", label: "All", statuses: null },
 ] as const;
 type FilterKey = (typeof FILTERS)[number]["key"];
+const MAX_LINES = 3;
 
 /** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
 /** What to say when a plan has no summary: a plan that ended must not read as if it were still being prepared. */
@@ -59,6 +60,28 @@ function escalationLines(escalations: Escalation[]): string[] {
   return [...others, ...grouped];
 }
 
+function moreWillGo(plan: PlanDetail): boolean {
+  const retrying = plan.next_wave && plan.status === "failed";
+  return plan.waves_left > 0 && (retrying || ["awaiting_approval", "approved", "dispatched"].includes(plan.status));
+}
+
+function sentByRules(escalation: Escalation): boolean {
+  return "quantity_short" in escalation && !escalation.reason.startsWith("still on the");
+}
+
+function Gaps({ title, note, escalations }: { title: string; note?: string; escalations: Escalation[] }) {
+  const lines = escalationLines(escalations);
+  if (lines.length === 0) return null;
+  return (
+    <div className="alert ok small">
+      <b>{title}</b>
+      {note && <div>{note}</div>}
+      <ul>{lines.slice(0, MAX_LINES).map((line) => <li key={line}>{line}</li>)}</ul>
+      {lines.length > MAX_LINES && <small>and {lines.length - MAX_LINES} more</small>}
+    </div>
+  );
+}
+
 export default function PlansPage() {
   const router = useRouter();
   const params = useSearchParams();
@@ -71,6 +94,7 @@ export default function PlansPage() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
+  const [allRoutes, setAllRoutes] = useState(false);
 
   const awaitingCount = plans.filter((p) => p.status === "awaiting_approval").length;
   const active: FilterKey = filter ?? (awaitingCount > 0 ? "awaiting" : "all");
@@ -101,6 +125,7 @@ export default function PlansPage() {
   function select(id: string) {
     setNote(null);
     setReason("");
+    setAllRoutes(false);
     router.replace(`/dashboard/plans?plan=${id}`, { scroll: false });
   }
 
@@ -137,7 +162,7 @@ export default function PlansPage() {
 
   return (
     <>
-      <PageHeader title="Plans & Approvals" subtitle="Nothing is dispatched until a duty officer approves it here." />
+      <PageHeader title="Plans & Approvals" subtitle="Clear plans go out by the rules. A duty officer decides when a plan needs a person." />
       {plansError && <AlertCard tone="bad" title="Plans unavailable">{plansError}</AlertCard>}
       <FilterChips label="Plan status" value={active} onChange={setFilter}
         options={FILTERS.map((f) => ({ key: f.key, label: f.label, count: countOf(f.key) }))} />
@@ -159,6 +184,7 @@ export default function PlansPage() {
                   {p.is_drill && <StatusBadge tone="drill">DRILL</StatusBadge>}
                   {p.parent_plan_id && <StatusBadge tone="info">Reroute</StatusBadge>}
                   {p.evacuation && <StatusBadge tone="good">Evacuation</StatusBadge>}
+                  {p.next_wave && <StatusBadge tone="info">NEXT WAVE</StatusBadge>}
                 </span>
                 <small className={styles.muted}>{ago(p.created_at)}</small>
               </span>
@@ -187,6 +213,9 @@ export default function PlansPage() {
                 </div>
                 <p style={{ marginTop: 10 }}>{detail.summary ?? NO_SUMMARY[detail.status] ?? "The plan is still being prepared."}</p>
                 {detail.is_drill && <p className={styles.muted} style={{ marginTop: 6, fontSize: 13 }}>This plan comes from a what-if drill. Its routes are marked DRILL on the driver&apos;s screen.</p>}
+                {!detail.requires_approval && !detail.evacuation && !detail.parent_plan_id && (detail.status === "approved" || detail.status === "dispatched") && (
+                  <AlertCard tone="good" title="Approved by the rules">Nothing about this plan is unclear.</AlertCard>
+                )}
               </Surface>
 
               {detail.status === "awaiting_approval" && (
@@ -211,9 +240,16 @@ export default function PlansPage() {
               {(detail.status === "failed" || detail.status === "unreachable") && !detail.parent_plan_id && (
                 <div><ActionButton icon="refresh" busy={busy} onClick={planAgain}>Plan again</ActionButton></div>
               )}
-              {detail.escalations.length > 0 && (
+              {moreWillGo(detail) && (
+                <Gaps title="Still to send" escalations={detail.escalations.filter(sentByRules)}
+                  note={detail.status === "failed" ? "The rules try again in a few minutes." : "The rules send the next wave when these trucks finish."} />
+              )}
+              {(detail.escalations.length > 0 || detail.needs_person.length > 0) && (
                 <AlertCard tone="warn" title="Needs a person">
-                  <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
+                  {escalationLines(moreWillGo(detail) ? detail.escalations.filter((e) => !sentByRules(e)) : detail.escalations).length > 0 && (
+                    <ul>{escalationLines(moreWillGo(detail) ? detail.escalations.filter((e) => !sentByRules(e)) : detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
+                  )}
+                  {detail.needs_person.length > 0 && <ul>{detail.needs_person.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
                 </AlertCard>
               )}
 
@@ -225,7 +261,7 @@ export default function PlansPage() {
                         onFacilitiesStatus={() => undefined} onFindDrivers={() => undefined} onAskTruck={() => undefined} onEvacuate={() => undefined}
                         vehicles={vehicles} routes={detail.routes} liveRoutes={liveRoutes.length ? liveRoutes : NO_ROUTES} />
                     </div>
-                    {detail.routes.map((r) => {
+                    {detail.routes.slice(0, allRoutes ? undefined : MAX_LINES).map((r) => {
                       const truck = vehicles.find((v) => v.id === r.vehicle_id);
                       return (
                         <div className={styles.routeCard} key={r.id} data-testid="route-card">
@@ -249,6 +285,7 @@ export default function PlansPage() {
                         </div>
                       );
                     })}
+                    {detail.routes.length > MAX_LINES && !allRoutes && <button type="button" className="link" onClick={() => setAllRoutes(true)}>Show all {detail.routes.length} trucks</button>}
                   </div>
                 )}
               </Surface>

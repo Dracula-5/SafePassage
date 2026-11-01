@@ -58,6 +58,7 @@ DEPOT_WATER_L = 60_000
 SPOT_KINDS = "fuel,godown,warehouse,school"
 ROAD_CLOSING_TYPES = ("flood", "cyclone", "landslide", "tsunami", "earthquake", "wildfire")  # app/routing/repository.py
 SEVERE = ("severe", "extreme")
+WIDE_WARNING_DEG2 = 0.42  # a forecast swath, not a closed road: app/routing/repository.py
 PLATE_SERIES = "ABCDEGHJKLMNPRSUVWXYZ"
 TRUCK_KG = 8000           # all alike, so any truck can take any part of an order (planner.part_size_kg)
 LANGUAGES = ("te", "en", "en")  # Gemini's free tier can't translate a whole fleet's instructions at once
@@ -88,6 +89,16 @@ def legs_to_stops(line: list[LonLat], stops: list[LonLat]) -> list[list[LonLat]]
         end = close if close is not None else min(range(start, len(line)), key=lambda i: metres(line[i], stop))
         legs.append([*line[start : end + 1], stop])
         start = end
+    return legs
+
+
+def remaining_legs(line: list[LonLat], stops: list[LonLat], completed: int, position: LonLat | None) -> list[list[LonLat]]:
+    """What is left of a route, resuming from `position` within the leg in progress. A route can pass the same
+    road twice, so the nearest point on the whole route can be the wrong pass: the truck would then cut
+    straight across to its next stop, and the Route Monitor would rightly call that off route."""
+    legs = legs_to_stops(line, stops)[completed:]
+    if legs and position:
+        legs[0] = legs[0][min(range(len(legs[0])), key=lambda i: metres(legs[0][i], position)):]
     return legs
 
 
@@ -273,13 +284,13 @@ class Fleet:
         response.raise_for_status()
         route = response.json()["route"]
         line = [tuple(c) for c in route["geometry"]["coordinates"]]
-        nearest = min(range(len(line)), key=lambda i: metres(line[i], truck.position)) if truck.position else 0
-        stops = [(s["lon"], s["lat"]) for s in route["stops"][route["completed_stops"]:]]
-        truck.line, truck.legs = line, legs_to_stops(line[nearest:], stops)
+        stops = [(s["lon"], s["lat"]) for s in route["stops"]]
+        truck.line, truck.legs = line, remaining_legs(line, stops, route["completed_stops"], truck.position)
         print(f"{truck.label}: following route {route_id}, {len(stops)} stops", flush=True)
 
     def closed_zones(self):
-        return unary_union([shape(f["geometry"]) for f in self.features if closes_roads(f["properties"])])
+        shapes = [(f["properties"], shape(f["geometry"])) for f in self.features if closes_roads(f["properties"])]
+        return unary_union([zone for hazard, zone in shapes if hazard["is_drill"] or zone.area <= WIDE_WARNING_DEG2])
 
     async def open_spots(self, zone, closed) -> list[LonLat]:
         found = [p for p in await self.spots(zone.bounds) if closed.is_empty or closed.distance(Point(p)) > CLEAR_DEG]

@@ -28,7 +28,7 @@ from app.dispatch.messaging import Messenger
 from app.llm.factory import build_llm
 from app.routing.valhalla import ValhallaClient
 
-from . import evacuation, plans
+from . import evacuation, plans, waves
 from .audit import Audit
 from .build import PlanRunner
 from .monitor import RouteMonitor
@@ -144,6 +144,7 @@ async def main() -> None:
                 bus.consume([VEHICLE_TELEMETRY, HAZARD_UPDATED, VEHICLE_DEVIATION], GROUP_MONITOR, consumer, monitor.handle),
                 monitor.run_sweeps(),
                 evacuation.run(deps),
+                waves.run(deps),
                 requeue_loop(pool),
                 singleton.keep(),
                 bus.heartbeat("brain"),

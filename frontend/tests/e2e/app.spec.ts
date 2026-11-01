@@ -69,6 +69,18 @@ test("a stranger can see the live picture but nothing private", async ({ page })
   }
 });
 
+test("the map's tile address only takes tile numbers", async ({ page }) => {
+  for (const path of ["/tiles/99/1/1.png", "/tiles/7/91/abc.png", "/tiles/7/91/..%2f..%2fetc.png"]) {
+    expect((await page.request.get(path)).status(), path).toBe(404);
+  }
+});
+
+test("a wrong code keeps a stranger out of the operator role", async ({ page }) => {
+  await signUp(page, "operator", "E2E Stranger", "guessing");
+  await expect(page.locator(".alert.danger")).toContainText("not the operator code");
+  await expect(page).toHaveURL(/\/signup/);
+});
+
 for (const role of ["operator", "driver"] as const) {
   test(`${role} signup stays pending until an authorized approver approves it`, async ({ page }) => {
     test.skip(!(await approvalEnforced(page)), "approval is only enforced in production");

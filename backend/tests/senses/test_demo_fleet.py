@@ -48,6 +48,24 @@ def test_a_stop_far_from_the_line_still_gets_a_leg_that_ends_there():
     assert leg[-1] == (80.1, 16.02)
 
 
+def test_a_truck_resuming_on_a_road_it_passes_twice_stays_on_its_own_pass():
+    """Out to 80.2, back, then out again: restarted on the first pass, it must not jump to the third."""
+    east = [(80.0 + i / 100, 16.0) for i in range(21)]
+    line = [*east, *reversed(east[:-1]), *east[1:]]
+    stops = [(80.2, 16.0), (80.0, 16.0), (80.2, 16.0)]
+    legs = demo_fleet.remaining_legs(line, stops, completed=0, position=(80.05, 16.0))
+    assert len(legs) == 3
+    assert legs[0][0] == (80.05, 16.0) and legs[0][-1] == stops[0]  # still heading out to the first stop
+    assert all(metres(a, b) < 1200 for a, b in zip(legs[0], legs[0][1:], strict=False))  # no straight-line jump
+
+
+def test_a_truck_resuming_after_a_stop_starts_on_the_next_leg():
+    line = [(80.0 + i / 100, 16.0) for i in range(11)]
+    stops = [(80.03, 16.0), (80.08, 16.0)]
+    [leg] = demo_fleet.remaining_legs(line, stops, completed=1, position=(80.05, 16.0))
+    assert leg[0] == (80.05, 16.0) and leg[-1] == stops[1]
+
+
 def test_a_fast_truck_reports_a_fix_at_every_stop():
     line = [(80.0 + i / 100, 16.0) for i in range(21)]
     stops = [(80.05, 16.0), (80.15, 16.0)]

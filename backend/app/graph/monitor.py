@@ -190,7 +190,7 @@ class RouteMonitor:
     async def on_hazard(self, hazard: HazardUpdated) -> None:
         if hazard.change not in ("created", "updated"):
             return
-        closes_roads = blocks_roads(hazard.hazard_type.value, hazard.severity.value, hazard.is_drill)
+        closes_roads = blocks_roads(hazard.hazard_type.value, hazard.severity.value, hazard.is_drill, hazard.area_km2)
         shapes = [h for h in await fetch_active_hazards(self.deps.pool, bbox=hazard.bbox) if h.hazard_id == str(hazard.hazard_id)]
         if not shapes:
             return

@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { FacilityMatch, SupplierListing, supplierApi, teamApi, Vehicle } from "@/lib/api";
+import { api, FacilityMatch, FacilityProperties, SupplierListing, supplierApi, teamApi, Vehicle } from "@/lib/api";
 import { ago, itemName, plate, tonnes } from "@/lib/format";
 
 import { REFRESH_MS } from "../LiveStatus";
@@ -15,13 +15,15 @@ import styles from "./ops.module.css";
 import { useOps } from "./OpsProvider";
 
 const MAX_ROWS = 100; // a search narrows the rest; a table of hundreds helps nobody
-type Tab = "suppliers" | "drivers" | "places";
+const SOURCE_NAMES: Record<string, string> = { osm: "OpenStreetMap", datagov: "data.gov.in", portal: "Registered here" };
+type Tab = "suppliers" | "drivers" | "warehouses" | "places";
 
 export default function DirectoryPage() {
   const { vehicles } = useOps();
   const [tab, setTab] = useState<Tab>("suppliers");
   const [query, setQuery] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierListing[] | null>(null);
+  const [warehouses, setWarehouses] = useState<FacilityProperties[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [withdrawing, setWithdrawing] = useState<SupplierListing | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,6 +36,14 @@ export default function DirectoryPage() {
     const timer = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
     return () => { clearTimeout(first); clearInterval(timer); };
   }, [load]);
+
+  useEffect(() => {
+    if (tab !== "warehouses" || warehouses !== null) return;
+    api.warehouses().then(
+      (collection) => setWarehouses(collection.features.map((feature) => feature.properties)),
+      (err) => setError((err as Error).message),
+    );
+  }, [tab, warehouses]);
 
   // A place search answers the text it was sent for, so an older reply is never shown for newer typing.
   const text = query.trim();
@@ -53,6 +63,9 @@ export default function DirectoryPage() {
     .filter((v) => v.status !== "maintenance" && matches(query, v.label, v.driver_name, String(v.fleet_number)))
     .sort((a, b) => Number(a.simulated) - Number(b.simulated) || Number(b.on_route) - Number(a.on_route) || plate(a.label).localeCompare(plate(b.label))), [vehicles, query]);
   const shops = useMemo(() => (suppliers ?? []).filter((s) => matches(query, s.name, s.site, s.contact)), [suppliers, query]);
+  const stores = useMemo(() => (warehouses ?? [])
+    .filter((w) => matches(query, w.name, w.kind))
+    .sort((a, b) => Number(b.is_supplier) - Number(a.is_supplier) || a.name.localeCompare(b.name)), [warehouses, query]);
   const answer = found?.text === text ? found : null;
 
   async function setVerified(s: SupplierListing, verified: boolean) {
@@ -87,6 +100,12 @@ export default function DirectoryPage() {
     { key: "status", header: "Status", render: (v) => <StatusBadge tone={v.is_offline ? "bad" : v.on_route ? "info" : "good"}>{v.is_offline ? "Offline" : v.on_route ? "On a route" : "Waiting"}</StatusBadge> },
     { key: "gps", header: "Last GPS", render: (v) => <span className="small">{ago(v.last_seen_at)}</span> },
   ];
+  const warehouseColumns: Column<FacilityProperties>[] = [
+    { key: "name", header: "Name", render: (w) => <b>{w.name}{w.name.startsWith("TEST-SIM") && <span className="badge sim">SIMULATED</span>}</b> },
+    { key: "kind", header: "Type", render: (w) => <span className="capitalize">{w.kind}</span> },
+    { key: "supplier", header: "Supplier here?", render: (w) => w.is_supplier ? <StatusBadge tone="good">Yes</StatusBadge> : <span className={styles.muted}>No</span> },
+    { key: "source", header: "From", render: (w) => SOURCE_NAMES[w.source] ?? w.source },
+  ];
 
   return (
     <>
@@ -94,9 +113,9 @@ export default function DirectoryPage() {
       {error && <AlertCard tone="bad" title="Could not load the directory">{error}</AlertCard>}
       <FilterBar>
         <FilterChips label="Directory section" value={tab} onChange={(t) => { setTab(t); setQuery(""); }} options={[
-          { key: "suppliers", label: "Suppliers", count: suppliers?.length }, { key: "drivers", label: "Drivers", count: vehicles.filter((v) => v.status !== "maintenance").length }, { key: "places", label: "Places" },
+          { key: "suppliers", label: "Suppliers", count: suppliers?.length }, { key: "drivers", label: "Drivers", count: vehicles.filter((v) => v.status !== "maintenance").length }, { key: "warehouses", label: "Warehouses", count: warehouses?.length }, { key: "places", label: "Places" },
         ]} />
-        <SearchInput value={query} onChange={setQuery} placeholder={tab === "drivers" ? "Search a driver, plate or truck number" : tab === "places" ? "Type at least 2 letters of a facility's name" : "Search a supplier or place"} />
+        <SearchInput value={query} onChange={setQuery} placeholder={tab === "drivers" ? "Search a driver, plate or truck number" : tab === "warehouses" ? "Search a warehouse or godown" : tab === "places" ? "Type at least 2 letters of a facility's name" : "Search a supplier or place"} />
       </FilterBar>
 
       {tab === "suppliers" && (suppliers === null && !error ? <Surface><p className={styles.muted}>Loading suppliers…</p></Surface> : (
@@ -108,6 +127,16 @@ export default function DirectoryPage() {
       {tab === "drivers" && (
         <Surface flush>
           <DataTable caption="Drivers and trucks" columns={truckColumns} rows={trucks} rowKey={(v) => v.id} empty={<EmptyState icon="truck" title={query ? "Nobody matches" : "No trucks yet"} />} />
+        </Surface>
+      )}
+      {tab === "warehouses" && (
+        <Surface flush>
+          {warehouses === null ? <p className={styles.muted} style={{ padding: 20 }}>Loading warehouses…</p> : (
+            <>
+              {stores.length > MAX_ROWS && <p className={styles.muted} style={{ padding: "14px 20px 0", fontSize: 13 }}>Showing {MAX_ROWS} of {stores.length.toLocaleString()}. Search to find the rest.</p>}
+              <DataTable caption="Warehouses and godowns" columns={warehouseColumns} rows={stores.slice(0, MAX_ROWS)} rowKey={(w) => w.id} empty={<EmptyState icon="boxes" title={query ? "Nothing matches that search" : "No warehouses loaded yet"} />} />
+            </>
+          )}
         </Surface>
       )}
       {tab === "places" && (
