@@ -22,6 +22,23 @@ async function signUp(page: Page, role: "operator" | "driver" | "supplier", name
   await page.getByRole("button", { name: "Create account" }).click();
 }
 
+test("the map comes through this site, with warehouses showing at any zoom", async ({ browser }) => {
+  const page = await browser.newPage();
+  const tiles: number[] = [];
+  const elsewhere: string[] = [];
+  page.on("response", (r) => {
+    if (r.url().includes("/tiles/")) tiles.push(r.status());
+    else if (/openstreetmap|cartocdn/.test(r.url())) elsewhere.push(r.url());
+  });
+  await signUp(page, "operator", "E2E Demo Map", OPERATOR_CODE, "map");
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect.poll(() => tiles.length).toBeGreaterThan(4);
+  expect(tiles.every((status) => status === 200)).toBe(true);
+  expect(elsewhere).toEqual([]);  // the browser's privacy settings can't break what it doesn't ask for
+  await expect(page.locator(".map-status")).toContainText(/\d+ warehouses and godowns in view/);
+  await page.close();
+});
+
 test("a duty officer sees that the fleet is simulated, and can add a driver", async ({ page, context }) => {
   await signUp(page, "operator", "E2E Demo Officer", OPERATOR_CODE);
   await expect(page).toHaveURL(/\/dashboard/);
@@ -70,6 +87,12 @@ test("a duty officer can look up any driver or supplier", async ({ browser }) =>
   await page.getByLabel("Search").fill("TEST-SIM water depot Vijayawada");
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(page.locator("tbody tr td").nth(1)).toContainText(/\d Water|Nothing available/);  // rehearsals use the water up
+
+  await page.getByLabel("Search").fill("");
+  await page.getByRole("button", { name: "Warehouses" }).click();
+  await expect(page.locator("tbody tr").first()).toBeVisible();
+  await page.getByLabel("Search").fill("godown");
+  await expect(page.locator("tbody tr").first()).toContainText(/godown/i);
 
   await page.getByRole("button", { name: "People" }).click();
   await expect(page.locator(".person", { hasText: email("operator") })).toBeVisible();
@@ -233,6 +256,42 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
 
   expect((await officer.request.delete(`/api/drill/${hazard}`)).status()).toBe(204);
   await shop.close();
+  await desk.close();
+});
+
+test("a clear drill goes out by itself, and the duty officer sees why", async ({ browser }) => {
+  test.skip(!process.env.E2E_ROUTING, "needs the road map: set E2E_ROUTING=1");
+  test.setTimeout(300_000);
+
+  const desk = await browser.newContext();
+  const officer = await desk.newPage();
+  await officer.goto("/signin");
+  await officer.getByLabel("Email").fill(email("operator"));
+  await officer.getByLabel("Password").fill(PASSWORD);
+  await officer.getByRole("button", { name: "Sign in" }).click();
+  await expect(officer).toHaveURL(/\/dashboard/);
+
+  const zone = [[77.61, 15.1], [77.65, 15.1], [77.65, 15.14], [77.61, 15.14], [77.61, 15.1]];  // a small town, far inland
+  const drill = await officer.request.post("/api/drill", { data: {
+    geometry: { type: "Polygon", coordinates: [zone] }, hazard_type: "flood", severity: "severe", label: `E2E clear ${RUN}`, ttl_minutes: 30,
+  } });
+  expect(drill.status()).toBe(201);
+  const hazard = (await drill.json()).id as string;
+
+  let planId = "";
+  await expect.poll(async () => {
+    const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await officer.request.get("/api/plans")).json();
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
+    planId = plan?.id ?? "";
+    return plan?.status;
+  }, { timeout: 180_000 }).toBe("dispatched");
+
+  await officer.locator(`[data-plan="${planId}"]`).click();
+  await expect(officer.getByText("Approved by the rules", { exact: false })).toBeVisible();
+  await expect(officer.locator(".route-card").first()).toBeVisible();
+  await expect(officer.getByRole("button", { name: "Approve dispatch" })).toHaveCount(0);
+
+  expect((await officer.request.delete(`/api/drill/${hazard}`)).status()).toBe(204);
   await desk.close();
 });
 

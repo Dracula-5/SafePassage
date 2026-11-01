@@ -21,6 +21,7 @@ const EVENT_ICONS: Record<string, string> = {
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
 };
 const TABS = ["Plans", "Evacuations", "Activity", "Team"] as const;
+const MAX_LINES = 3; // the point of a plan fits here: the rest is one click away
 const EVACUATION_STAGES: Record<Evacuation["stage"], { text: string; tone: string }> = {
   waiting: { text: "Waiting for a truck", tone: "orange" }, on_the_way: { text: "Truck on the way", tone: "blue" },
   on_board: { text: "People on board", tone: "blue" }, safe: { text: "Reached safety", tone: "green" }, failed: { text: "Needs a person", tone: "red" },
@@ -59,6 +60,7 @@ interface Props {
 export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPlan, onVehicle, onHazardChange }: Props) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Plans");
   const [plans, setPlans] = useState<PlanSummary[]>([]);
+  const [allRoutes, setAllRoutes] = useState(false);
   const [evacuations, setEvacuations] = useState<Evacuation[]>([]);
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -144,6 +146,7 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
 
   async function select(id: string) {
     selected.current = id;
+    setAllRoutes(false);
     try {
       const d = await plansApi.get(id);
       setDetail(d);
@@ -215,7 +218,10 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
             {detail && (
               <section className="plan-detail">
                 {detail.summary && <p>{detail.summary}</p>}
-                {detail.triage && <p className="small"><b>Priority {detail.triage.priority}</b>, {detail.triage.planning_horizon_hours} h horizon. {detail.triage.rationale}</p>}
+                {!detail.requires_approval && !detail.evacuation && !detail.parent_plan_id && (detail.status === "approved" || detail.status === "dispatched") && (
+                  <div className="alert ok small">Approved by the rules: nothing about this plan is unclear.</div>
+                )}
+                {detail.triage && <p className="small muted">Priority {detail.triage.priority} · plan for {detail.triage.planning_horizon_hours} h</p>}
                 {detail.unreachable_reason && <div className="alert danger small">{detail.unreachable_reason}</div>}
                 {(detail.status === "failed" || detail.status === "unreachable") && !detail.parent_plan_id && (
                   <button onClick={planAgain}>Plan again</button>
@@ -223,10 +229,11 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
                 {detail.escalations.length > 0 && (
                   <div className="alert warn small">
                     <b>Needs a person</b>
-                    <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
+                    <ul>{escalationLines(detail.escalations).slice(0, MAX_LINES).map((line) => <li key={line}>{line}</li>)}</ul>
+                    {escalationLines(detail.escalations).length > MAX_LINES && <small>and {escalationLines(detail.escalations).length - MAX_LINES} more</small>}
                   </div>
                 )}
-                {detail.routes.map((r) => {
+                {detail.routes.slice(0, allRoutes ? undefined : MAX_LINES).map((r) => {
                   const truck = vehicles.find((v) => v.id === r.vehicle_id);
                   return (
                     <div className="route-card" key={r.id}>
@@ -247,12 +254,11 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
                     </div>
                   );
                 })}
-                {detail.critic.length > 0 && (
-                  <p className="small muted">Safety check: {detail.critic.map((c) => `attempt ${c.attempt} ${c.passed ? "passed" : `rejected (${c.violations.length} problems)`}`).join(", ")}</p>
-                )}
+                {detail.routes.length > MAX_LINES && !allRoutes && <button className="link" onClick={() => setAllRoutes(true)}>Show all {detail.routes.length} trucks</button>}
                 {detail.status === "awaiting_approval" && (
                   <div className="approve">
                     <b>Your decision is needed</b>
+                    {detail.needs_person.length > 0 && <ul className="small">{detail.needs_person.map((why) => <li key={why}>{why}</li>)}</ul>}
                     <small className="muted">Recorded as {account.name} ({account.email}).</small>
                     <input placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
                     <div className="row">
