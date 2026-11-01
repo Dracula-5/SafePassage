@@ -98,7 +98,7 @@ async def my_vehicle(account: Driver) -> dict:
 
 @router.post("/api/driver/vehicle", status_code=201)
 async def register_my_vehicle(body: VehicleRegistration, account: Driver) -> dict:
-    """The enrolment code was checked at sign-up, so a signed-in driver does not type it again."""
+    """Only an approved driver can create a vehicle for their own account."""
     if await _own_vehicle(account):
         raise HTTPException(409, "this account already has a vehicle")
     return await _create_vehicle(body.model_copy(update={"driver_name": body.driver_name or account["name"]}), account["id"])

@@ -153,7 +153,7 @@ A browser only gives GPS over HTTPS, and the road graph only covers Andhra Prade
 cloudflared tunnel --protocol http2 --url http://localhost:3000
 ```
 
-Open `https://<tunnel>/signup` and create a driver account with the enrolment code from `backend/.env`. `stack.ps1` creates that code and the operator code on first run. If you start the backend another way, set both yourself, because the API has no protection without them. Stop the tunnel afterwards.
+Open `https://<tunnel>/signup` and create a driver account. A duty officer must approve it in the Team tab before the driver can sign in. `stack.ps1` creates the operator token used to approve the first duty-officer account and authorize scripts. Stop the tunnel afterwards.
 
 Without a phone in the region, `.\infra\dev\stack.ps1 demo` turns on presentation mode: 42 simulated trucks across 14 towns, kept online, with at least 10 gathering around any drill. They use the public API like a phone does, and everything downstream is real. They are marked as simulated on every screen and have no phone numbers. `docs/demo-script.md` is the walkthrough for all three roles, and `.\infra\dev\stack.ps1 demo-off` removes them. For a single scripted test run, `backend/tests/tools/sim_driver.py` drives one vehicle.
 
@@ -186,7 +186,7 @@ To try the same images on a Windows PC at http://localhost:3000, run `.\infra\de
 [docs/security.md](docs/security.md) covers what is protected, who can do what, how to deploy safely, what to do when a phone is lost or a token leaks, and what is not covered. In short:
 
 - Everyone signs up and signs in with an email address, and lands on the screen for their role.
-- Anyone can create a supplier account. A duty officer account needs the operator code, and a driver account needs the enrolment code, because replans assign vehicles without a human.
+- Anyone can create a supplier account. Duty officer and driver accounts stay pending until an authorized duty officer approves them; pending accounts cannot sign in or use role-protected features.
 - A phone can only read its own route, and an operator can revoke it.
 - Drills never message real people unless `DRILL_SEND_MESSAGES=true`.
 - Hazards and facilities stay public. New suppliers start unverified, and any plan using one needs a human.

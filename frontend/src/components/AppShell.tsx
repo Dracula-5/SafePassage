@@ -1,6 +1,7 @@
 "use client";
 
-// The frame around every signed-in screen: brand, screen name, live status and account menu.
+// A plain frame for screens that do not have their own navigation yet: brand, who is signed in, and Sign out.
+// The duty-officer, driver and supplier apps each have a full layout of their own.
 
 import Link from "next/link";
 import { ReactNode } from "react";
@@ -8,15 +9,10 @@ import { ReactNode } from "react";
 import { Account } from "@/lib/api";
 import { signOut } from "@/lib/session";
 
+import { BrandMark } from "./ui/icons";
+
 export function Logo({ size = 28 }: { size?: number }) {
-  return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="#0b7285" />
-      <path d="M8 23c5 0 4-7 8-7s3-7 8-7" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
-      <circle cx="8" cy="23" r="2.6" fill="#ffd43b" />
-      <circle cx="24" cy="9" r="2.6" fill="#fff" />
-    </svg>
-  );
+  return <BrandMark size={size} />;
 }
 
 export function Loading({ label = "Loading…" }: { label?: string }) {
@@ -37,26 +33,16 @@ export default function AppShell({ account, title, status, children }: {
   children: ReactNode;
 }) {
   return (
-    <div className="shell">
-      <header className="topbar">
-        <Link href="/" className="brand"><Logo /><span>ReliefRoute</span></Link>
-        {account.role === "operator" ? (
-          <nav className="topnav" aria-label="Screens">
-            {[["Operations", "/dashboard"], ["Directory", "/directory"]].map(([name, href]) => (
-              <Link key={name} href={href} aria-current={title === name ? "page" : undefined}>{name}</Link>
-            ))}
-          </nav>
-        ) : <span className="topbar-title">{title}</span>}
+    <div style={{ minHeight: "100dvh" }}>
+      <header className="shell-header" style={{ position: "sticky", top: 0, zIndex: 20, display: "flex", alignItems: "center", gap: 14, minHeight: 60, padding: "8px 20px", background: "#fff", borderBottom: "1px solid var(--line)" }}>
+        <Link href="/" style={{ display: "inline-flex", alignItems: "center", gap: 10, color: "var(--ink)", textDecoration: "none", fontWeight: 700, fontSize: 18 }}>
+          <Logo size={30} /><span>SafePassage</span>
+        </Link>
+        <span className="muted shell-title">{title}</span>
         <span className="spacer" />
         {status}
-        <div className="account">
-          <span className="avatar" aria-hidden="true">{account.name.charAt(0).toUpperCase()}</span>
-          <span className="account-text">
-            <b>{account.name}</b>
-            <small>{ROLE_NAMES[account.role]}</small>
-          </span>
-          <button className="ghost" onClick={signOut}>Sign out</button>
-        </div>
+        <span className="muted small shell-who"><b style={{ color: "var(--ink)" }}>{account.name}</b> · {ROLE_NAMES[account.role]}</span>
+        <button type="button" onClick={signOut}>Sign out</button>
       </header>
       {children}
     </div>

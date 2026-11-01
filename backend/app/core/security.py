@@ -7,6 +7,7 @@ back /api/stream and hide client disconnects.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from dataclasses import dataclass
 
@@ -154,9 +155,10 @@ class RateLimit:
     """Fixed window per client address, shared through Redis. If Redis is down, each process counts
     for itself: limits must survive an outage, and a slow limiter must not become one."""
 
-    def __init__(self, app: ASGIApp, *, enabled: bool = True) -> None:
+    def __init__(self, app: ASGIApp, *, enabled: bool = True, development: bool = False) -> None:
         self.app = app
         self.enabled = enabled
+        self.development = development
         self.local: dict[str, int] = {}
         self.skip_redis_until = 0.0
 
@@ -164,11 +166,19 @@ class RateLimit:
         if scope["type"] != "http" or not self.enabled or scope["path"] in NOT_LIMITED:
             await self.app(scope, receive, send)
             return
+        client = (scope.get("client") or ("unknown",))[0]
+        if (
+            self.development
+            and scope["method"] == "POST"
+            and scope["path"] == "/api/auth/signup"
+            and _is_loopback(client)
+        ):
+            await self.app(scope, receive, send)
+            return
         limit = LIMITS.get((scope["method"], scope["path"]))
         bucket = f"{scope['method']}:{scope['path']}" if limit else "*"  # one bucket, so paths can't mint keys
         limit = limit or DEFAULT_LIMIT
         now = time.time()
-        client = (scope.get("client") or ("unknown",))[0]
         key = f"ratelimit:{bucket}:{client}:{int(now // limit.window_s)}"
         if await self._hit(key, limit.window_s) > limit.count:
             retry_after = limit.window_s - int(now % limit.window_s)
@@ -197,3 +207,12 @@ class RateLimit:
             pipe.expire(key, window_s)
             count, _ = await pipe.execute()
         return count
+
+
+def _is_loopback(client: str) -> bool:
+    if client.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(client).is_loopback
+    except ValueError:
+        return False

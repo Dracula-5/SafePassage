@@ -14,7 +14,7 @@ Do this 20 minutes ahead.
    - **Supplier:** sign in. If the screen asks you to register, do it once and pick your site.
    - **Driver:** sign in. If you are outside Andhra Pradesh, open **Not in Andhra Pradesh? Simulate this truck's GPS**, choose **Vijayawada**, set the load capacity to `8000`, and press **Simulate my GPS**.
 3. Rehearse one full drill, then end it from its popup on the map.
-4. A new account needs a code at sign-up. They are in `infra\deploy\local.env`: `OPERATOR_TOKEN` for a duty officer and `ENROLMENT_CODE` for a driver. A supplier needs none.
+4. Duty officer and driver accounts sign up without codes and remain pending until an authorized duty officer approves them. On a fresh local stack, use `OPERATOR_TOKEN` from `infra\deploy\local.env` to approve the first duty officer with `POST /api/accounts/{account_id}/approve`; then approve drivers from the Team tab. Suppliers can use the portal immediately.
 
 ## The script
 

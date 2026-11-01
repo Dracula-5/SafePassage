@@ -71,7 +71,7 @@ curl https://relief.example.org/health        # {"status":"ok",...}
 
 Then open the address. A new database fills itself from the live sources. On the test run, hazards appeared within a minute, facilities took about 5 minutes and stock about 7. Alerts that arrive before the facilities wait for them, so the plan list stays honest. Plans only start for alerts that cover a settlement: forecast cells over the sea stay on the map without one.
 
-Sign up first at `/signup` as a duty officer, using `OPERATOR_TOKEN` as the code. Then give `ENROLMENT_CODE` to drivers. Both are in `infra/deploy/.env`. Suppliers need no code.
+Sign up at `/signup` as a duty officer. Approve the first duty officer through `POST /api/accounts/{account_id}/approve` using `X-Operator-Token` from `infra/deploy/.env`; after that, approved duty officers can approve other duty officers and drivers in the Team tab. Suppliers can sign up and use the portal immediately.
 
 **6. Keep it safe**
 

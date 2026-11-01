@@ -12,11 +12,11 @@ The dashboard, driver app and supplier portal were three separate pages behind s
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/auth/signup` | Code for operator and driver roles | Creates an account and signs in |
+| `POST /api/auth/signup` | Public; supplier signs in, operator and driver await approval | Creates an account |
 | `POST /api/auth/signin`, `/signout`, `GET /api/auth/me` | Session | Signing in and out |
 | `POST /api/auth/reset` | One-time link | Sets a new password |
 | `GET /api/accounts` | Operator | Everyone with an account |
-| `POST /api/accounts/{id}/access`, `/reset-link` | Operator | Remove or restore access, or make a reset link |
+| `POST /api/accounts/{id}/approve`, `/access`, `/reset-link` | Approved operator or operator token | Approve an account, remove or restore access, or make a reset link |
 | `GET`, `POST /api/driver/vehicle`, `POST /api/driver/vehicle/device` | Driver | The signed-in driver's own vehicle and this phone's token |
 | `GET`, `POST /api/supplier/me`, `POST /api/supplier/stock` | Supplier | The signed-in supplier's own organisation and stock |
 | `GET /api/status` | Public | Small live counts, for refreshing every 5 seconds |

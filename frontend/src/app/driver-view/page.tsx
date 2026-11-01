@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { DriverView } from "@/components/DriverApp";
 
-export const metadata: Metadata = { title: "Driver's screen · ReliefRoute" };
+export const metadata: Metadata = { title: "Driver's screen · SafePassage" };
 
 export default function Page() {
   return (

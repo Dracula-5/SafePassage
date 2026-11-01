@@ -40,6 +40,16 @@ async def app(live_env, monkeypatch):
     clear_settings()
 
 
+@pytest.fixture
+def production(monkeypatch):
+    """Duty officer and driver approval is enforced only in production. The approval tests switch it on."""
+    monkeypatch.setenv("APP_ENV", "production")
+    clear_settings()
+    yield
+    monkeypatch.setenv("APP_ENV", "development")
+    clear_settings()
+
+
 def browser(app) -> httpx.AsyncClient:
     """Each one keeps its own cookies, like a separate browser."""
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
@@ -51,31 +61,106 @@ async def http(app):
         yield client
 
 
-async def sign_up(client, role="supplier", code=None, email=None) -> dict:
+async def sign_up(client, role="supplier", email=None) -> dict:
     email = email or f"{uuid4().hex[:8]}@example.org"
-    response = await client.post("/api/auth/signup", json={"email": email, "password": PASSWORD, "name": "Asha Rao", "role": role, "code": code})
+    response = await client.post("/api/auth/signup", json={"email": email, "password": PASSWORD, "name": "Asha Rao", "role": role})
     assert response.status_code == 201, response.text
     return response.json()
 
 
+async def approve(client, account_id, approver=None) -> None:
+    headers = {"X-Operator-Token": OPERATOR_CODE} if approver is None else {}
+    requester = client if approver is None else approver
+    response = await requester.post(f"/api/accounts/{account_id}/approve", headers=headers)
+    assert response.status_code == 200, response.text
+
+
+async def approved_account(client, role="operator", email=None) -> dict:
+    account = await sign_up(client, role, email)
+    await approve(client, account["id"])
+    response = await client.post("/api/auth/signin", json={"email": account["email"], "password": PASSWORD})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 # ---------------------------------------------------------------- who may become what
+async def test_in_local_development_duty_officers_and_drivers_are_signed_in_at_once(http):
+    # APP_ENV=development: no approval step, so a new account can use the app straight away.
+    for role in ("operator", "driver"):
+        response = await http.post("/api/auth/signup", json={
+            "email": f"{uuid4().hex[:8]}@example.org", "password": PASSWORD, "name": "Asha Rao", "role": role,
+        })
+        assert response.status_code == 201 and "set-cookie" in response.headers
+        assert response.json()["approved"] is True
+        assert (await http.get("/api/auth/me")).json()["role"] == role
+        await http.post("/api/auth/signout")
+    assert (await http.get("/api/auth/options")).json()["approval"] is False
+
+
 async def test_anyone_can_sign_up_as_a_supplier_and_is_signed_in(http):
     account = await sign_up(http)
-    assert account["role"] == "supplier"
+    assert account["role"] == "supplier" and account["approved"] is True
     assert (await http.get("/api/auth/me")).json()["email"] == account["email"]
 
 
 @pytest.mark.parametrize("role", ["operator", "driver"])
-@pytest.mark.parametrize("code", [None, "", "guess"])
-async def test_a_stranger_cannot_sign_up_as_operator_or_driver(http, live_env, role, code):
-    body = {"email": "x@example.org", "password": PASSWORD, "name": "Stranger", "role": role, "code": code}
-    assert (await http.post("/api/auth/signup", json=body)).status_code == 401
-    assert await live_env.fetchval("SELECT count(*) FROM accounts") == 0
+async def test_privileged_signups_wait_for_approval_without_creating_a_session(http, role, production):
+    response = await http.post("/api/auth/signup", json={
+        "email": f"{uuid4().hex[:8]}@example.org", "password": PASSWORD, "name": "Asha Rao", "role": role,
+    })
+    assert response.status_code == 201 and "set-cookie" not in response.headers
+    account = response.json()
+    assert account["role"] == role and account["approved"] is False
+    assert (await http.get("/api/auth/me")).status_code == 401
+    assert (await http.get("/api/driver/vehicle")).status_code == 401
+    assert (await http.get("/api/accounts")).status_code == 401
+    signed_in = await http.post("/api/auth/signin", json={"email": account["email"], "password": PASSWORD})
+    assert signed_in.status_code == 403
+    assert "pending approval" in signed_in.json()["detail"]
 
 
-async def test_the_right_codes_make_the_right_accounts(http):
-    assert (await sign_up(http, "operator", OPERATOR_CODE))["role"] == "operator"
-    assert (await sign_up(http, "driver", DRIVER_CODE))["role"] == "driver"
+async def test_only_an_authorized_approver_can_approve_privileged_accounts(app, production):
+    async with browser(app) as applicant, browser(app) as stranger:
+        account = await sign_up(applicant, "operator")
+        assert (await stranger.post(f"/api/accounts/{account['id']}/approve")).status_code == 401
+        assert (await applicant.post(
+            f"/api/accounts/{account['id']}/approve", headers={"X-Operator-Token": "wrong-token"})).status_code == 401
+
+        approved = await stranger.post(
+            f"/api/accounts/{account['id']}/approve", headers={"X-Operator-Token": OPERATOR_CODE})
+        assert approved.status_code == 200
+        signed_in = await applicant.post("/api/auth/signin", json={"email": account["email"], "password": PASSWORD})
+        assert signed_in.status_code == 200 and signed_in.json()["approved"] is True
+        assert (await applicant.get("/api/auth/me")).status_code == 200
+
+
+async def test_an_approved_duty_officer_can_approve_a_driver(app, production):
+    async with browser(app) as officer, browser(app) as driver:
+        await approved_account(officer)
+        applicant = await sign_up(driver, "driver")
+        await approve(driver, applicant["id"], approver=officer)
+        signed_in = await driver.post("/api/auth/signin", json={"email": applicant["email"], "password": PASSWORD})
+        assert signed_in.status_code == 200 and signed_in.json()["role"] == "driver"
+
+
+async def test_supplier_accounts_do_not_require_or_accept_approval(app):
+    async with browser(app) as operator, browser(app) as supplier:
+        await approved_account(operator)
+        account = await sign_up(supplier)
+        assert account["approved"] is True
+        response = await operator.post(f"/api/accounts/{account['id']}/approve")
+        assert response.status_code == 409
+
+
+async def test_an_unconfigured_operator_token_does_not_open_approval(app, monkeypatch, production):
+    async with browser(app) as applicant, browser(app) as stranger:
+        account = await sign_up(applicant, "driver")
+        monkeypatch.setenv("OPERATOR_TOKEN", "")
+        clear_settings()
+        response = await stranger.post(
+            f"/api/accounts/{account['id']}/approve", headers={"X-Operator-Token": OPERATOR_CODE})
+        assert response.status_code == 401
+        clear_settings()
 
 
 async def test_a_role_cannot_be_invented(http):
@@ -149,7 +234,7 @@ async def test_too_many_wrong_passwords_locks_the_account_even_for_the_right_one
 
 
 async def test_a_forged_request_from_another_site_does_not_count_as_signed_in(http):
-    await sign_up(http, "operator", OPERATOR_CODE)
+    await approved_account(http)
     vehicle = f"/api/vehicles/{uuid4()}/revoke"
     assert (await http.post(vehicle, headers={"Sec-Fetch-Site": "cross-site"})).status_code == 401
     assert (await http.post(vehicle, headers={"Sec-Fetch-Site": "same-origin"})).status_code == 404  # let through
@@ -173,7 +258,7 @@ async def test_operational_data_needs_an_operator_not_just_any_account(http, pat
 
 
 async def test_an_operator_session_replaces_the_token(http):
-    await sign_up(http, "operator", OPERATOR_CODE)
+    await approved_account(http)
     for path in ("/api/vehicles", "/api/plans", "/api/orders", "/api/overview", "/api/accounts"):
         assert (await http.get(path)).status_code == 200, path
 
@@ -183,7 +268,7 @@ async def test_the_operator_token_still_works_for_scripts(http):
 
 
 async def test_a_signed_in_approval_records_who_really_decided(http, live_env):
-    me = await sign_up(http, "operator", OPERATOR_CODE)
+    me = await approved_account(http)
     plan = await live_env.fetchval(
         "INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status) VALUES ('t', 'manual', '{}', 'x', 'awaiting_approval') RETURNING id")
     decided = await http.post(f"/api/plans/{plan}/approve", json={"decision": "approved", "decided_by": "Someone Else"})
@@ -193,7 +278,7 @@ async def test_a_signed_in_approval_records_who_really_decided(http, live_env):
 
 # ---------------------------------------------------------------- drivers
 async def test_a_driver_registers_a_vehicle_once_and_reports_gps(http):
-    await sign_up(http, "driver", DRIVER_CODE)
+    await approved_account(http, "driver")
     assert (await http.get("/api/driver/vehicle")).status_code == 404
     created = await http.post("/api/driver/vehicle", json=TRUCK)
     assert created.status_code == 201, created.text
@@ -203,7 +288,7 @@ async def test_a_driver_registers_a_vehicle_once_and_reports_gps(http):
 
 
 async def test_a_new_phone_takes_over_and_the_old_one_stops(http):
-    await sign_up(http, "driver", DRIVER_CODE)
+    await approved_account(http, "driver")
     first = (await http.post("/api/driver/vehicle", json=TRUCK)).json()
     second = (await http.post("/api/driver/vehicle/device")).json()
     url = f"/api/vehicles/{first['vehicle']['id']}/assignment"
@@ -214,8 +299,8 @@ async def test_a_new_phone_takes_over_and_the_old_one_stops(http):
 
 async def test_a_revoked_vehicle_cannot_get_a_new_token_by_signing_in_again(app):
     async with browser(app) as driver, browser(app) as operator:
-        await sign_up(driver, "driver", DRIVER_CODE)
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(driver, "driver")
+        await approved_account(operator)
         vehicle = (await driver.post("/api/driver/vehicle", json=TRUCK)).json()["vehicle"]["id"]
         assert (await operator.post(f"/api/vehicles/{vehicle}/revoke")).status_code == 200
         assert (await driver.post("/api/driver/vehicle/device")).status_code == 403
@@ -225,6 +310,25 @@ async def test_a_supplier_account_is_not_a_driver(http):
     await sign_up(http)
     assert (await http.get("/api/driver/vehicle")).status_code == 401
     assert (await http.post("/api/driver/vehicle", json=TRUCK)).status_code == 401
+
+
+async def test_each_approved_role_keeps_its_own_permissions(app):
+    async with browser(app) as operator, browser(app) as driver, browser(app) as supplier:
+        await approved_account(operator)
+        await approved_account(driver, "driver")
+        await sign_up(supplier)
+
+        assert (await operator.get("/api/accounts")).status_code == 200
+        assert (await operator.get("/api/driver/vehicle")).status_code == 401
+        assert (await operator.get("/api/supplier/me")).status_code == 401
+
+        assert (await driver.get("/api/driver/vehicle")).status_code == 404
+        assert (await driver.get("/api/accounts")).status_code == 401
+        assert (await driver.get("/api/supplier/me")).status_code == 401
+
+        assert (await supplier.get("/api/supplier/me")).status_code == 404
+        assert (await supplier.get("/api/driver/vehicle")).status_code == 401
+        assert (await supplier.get("/api/accounts")).status_code == 401
 
 
 # ---------------------------------------------------------------- suppliers
@@ -240,7 +344,7 @@ async def test_a_supplier_registers_reports_stock_and_is_verified(app):
         me = (await supplier.get("/api/supplier/me")).json()
         assert me["verified"] is False and me["stock"][0]["quantity"] == 500 and me["items"]
 
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         row = next(p for p in (await operator.get("/api/accounts")).json() if p["role"] == "supplier")
         assert row["supplier_name"] == "Krishna Traders" and row["supplier_verified"] is False
         assert (await operator.post(f"/api/suppliers/{row['supplier_id']}/verify", json={"verified": True})).status_code == 200
@@ -248,7 +352,7 @@ async def test_a_supplier_registers_reports_stock_and_is_verified(app):
 
 
 async def test_one_supplier_cannot_report_for_another(http):
-    await sign_up(http, "driver", DRIVER_CODE)
+    await approved_account(http, "driver")
     assert (await http.post("/api/supplier/stock", json={"lines": [{"item_code": "RICE_KG", "quantity": 1, "unit_weight_kg": 1}]})).status_code == 401
 
 
@@ -256,7 +360,7 @@ async def test_one_supplier_cannot_report_for_another(http):
 async def test_removing_someone_ends_their_session_at_once(app):
     async with browser(app) as person, browser(app) as operator:
         account = await sign_up(person)
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         assert (await person.post(f"/api/accounts/{account['id']}/access", json={"disabled": True})).status_code == 401
         assert (await operator.post(f"/api/accounts/{account['id']}/access", json={"disabled": True})).status_code == 200
         assert (await person.get("/api/auth/me")).status_code == 401
@@ -265,14 +369,14 @@ async def test_removing_someone_ends_their_session_at_once(app):
 
 
 async def test_an_operator_cannot_lock_themselves_out(http):
-    me = await sign_up(http, "operator", OPERATOR_CODE)
+    me = await approved_account(http)
     assert (await http.post(f"/api/accounts/{me['id']}/access", json={"disabled": True})).status_code == 409
 
 
 async def test_a_reset_link_works_once_and_signs_everyone_out(app):
     async with browser(app) as person, browser(app) as operator:
         account = await sign_up(person)
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         link = (await operator.post(f"/api/accounts/{account['id']}/reset-link")).json()
         token = link["path"].split("token=")[1]
 
@@ -287,7 +391,7 @@ async def test_a_reset_link_works_once_and_signs_everyone_out(app):
 async def test_an_expired_reset_link_is_refused(app, live_env):
     async with browser(app) as person, browser(app) as operator:
         account = await sign_up(person)
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         link = (await operator.post(f"/api/accounts/{account['id']}/reset-link")).json()
         await live_env.execute("UPDATE password_resets SET expires_at = now() - interval '1 minute'")
         token = link["path"].split("token=")[1]
@@ -354,7 +458,7 @@ async def test_a_new_address_is_confirmed_by_its_emailed_link(inbox, app):
         assert (await client.post("/api/auth/verify", json={"token": token})).status_code == 204
         assert (await client.post("/api/auth/verify", json={"token": token})).status_code == 422  # works once
     async with browser(app) as operator:
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         row = next(p for p in (await operator.get("/api/accounts")).json() if p["id"] == account["id"])
         assert row["email_verified"] is True
 
@@ -383,7 +487,7 @@ async def test_forgot_password_does_not_reveal_who_has_an_account(inbox, app):
 async def test_a_removed_person_cannot_mail_themselves_back_in(inbox, app):
     async with browser(app) as person, browser(app) as operator:
         account = await sign_up(person, email="removed@example.org")
-        await sign_up(operator, "operator", OPERATOR_CODE)
+        await approved_account(operator)
         await operator.post(f"/api/accounts/{account['id']}/access", json={"disabled": True})
         inbox.clear()
         await person.post("/api/auth/forgot", json={"email": "removed@example.org"})
@@ -401,7 +505,7 @@ async def test_a_mail_outage_does_not_stop_sign_up(app, monkeypatch):
 
 
 async def test_without_a_mail_provider_nothing_is_sent_and_the_screens_can_say_so(http, live_env):
-    assert (await http.get("/api/auth/options")).json() == {"email": False}
+    assert (await http.get("/api/auth/options")).json() == {"email": False, "approval": False}
     await sign_up(http, email="quiet@example.org")
     assert (await http.post("/api/auth/forgot", json={"email": "quiet@example.org"})).status_code == 202
     assert await live_env.fetchval("SELECT count(*) FROM password_resets") == 0
@@ -417,7 +521,7 @@ async def test_status_and_overview_are_real_counts(http, live_env):
     assert status["hazards_active"] == 1 and status["hazards_severe"] == 1
     assert status["hazards_changed"].startswith("1:")
 
-    await sign_up(http, "operator", OPERATOR_CODE)
+    await approved_account(http)
     overview = (await http.get("/api/overview")).json()
     assert overview == {"plans_awaiting": 0, "routes_live": 0, "kg_on_routes": 0, "orders_open": 0, "orders_delivered": 0,
                         "trucks_online": 0, "trucks_total": 0, "people_safe": 0, "people_waiting": 0}  # fmt: skip

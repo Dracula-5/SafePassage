@@ -3,7 +3,8 @@
 // cookie goes along by itself and no secret ever reaches browser code.
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /** Seconds the server asked us to wait (its Retry-After header), when it sent one. */
+  constructor(public status: number, message: string, public retryAfter: number | null = null) {
     super(message);
   }
 }
@@ -12,7 +13,8 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { cache: "no-store", ...init });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new ApiError(res.status, body?.detail ?? `The server answered ${res.status}`);
+    const wait = Number(res.headers.get("Retry-After"));
+    throw new ApiError(res.status, body?.detail ?? `The server answered ${res.status}`, Number.isFinite(wait) && wait > 0 ? wait : null);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
@@ -142,6 +144,7 @@ export interface Account {
   email: string;
   name: string;
   role: Role;
+  approved: boolean;
 }
 
 export interface TeamMember extends Account {
@@ -160,12 +163,13 @@ export const authApi = {
   me: () => send<Account>("/api/auth/me"),
   signIn: (email: string, password: string) =>
     send<Account>("/api/auth/signin", { method: "POST", headers: json, body: JSON.stringify({ email, password }) }),
-  signUp: (input: { email: string; password: string; name: string; role: Role; code?: string }) =>
+  signUp: (input: { email: string; password: string; name: string; role: Role }) =>
     send<Account>("/api/auth/signup", { method: "POST", headers: json, body: JSON.stringify(input) }),
   signOut: () => send<void>("/api/auth/signout", { method: "POST" }),
   reset: (token: string, password: string) =>
     send<void>("/api/auth/reset", { method: "POST", headers: json, body: JSON.stringify({ token, password }) }),
-  options: () => send<{ email: boolean }>("/api/auth/options"),
+  /** approval: whether duty officer and driver accounts wait for a duty officer (off in local development). */
+  options: () => send<{ email: boolean; approval: boolean }>("/api/auth/options"),
   forgot: (email: string) => send<unknown>("/api/auth/forgot", { method: "POST", headers: json, body: JSON.stringify({ email }) }),
   verify: (token: string) => send<void>("/api/auth/verify", { method: "POST", headers: json, body: JSON.stringify({ token }) }),
 };
@@ -184,6 +188,7 @@ export interface SupplierListing {
 export const teamApi = {
   list: () => request<TeamMember[]>("/api/accounts"),
   suppliers: () => request<SupplierListing[]>("/api/suppliers"),
+  approve: (id: string) => post<{ id: string; approved: boolean }>(`/api/accounts/${id}/approve`),
   setDisabled: (id: string, disabled: boolean) => post<unknown>(`/api/accounts/${id}/access`, { disabled }),
   resetLink: (id: string) => post<{ path: string; expires_in_hours: number }>(`/api/accounts/${id}/reset-link`),
   verifySupplier: (id: string, verified: boolean) => post<unknown>(`/api/suppliers/${id}/verify`, { verified }),

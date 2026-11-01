@@ -6,8 +6,9 @@
 # demo: prod plus simulated drivers for a presentation, and it stays on until demo-off, which removes
 # them and their stock again.
 # Expects the venv at $HOME\reliefroute-venv (see README); RELIEFROUTE_VENV overrides it.
-# The first `up` creates an operator code and a driver enrolment code in backend\.env, so an open
-# tunnel can never mean an open API. Both are typed once, at sign-up.
+# The first `up` creates an operator token and an enrolment code in backend\.env, for scripts and the legacy
+# vehicle endpoint. Web sign-up needs no codes: where approval is enforced (production), a duty officer or the
+# operator token approves new duty officers and drivers.
 param([ValidateSet("up", "down", "status", "prod", "prod-down", "demo", "demo-off")][string]$Action = "status")
 
 $repo = Resolve-Path "$PSScriptRoot\..\.."
@@ -69,7 +70,7 @@ function Start-Prod {
     Compose-Prod up -d --build
     Compose-Prod restart caddy  # it reads its config once, and `up` does not notice a changed Caddyfile
     "ReliefRoute http://localhost:3000"
-    "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in infra\deploy\local.env"
+    "Sign up needs no codes. Duty officers and drivers wait for approval; OPERATOR_TOKEN (infra\deploy\local.env) approves the first duty officer"
     "A new database fills from the live sources: facilities in about 5 minutes, stock in about 7"
     if (Select-String -Path "$repo\infra\deploy\local.env" -Pattern "^DEMO_FLEET=true" -Quiet) {
         "Presentation mode: simulated drivers are on. The script is in docs\demo-script.md"
@@ -123,14 +124,14 @@ switch ($Action) {
         & $python -m app.core.migrate *>&1 | Select-Object -Last 1
         Pop-Location
         $parts = @(
-            @{ name = "api"; process = Start-Part "api" $python @("-m", "uvicorn", "app.main:app", "--port", "8000") $backend }
+            @{ name = "api"; process = Start-Part "api" $python @("-m", "uvicorn", "app.main:app", "--port", "8000", "--timeout-keep-alive", "75") $backend }
             @{ name = "ingestion"; process = Start-Part "ingestion" $python @("-m", "app.ingestion.worker") $backend }
             @{ name = "brain"; process = Start-Part "brain" $python @("-m", "app.graph.worker") $backend }
             @{ name = "frontend"; process = Start-Part "frontend" $npm @("run", "dev", "--", "-H", "127.0.0.1") "$repo\frontend" }
         )
         $parts | ForEach-Object { @{ name = $_.name; pid = $_.process.Id } } | ConvertTo-Json | Set-Content $pids
         "ReliefRoute http://localhost:3000  API http://localhost:8000  logs $logs"
-        "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in backend\.env"
+        "Sign up needs no codes. In this local setup (APP_ENV=development) every account is usable at once"
     }
     "down" {
         Stop-Parts

@@ -15,7 +15,6 @@ from tests.tools.demo_fleet import Fleet, Truck, closes_roads, glide_path, legs_
 from tests.tools.sim_driver import metres
 
 OPERATOR = {"X-Operator-Token": "operator-code-long-enough-for-production-use"}
-DRIVER_CODE = "driver-code-1234"
 PASSWORD = "correct horse battery"
 DRILL = {"type": "Polygon", "coordinates": [[[80.60, 16.49], [80.66, 16.49], [80.66, 16.53], [80.60, 16.53], [80.60, 16.49]]]}
 NEW_DRIVER = {"driver_name": "Test Driver", "plate": "AP 16 TX 9999", "capacity_kg": 8000, "town": "Vijayawada"}
@@ -172,7 +171,6 @@ async def app(live_env, monkeypatch):
     from app.main import create_app
 
     monkeypatch.setenv("OPERATOR_TOKEN", OPERATOR["X-Operator-Token"])
-    monkeypatch.setenv("ENROLMENT_CODE", DRIVER_CODE)
     monkeypatch.setenv("DEMO_FLEET", "true")
     get_common_settings.cache_clear()
     get_senses_settings.cache_clear()
@@ -192,11 +190,18 @@ async def http(app):
 
 
 @asynccontextmanager
-async def signed_in(app, role, code=None):
+async def signed_in(app, role):
     async with browser(app) as client:
-        body = {"email": f"{role}-{uuid4().hex[:6]}@example.org", "password": PASSWORD, "name": "Test Person", "role": role, "code": code}
+        body = {"email": f"{role}-{uuid4().hex[:6]}@example.org", "password": PASSWORD, "name": "Test Person", "role": role}
         response = await client.post("/api/auth/signup", json=body)
         assert response.status_code == 201, response.text
+        account = response.json()
+        if role in {"operator", "driver"}:
+            approved = await client.post(f"/api/accounts/{account['id']}/approve", headers=OPERATOR)
+            assert approved.status_code == 200, approved.text
+            signed_in = await client.post(
+                "/api/auth/signin", json={"email": account["email"], "password": PASSWORD})
+            assert signed_in.status_code == 200, signed_in.text
         yield client
 
 
@@ -250,14 +255,14 @@ async def test_an_unknown_town_is_refused(http):
 
 @pytest.mark.integration
 async def test_a_real_truck_is_not_marked_simulated(app, http):
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         body = {"label": "AP 16 TX 1", "driver_language": "te", "capacity_kg": 5000}
         assert (await driver.post("/api/driver/vehicle", json=body)).json()["vehicle"]["simulated"] is False
 
 
 @pytest.mark.integration
 async def test_a_driver_outside_the_state_can_switch_their_own_truck_to_simulated_gps(app, http):
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         registered = (await driver.post("/api/driver/vehicle", json={"label": "AP 16 TX 1234", "driver_language": "te", "capacity_kg": 10})).json()
         vehicle, phone_token = registered["vehicle"], registered["device_token"]
         response = await driver.post("/api/demo/my-truck", json={"town": "Ongole", "capacity_kg": 8000})
@@ -279,7 +284,7 @@ async def test_a_driver_outside_the_state_can_switch_their_own_truck_to_simulate
 @pytest.mark.integration
 async def test_a_signed_in_driver_cannot_read_someone_elses_route(app, http):
     other = (await http.post("/api/demo/drivers", json=NEW_DRIVER)).json()
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         assert (await driver.get(f"/api/vehicles/{other['id']}/assignment")).status_code == 401
 
 
@@ -332,7 +337,7 @@ async def test_the_fleet_comes_up_online_and_gathers_around_a_drill_without_dupl
 async def test_ending_presentation_mode_leaves_a_clean_system(app, http, live_env):
     fleet = Fleet(http, 400)
     await fleet.seed()
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         await driver.post("/api/driver/vehicle", json={"label": "AP 16 TX 1234", "driver_language": "te", "capacity_kg": 10})
         await driver.post("/api/demo/my-truck", json={"town": "Ongole", "capacity_kg": 8000})
         assert (await http.delete("/api/demo")).status_code == 204
@@ -421,7 +426,7 @@ async def test_every_truck_has_its_own_number(http):
 @pytest.mark.integration
 async def test_a_request_reaches_one_driver_who_answers_it(app, http, live_env):
     hazard = await active_drill(http)
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         mine = (await driver.post("/api/driver/vehicle", json={"label": "AP 16 TX 5", "driver_language": "te", "capacity_kg": 8000})).json()
         vehicle = mine["vehicle"]["id"]
         await driver.post("/api/telemetry", json={"vehicle_id": vehicle, "fixes": [fix_at(80.75, 16.52)]},
@@ -452,7 +457,7 @@ async def test_a_request_reaches_one_driver_who_answers_it(app, http, live_env):
 async def test_a_stranger_or_another_driver_cannot_see_or_answer_a_request(app, http):
     hazard, truck = await active_drill(http), await online_truck(http)
     await http.post("/api/driver-requests", json={"vehicle_id": truck["id"], "hazard_id": hazard})
-    async with signed_in(app, "driver", DRIVER_CODE) as other, browser(app) as stranger:
+    async with signed_in(app, "driver") as other, browser(app) as stranger:
         for client in (other, stranger):
             assert (await client.get(f"/api/vehicles/{truck['id']}/request")).status_code == 401
             assert (await client.post(f"/api/vehicles/{truck['id']}/request/answer", json={"accept": True})).status_code == 401
@@ -506,7 +511,7 @@ async def test_a_simulated_driver_answers_and_drives_to_the_place(http, live_env
 @pytest.mark.integration
 async def test_a_person_answers_for_themselves(app, http):
     hazard = await active_drill(http)
-    async with signed_in(app, "driver", DRIVER_CODE) as driver:
+    async with signed_in(app, "driver") as driver:
         body = {"label": "AP 16 TX 5", "driver_language": "te", "capacity_kg": 8000}
         vehicle = (await driver.post("/api/driver/vehicle", json=body)).json()["vehicle"]
         await driver.post("/api/demo/my-truck", json={"town": "Vijayawada", "capacity_kg": 8000})
@@ -544,7 +549,7 @@ async def test_an_evacuation_needs_a_live_zone_with_people_in_it(http, live_env)
 @pytest.mark.integration
 async def test_only_a_duty_officer_can_see_or_request_evacuations(app, http):
     hazard = await active_drill(http)
-    async with signed_in(app, "driver", DRIVER_CODE) as driver, browser(app) as stranger:
+    async with signed_in(app, "driver") as driver, browser(app) as stranger:
         for client in (driver, stranger):
             assert (await client.post("/api/evacuations", json={"hazard_id": hazard, "people": 40})).status_code == 401
             assert (await client.get("/api/evacuations")).status_code == 401

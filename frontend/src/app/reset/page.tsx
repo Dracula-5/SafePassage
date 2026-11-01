@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { ResetForm } from "@/components/AuthForms";
 
-export const metadata: Metadata = { title: "New password · ReliefRoute" };
+export const metadata: Metadata = { title: "New password · SafePassage" };
 
 export default function Page() {
   return (

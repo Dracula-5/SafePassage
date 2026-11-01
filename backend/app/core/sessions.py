@@ -16,6 +16,7 @@ from uuid import UUID
 
 from fastapi import Request, Response
 
+from .config import get_common_settings
 from .db import get_pool
 
 COOKIE = "rr_session"
@@ -70,6 +71,12 @@ async def close_session(response: Response, request: Request) -> None:
     response.delete_cookie(COOKIE, path="/")
 
 
+def approval_required() -> bool:
+    """Duty officer and driver accounts wait for a duty officer's approval everywhere except the local
+    development setup (APP_ENV=development). Anything else, including a typo, keeps the approval gate."""
+    return get_common_settings().app_env != "development"
+
+
 async def account_for(request: Request) -> dict | None:
     token = request.cookies.get(COOKIE)
     if not token:
@@ -78,6 +85,8 @@ async def account_for(request: Request) -> dict | None:
     if request.method not in SAFE_METHODS and request.headers.get("sec-fetch-site") == "cross-site":
         return None
     row = await (await get_pool()).fetchrow(
-        """SELECT a.id, a.email, a.name, a.role FROM account_sessions s JOIN accounts a ON a.id = s.account_id
-           WHERE s.token_hash = $1 AND s.expires_at > now() AND a.disabled_at IS NULL""", digest(token))  # fmt: skip
+        """SELECT a.id, a.email, a.name, a.role, a.approved_at FROM account_sessions s JOIN accounts a ON a.id = s.account_id
+           WHERE s.token_hash = $1 AND s.expires_at > now() AND a.disabled_at IS NULL AND (NOT $2 OR a.approved_at IS NOT NULL)""",
+        digest(token), approval_required(),
+    )  # fmt: skip
     return dict(row) if row else None

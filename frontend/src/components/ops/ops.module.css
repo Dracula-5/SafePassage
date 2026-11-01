@@ -1,0 +1,108 @@
+/* Layouts specific to the duty officer's pages. The shared building blocks are in components/ui. */
+
+.stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.stackTight { display: grid; gap: 10px; min-width: 0; }
+.cols { display: grid; gap: 20px; align-items: start; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.cell { display: grid; gap: 2px; min-width: 0; }
+.cell b { font-size: 14.5px; }
+.cell small { color: var(--muted); }
+.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 4px; flex: none; }
+.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--teal); font-weight: 700; cursor: pointer; text-align: left; }
+.link:hover { text-decoration: underline; background: none; }
+
+/* ---------- Map stage ---------- */
+.stage { position: relative; height: clamp(440px, 64vh, 780px); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow); background: #dfe8ee; }
+.stageFull { height: calc(100dvh - var(--top-h)); border: 0; border-radius: 0; box-shadow: none; }
+.stageShort { height: 340px; }
+.float { position: absolute; z-index: 5; }
+.attention {
+  top: 12px; left: 12px; width: min(340px, calc(100% - 76px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 14px 16px;
+  border-radius: var(--radius); background: #fff; box-shadow: var(--shadow-lg);
+}
+.attentionHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.attentionHead button { min-height: 36px; }
+.attentionList { display: grid; gap: 10px; margin-top: 10px; }
+.attentionItem { display: grid; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--bg); font-size: 13.5px; text-decoration: none; color: inherit; border: 1px solid var(--line); }
+a.attentionItem:hover { border-color: #b8d6df; background: #fff; }
+.attentionItem b { font-size: 14px; }
+.legend { left: 12px; bottom: 28px; display: flex; flex-wrap: wrap; gap: 10px 14px; padding: 8px 12px; border-radius: 12px; background: rgb(255 255 255 / 0.94); font-size: 12px; box-shadow: var(--shadow); max-width: calc(100% - 24px); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; }
+.legend i.line { width: 16px; height: 4px; border-radius: 2px; }
+.legend i.round { border-radius: 50%; }
+.mapStatus { right: 12px; bottom: 28px; padding: 4px 10px; border-radius: 10px; background: rgb(255 255 255 / 0.92); color: var(--muted); font-size: 12px; }
+
+/* ---------- Master and detail ---------- */
+.master { display: grid; gap: 8px; align-content: start; max-height: calc(100dvh - 300px); min-height: 240px; overflow-y: auto; }
+.item {
+  display: grid; gap: 6px; width: 100%; padding: 14px 16px; text-align: left; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; cursor: pointer;
+  font-weight: 400; min-height: 0; justify-content: stretch; align-items: stretch;
+}
+.item:hover { border-color: #b8d6df; background: #fff; }
+.itemOn, .itemOn:hover { border-color: var(--teal); background: var(--soft-blue); box-shadow: 0 0 0 3px rgb(8 127 140 / 0.12); }
+.itemTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.itemText { font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
+.detail { display: grid; gap: 16px; min-width: 0; }
+.detailTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+.fact { display: grid; gap: 2px; min-width: 0; }
+.fact small { color: var(--muted); font-size: 12.5px; }
+.fact b { font-weight: 600; overflow-wrap: anywhere; }
+.routeCard { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; display: grid; gap: 6px; }
+.stops { display: grid; margin-top: 4px; }
+.stops li { position: relative; display: grid; padding: 6px 0 6px 22px; border-left: 2px solid var(--line); margin-left: 6px; font-size: 14px; }
+.stops li::before { content: ""; position: absolute; left: -7px; top: 11px; width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid #c5d1de; }
+.stops li.done { color: var(--muted); }
+.stops li.done::before { background: var(--good); border-color: var(--good); }
+.stops small { color: var(--muted); }
+.decision { display: grid; gap: 10px; padding: 16px; border-radius: var(--radius); background: var(--warn-bg); border: 1px solid #f6dfb0; }
+.decisionActions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- Timeline ---------- */
+.timeline { display: grid; gap: 8px; }
+.event { padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; border-left-width: 4px; }
+.eventError { border-left-color: var(--bad); }
+.eventWarn { border-left-color: var(--warn); }
+.eventGood { border-left-color: var(--good); }
+.eventPlain { border-left-color: #cbd5e1; }
+.eventHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.eventHead b { text-transform: capitalize; }
+.eventBody { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.payload { margin-top: 10px; padding: 12px; border-radius: 10px; background: var(--bg); font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; }
+
+/* ---------- Sources ---------- */
+.sourceGrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.source { display: grid; gap: 8px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow); }
+.source h3 { font-size: 15.5px; }
+.sourceTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* ---------- Evacuations ---------- */
+.steps { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.step { flex: 1; height: 6px; border-radius: 99px; background: #e5ebf2; }
+.stepDone { background: var(--good); }
+.stepNow { background: var(--teal); }
+.stepBad { background: var(--bad); }
+
+/* ---------- Simulation ---------- */
+.scenario { top: 12px; left: 12px; width: min(360px, calc(100% - 76px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 18px; border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-lg); display: grid; gap: 12px; }
+.scenario h2 { font-size: 17px; }
+.scenarioForm { display: grid; gap: 10px; }
+.scenarioForm label { display: grid; gap: 5px; font-size: 13px; font-weight: 600; }
+.results { top: 12px; right: 56px; width: min(340px, calc(100% - 68px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 16px; border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-lg); display: grid; gap: 10px; }
+.simBanner { top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 99px; background: var(--purple); color: #fff; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+
+@media (min-width: 900px) {
+  .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .splitPlans { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }
+  .splitHalf { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+@media (max-width: 899px) {
+  .master { max-height: none; }
+  .simBanner { display: none; }
+  .results { top: auto; bottom: 12px; max-height: 40%; }
+}

@@ -1,10 +1,10 @@
 {
-  "name": "ReliefRoute Driver",
-  "short_name": "RR Driver",
+  "name": "SafePassage Driver",
+  "short_name": "SP Driver",
   "start_url": "/driver",
   "scope": "/driver",
   "display": "standalone",
-  "background_color": "#f4f6f8",
-  "theme_color": "#0f2a43",
+  "background_color": "#f8fafc",
+  "theme_color": "#ffffff",
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

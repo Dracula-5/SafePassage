@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { SignUpForm } from "@/components/AuthForms";
 
-export const metadata: Metadata = { title: "Create account · ReliefRoute" };
+export const metadata: Metadata = { title: "Create account · SafePassage" };
 
 export default function Page() {
   return (

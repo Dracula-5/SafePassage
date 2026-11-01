@@ -8,7 +8,13 @@
 	}
 	@backend path /api/* /health /portal/api/* /portal/whatsapp
 	handle @backend {
-		reverse_proxy api:8000
+		reverse_proxy api:8000 {
+			# Caddy gives up an idle connection before uvicorn does (75s), so a request is never sent down one
+			# the API has just closed: that race shows up as a 502, and a POST cannot be retried.
+			transport http {
+				keepalive 30s
+			}
+		}
 	}
 	handle {
 		reverse_proxy frontend:3000

@@ -2,13 +2,13 @@
 
   signed-in account  rr_session cookie (core/sessions.py): what people use, in the web app
   operator token     X-Operator-Token: the same access for scripts and the runbook in docs/security.md
-  enrolment code     driver sign-up, and X-Enrolment-Code on POST /api/vehicles
+  enrolment code     X-Enrolment-Code on the legacy POST /api/vehicles
   device token       X-Device-Token (telemetry/): one vehicle's own GPS and assignment
 
-Anyone may create a supplier account, which is unverified until an operator vouches for it. An operator
-account needs the operator token and a driver account the enrolment code, typed at sign-up: the approval
-gate means nothing if anyone on the internet can press Approve, and a replan auto-approves vehicles, so a
-stranger's phone must never get onto the fleet.
+Anyone may sign up as a supplier and use the portal; supplier verification is separate. Duty officer and
+driver accounts stay pending until an approved duty officer or the operator token approves them. Pending
+accounts cannot sign in or pass role checks: a replan auto-approves vehicles, so a stranger's phone must
+never get onto the fleet.
 
 The token and code are off when unset, for local development. A production start refuses to run without
 them (security.production_problems).
@@ -52,6 +52,17 @@ async def require_operator(request: Request, x_operator_token: Annotated[str | N
     expected = get_common_settings().operator_token
     if expected and not same_secret(expected, x_operator_token) and not await is_operator(request):
         raise refuse(request, "operator", "sign in as an operator")
+    if request.method != "GET":
+        log.info("operator_action", method=request.method, path=request.url.path, client=client_ip(request))
+
+
+async def require_authorized_operator(
+    request: Request, x_operator_token: Annotated[str | None, Header()] = None
+) -> None:
+    if not await is_operator(request):
+        expected = get_common_settings().operator_token
+        if not expected or not same_secret(expected, x_operator_token):
+            raise refuse(request, "operator", "sign in as an approved duty officer")
     if request.method != "GET":
         log.info("operator_action", method=request.method, path=request.url.path, client=client_ip(request))
 

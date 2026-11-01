@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { ForgotForm } from "@/components/AuthForms";
 
-export const metadata: Metadata = { title: "Forgot password · ReliefRoute" };
+export const metadata: Metadata = { title: "Forgot password · SafePassage" };
 
 export default function Page() {
   return (

@@ -64,14 +64,15 @@ def test_impossible_gps_fixes_are_refused(fix):
         TelemetryFix(recorded_at=datetime.now(UTC), **fix)
 
 
+# Built when the test runs, not when pytest collects it: a long run must not turn "an hour from now" into "now".
 @pytest.mark.parametrize("when", [
-    datetime.now(UTC) + timedelta(hours=1),
-    datetime.now(UTC) - timedelta(days=30),
-    datetime(2026, 10, 31, 6, 0),
+    lambda: datetime.now(UTC) + timedelta(hours=1),
+    lambda: datetime.now(UTC) - timedelta(days=30),
+    lambda: datetime(2026, 10, 31, 6, 0),
 ], ids=["future", "too_old", "no_timezone"])
 def test_bad_fix_times_are_refused(when):
     with pytest.raises(ValidationError):
-        TelemetryFix(lon=80, lat=16, recorded_at=when)
+        TelemetryFix(lon=80, lat=16, recorded_at=when())
 
 
 def test_telemetry_batch_size_is_limited():

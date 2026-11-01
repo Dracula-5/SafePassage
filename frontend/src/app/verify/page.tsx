@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { VerifyEmail } from "@/components/AuthForms";
 
-export const metadata: Metadata = { title: "Confirm email · ReliefRoute" };
+export const metadata: Metadata = { title: "Confirm email · SafePassage" };
 
 export default function Page() {
   return (

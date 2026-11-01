@@ -1,9 +1,8 @@
 // Presentation mode in a real browser. Needs a stack started with `stack.ps1 demo`, E2E_DEMO=1, and
-// OPERATOR_TOKEN and ENROLMENT_CODE. Accounts and the truck are labelled as tests.
+// OPERATOR_TOKEN. Accounts and the truck are labelled as tests.
 import { expect, Page, test } from "@playwright/test";
 
 const OPERATOR_CODE = process.env.OPERATOR_TOKEN ?? "";
-const DRIVER_CODE = process.env.ENROLMENT_CODE ?? "";
 const PASSWORD = "test account passphrase";
 const RUN = Date.now().toString(36);
 
@@ -13,40 +12,70 @@ function email(role: string): string {
   return `e2e-demo-${role}-${RUN}@example.org`;
 }
 
-async function signUp(page: Page, role: "operator" | "driver" | "supplier", name: string, code?: string, who: string = role) {
+/** One dropped or non-JSON answer while the stack is busy is not a verdict on the plan: the caller polls again. */
+async function listPlans<T>(page: Page, headers?: Record<string, string>): Promise<T[]> {
+  try {
+    const response = await page.request.get("/api/plans", headers ? { headers } : undefined);
+    return response.ok() ? await response.json() as T[] : [];
+  } catch {
+    return [];
+  }
+}
+
+async function signUp(page: Page, role: "operator" | "driver" | "supplier", name: string, who: string = role) {
   await page.goto(`/signup?role=${role}`);
   await page.getByLabel("Full name").fill(name);
   await page.getByLabel("Email").fill(email(who));
   await page.getByLabel("Password").fill(PASSWORD);
-  if (code) await page.getByLabel(role === "operator" ? "Operator code" : "Enrolment code").fill(code);
+  const signupResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/signup") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create account" }).click();
+  const response = await signupResponse;
+  expect(response.status()).toBe(201);
+  const account = await response.json() as { id: string; approved: boolean };
+  if (!account.approved) {
+    // Only where approval is enforced (production). Local development signs the account straight in.
+    await expect(page.getByRole("status")).toContainText("pending approval");
+    const approval = await page.request.post(`/api/accounts/${account.id}/approve`, {
+      headers: { "X-Operator-Token": OPERATOR_CODE },
+    });
+    expect(approval.status()).toBe(200);
+    await page.goto("/signin");
+    await page.getByLabel("Email").fill(email(who));
+    await page.getByLabel("Password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  } else {
+    expect(role === "supplier" || account.approved).toBe(true);
+  }
 }
 
 test("a duty officer sees that the fleet is simulated, and can add a driver", async ({ page, context }) => {
-  await signUp(page, "operator", "E2E Demo Officer", OPERATOR_CODE);
+  await signUp(page, "operator", "E2E Demo Officer");
   await expect(page).toHaveURL(/\/dashboard/);
-  await expect(page.getByText("Presentation mode:", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Fleet" }).click();
-  await expect(page.locator(".truck").first()).toBeVisible();
-  await expect.poll(() => page.locator(".truck .badge.sim").count()).toBeGreaterThanOrEqual(42);
+  await expect(page.getByText("Presentation mode", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Fleet & Drivers" }).click();
+  await expect(page.locator("tbody tr").first()).toBeVisible();
+  await expect.poll(() => page.locator("tbody tr .badge.sim").count()).toBeGreaterThanOrEqual(42);
 
-  await page.getByText("Add a driver").click();
+  await page.getByText("Presentation tools: add a simulated driver").click();
   await page.getByLabel("Driver's name").fill("E2E Added Driver");
   await page.getByLabel("Vehicle number").fill(`AP 16 E2E ${RUN}`);
   await page.getByRole("button", { name: "Add simulated driver" }).click();
   await expect(page.getByText("E2E Added Driver added at", { exact: false })).toBeVisible();
-  const added = page.locator(".truck", { hasText: `AP 16 E2E ${RUN}` });
+  const added = page.locator("tbody tr", { hasText: `AP 16 E2E ${RUN}` });
   await expect(added).toBeVisible({ timeout: 15_000 });
   await expect(added.locator(".badge.sim")).toBeVisible();
-  await expect(added.getByText("online")).toBeVisible({ timeout: 20_000 });
+  await expect(added.getByText("Online")).toBeVisible({ timeout: 20_000 });
 
-  const [screen] = await Promise.all([context.waitForEvent("page"), added.getByRole("link", { name: "Driver screen" }).click()]);
+  await added.click();  // the details open in a drawer
+  const drawer = page.getByRole("dialog");
+  const [screen] = await Promise.all([context.waitForEvent("page"), drawer.getByRole("link", { name: "Driver screen" }).click()]);
   await expect(screen.getByText("This truck and its GPS are simulated", { exact: false })).toBeVisible();
   await expect(screen.getByText("No route yet")).toBeVisible();
   await screen.close();
 
-  page.once("dialog", (d) => d.accept());
-  await added.getByRole("button", { name: "Remove" }).click();
+  await drawer.getByRole("button", { name: "Remove from fleet" }).click();
+  await page.getByRole("button", { name: "Remove truck" }).click();
   await expect(added).toHaveCount(0);
 });
 
@@ -60,6 +89,7 @@ test("a duty officer can look up any driver or supplier", async ({ browser }) =>
   await page.getByRole("link", { name: "Directory" }).click();
   await expect(page).toHaveURL(/\/directory/);
 
+  await page.getByRole("button", { name: "Drivers" }).click();
   await expect(page.locator("tbody tr").first()).toBeVisible();
   expect(await page.locator("tbody tr").count()).toBeGreaterThanOrEqual(42);
   await page.getByLabel("Search").fill("Ramesh Naidu");
@@ -71,8 +101,8 @@ test("a duty officer can look up any driver or supplier", async ({ browser }) =>
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(page.locator("tbody tr td").nth(1)).toContainText(/\d Water|Nothing available/);  // rehearsals use the water up
 
-  await page.getByRole("button", { name: "People" }).click();
-  await expect(page.locator(".person", { hasText: email("operator") })).toBeVisible();
+  await page.getByRole("link", { name: "Team & Access" }).click();
+  await expect(page.getByRole("row", { name: new RegExp(email("operator")) })).toBeVisible();
   await page.close();
 });
 
@@ -85,23 +115,23 @@ test("a duty officer finds a numbered truck near a place and asks that driver to
   await expect(page).toHaveURL(/\/dashboard/);
 
   await expect.poll(() => page.locator(".truck-number").count()).toBeGreaterThanOrEqual(42);  // a number on every round button
-  await page.getByRole("button", { name: "Fleet" }).click();
-  await page.getByLabel("Send a driver to").selectOption({ index: 1 });
-  await expect(page.getByText("Nearest first.", { exact: false })).toBeVisible();
-  await expect(page.locator(".truck small").first()).toContainText(/km away|inside the area/);
+  await page.getByRole("link", { name: "Fleet & Drivers" }).click();
+  await page.getByLabel("Choose a drill or severe alert").selectOption({ index: 1 });
+  await expect(page.getByText("Nearest first", { exact: false })).toBeVisible();
+  await expect(page.locator("tbody tr small").filter({ hasText: /km away|inside the area/ }).first()).toBeVisible();
 
   // A truck with a real person answers for itself, so this picks the nearest one that answers by simulation.
   const fleet: { vehicle_id: string; has_person: boolean }[] = await (await page.request.get("/api/demo/fleet")).json();
   const vehicles: { id: string; fleet_number: number }[] = await (await page.request.get("/api/vehicles")).json();
   const people = new Set(fleet.filter((t) => t.has_person).map((t) => String(vehicles.find((v) => v.id === t.vehicle_id)?.fleet_number)));
-  const free = page.locator(".truck", { has: page.getByRole("button", { name: "Send request" }) });
+  const free = page.locator("tbody tr", { has: page.getByRole("button", { name: "Send request" }) });
   let nearest = free.first();
   for (let i = 0; people.has((await nearest.locator(".truck-no").textContent())!); i++) nearest = free.nth(i + 1);
   const number = (await nearest.locator(".truck-no").textContent())!;
   await nearest.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByText(`Request sent to truck ${number}`, { exact: false })).toBeVisible();
-  const asked = page.locator(".truck").filter({ has: page.locator(".truck-no", { hasText: new RegExp(`^${number}$`) }) });
-  await expect(asked.getByText("ACCEPTED")).toBeVisible({ timeout: 40_000 });  // a simulated driver answers by itself
+  const asked = page.locator("tbody tr").filter({ has: page.locator(".truck-no", { hasText: new RegExp(`^${number}$`) }) });
+  await expect(asked.getByText("Accepted")).toBeVisible({ timeout: 40_000 });  // a simulated driver answers by itself
   await expect(page.getByRole("button", { name: "Make a plan with accepted drivers" })).toBeVisible();
   await page.close();
 });
@@ -109,14 +139,16 @@ test("a duty officer finds a numbered truck near a place and asks that driver to
 test("a signed-in driver answers a request on their own screen", async ({ browser }) => {
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ["geolocation"], geolocation: { longitude: 76.98, latitude: 31.77 } });
   const driver = await phone.newPage();
-  await signUp(driver, "driver", "E2E Demo Answerer", DRIVER_CODE, "answerer");
+  await signUp(driver, "driver", "E2E Demo Answerer", "answerer");
   await expect(driver).toHaveURL(/\/driver/);
   await driver.getByLabel("Vehicle number").fill(`AP 16 E2F A${RUN}`);
   await driver.getByLabel("Load capacity (kg)").fill("8000");
   await driver.getByRole("button", { name: "Register and start" }).click();
+  await driver.getByRole("button", { name: "Profile" }).click();
   await driver.getByText("Not in Andhra Pradesh?").click();
   await driver.getByLabel("Start from").selectOption("Guntur");
   await driver.getByRole("button", { name: "Simulate my GPS" }).click();
+  await driver.getByRole("button", { name: "Home" }).click();
   await expect(driver.getByText("This truck and its GPS are simulated", { exact: false })).toBeVisible();
   await driver.waitForTimeout(12_000);
 
@@ -152,13 +184,11 @@ test("a duty officer requests an evacuation and follows it", async ({ browser })
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
-  await expect(page.getByText("People evacuated")).toBeVisible();
-  await expect(page.getByText("evacuation route")).toBeVisible();
-  await page.getByRole("button", { name: "Evacuations" }).click();
-  const request = page.locator("li", { hasText: "33 people from" }).first();
+  await page.getByRole("link", { name: "Evacuations" }).click();
+  const request = page.locator("section", { hasText: "33 people from" }).first();
   await expect(request).toBeVisible();
-  await expect(request.getByText(/Way out avoids \d+ active zone/)).toBeVisible({ timeout: 200_000 });
-  await expect(request.getByRole("link", { name: "Driver screen" })).toBeVisible();
+  await expect(request.getByText(/Avoids \d+ active zone/)).toBeVisible({ timeout: 200_000 });
+  await expect(request.getByRole("link", { name: /driver's screen/i })).toBeVisible();
   await page.close();
 });
 
@@ -167,17 +197,20 @@ test("a driver far from Andhra Pradesh can simulate their GPS", async ({ browser
     viewport: { width: 390, height: 844 }, permissions: ["geolocation"], geolocation: { longitude: 76.98, latitude: 31.77 },
   });
   const page = await phone.newPage();
-  await signUp(page, "driver", "E2E Demo Driver", DRIVER_CODE);
+  await signUp(page, "driver", "E2E Demo Driver");
   await expect(page).toHaveURL(/\/driver/);
   await page.getByLabel("Vehicle number").fill(`AP 16 E2F ${RUN}`);
   await page.getByLabel("Load capacity (kg)").fill("10");
   await page.getByRole("button", { name: "Register and start" }).click();
   await expect(page.getByText("No route yet")).toBeVisible();
 
+  await page.getByRole("button", { name: "Profile" }).click();
+
   await page.getByText("Not in Andhra Pradesh?").click();
   await page.getByLabel("Start from").selectOption("Ongole");
   await page.getByLabel("Load capacity (kg)").fill("8000");
   await page.getByRole("button", { name: "Simulate my GPS" }).click();
+  await page.getByRole("button", { name: "Home" }).click();
   await expect(page.getByText("This truck and its GPS are simulated", { exact: false })).toBeVisible();
   await expect(page.getByText("Simulated", { exact: true })).toBeVisible();
 
@@ -198,7 +231,7 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
   const stock = { lines: [{ item_code: "WATER_L", quantity: 400000, unit_weight_kg: 1 }] };
   expect((await supplier.request.post("/api/supplier/stock", { data: stock })).status()).toBe(200);
   await supplier.reload();
-  await expect(supplier.getByText("No orders yet.", { exact: false })).toBeVisible();
+  await expect(supplier.getByRole("heading", { name: "No orders yet" })).toBeVisible();
 
   const desk = await browser.newContext();
   const officer = await desk.newPage();
@@ -217,13 +250,15 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
 
   let planId = "";
   await expect.poll(async () => {
-    const plans: { id: string; status: string; hazard_ids: string[] }[] = await (await officer.request.get("/api/plans")).json();
+    const plans = await listPlans<{ id: string; status: string; hazard_ids: string[] }>(officer);
     planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.status === "awaiting_approval")?.id ?? "";
     return planId;
   }, { timeout: 240_000 }).not.toBe("");
+  await officer.getByRole("link", { name: "Plans & Approvals" }).click();
   await officer.locator(`[data-plan="${planId}"]`).click();
   await officer.getByRole("button", { name: "Approve dispatch" }).click();
-  const card = officer.locator(".route-card").first();  // routes are only written when a plan is dispatched
+  await officer.getByRole("button", { name: "Yes, dispatch" }).click();
+  const card = officer.getByTestId("route-card").first();  // routes are only written when a plan is dispatched
   await expect(card.locator(".badge.sim")).toBeVisible({ timeout: 60_000 });
   await expect(card.getByRole("link", { name: "Driver screen" })).toBeVisible();
 
@@ -242,14 +277,16 @@ test("a signed-in driver with simulated GPS gets a route ahead of the simulated 
 
   const phone = await browser.newContext({ permissions: ["geolocation"], geolocation: { longitude: 76.98, latitude: 31.77 } });
   const driver = await phone.newPage();
-  await signUp(driver, "driver", "E2E Demo Presenter", DRIVER_CODE, "presenter");
+  await signUp(driver, "driver", "E2E Demo Presenter", "presenter");
   await expect(driver).toHaveURL(/\/driver/);
   await driver.getByLabel("Vehicle number").fill(`AP 16 E2G ${RUN}`);
   await driver.getByLabel("Load capacity (kg)").fill("8000");
   await driver.getByRole("button", { name: "Register and start" }).click();
+  await driver.getByRole("button", { name: "Profile" }).click();
   await driver.getByText("Not in Andhra Pradesh?").click();
   await driver.getByLabel("Start from").selectOption("Guntur");
   await driver.getByRole("button", { name: "Simulate my GPS" }).click();
+  await driver.getByRole("button", { name: "Home" }).click();
   await expect(driver.getByText("This truck and its GPS are simulated", { exact: false })).toBeVisible();
   await driver.waitForTimeout(12_000);  // the simulator picks the truck up on its next round
 
@@ -263,7 +300,7 @@ test("a signed-in driver with simulated GPS gets a route ahead of the simulated 
 
   let planId = "";
   await expect.poll(async () => {
-    const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await driver.request.get("/api/plans", { headers })).json();
+    const plans = await listPlans<{ id: string; status: string; trigger_kind: string; hazard_ids: string[] }>(driver, headers);
     planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill" && p.status === "awaiting_approval")?.id ?? "";
     return planId;
   }, { timeout: 240_000 }).not.toBe("");

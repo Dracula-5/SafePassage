@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // Runs against a stack that is already up, because the real thing is what needs testing:
-//   OPERATOR_TOKEN=... ENROLMENT_CODE=... npx playwright test
+//   OPERATOR_TOKEN=... npx playwright test
 // Set E2E_BASE_URL for another address, and E2E_ROUTING=1 where the road map is available.
 export default defineConfig({
   testDir: "./tests/e2e",

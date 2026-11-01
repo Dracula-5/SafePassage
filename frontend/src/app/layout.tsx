@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ReliefRoute",
+  title: "SafePassage",
   description: "Live disaster alerts turned into safe relief deliveries, with a person approving every dispatch.",
   icons: { icon: "/icon.svg" },
 };

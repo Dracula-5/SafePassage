@@ -51,7 +51,8 @@ def load_router(module_name: str) -> APIRouter | None:
 def install_problem_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        return problem(exc.status_code, exc.__class__.__name__ if exc.status_code >= 500 else "Request error", exc.detail)
+        # Headers an endpoint chose on purpose (Retry-After on a locked account) must reach the client.
+        return problem(exc.status_code, exc.__class__.__name__ if exc.status_code >= 500 else "Request error", exc.detail, dict(exc.headers or {}))
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -83,7 +84,11 @@ def create_app(router_modules: tuple[str, ...] = ROUTER_MODULES) -> FastAPI:
                   redoc_url=None if production else "/redoc", openapi_url=None if production else "/openapi.json")  # fmt: skip
     install_problem_handlers(app)
     # Last added runs first. The rate limit stays inside CORS so a browser can read its 429.
-    app.add_middleware(RateLimit, enabled=settings.rate_limit_enabled)
+    app.add_middleware(
+        RateLimit,
+        enabled=settings.rate_limit_enabled,
+        development=settings.app_env == "development",
+    )
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     if settings.cors_origins:
         app.add_middleware(

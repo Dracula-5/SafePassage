@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { api, FacilityProperties, FeatureCollection, HazardProperties, LiveRoute, PlanRoute, Vehicle } from "@/lib/api";
 import { plate } from "@/lib/format";
 
-import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./Dashboard";
+import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./ops/constants";
 
 const FACILITY_KINDS = ["hospital", "shelter", "warehouse", "godown", "school", "depot"];
 const FACILITY_MIN_ZOOM = 9; // below this, tens of thousands of points would be requested

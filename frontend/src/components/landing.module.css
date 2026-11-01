@@ -1,0 +1,44 @@
+/* The front door. Light, spacious, one clear message and one clear next step. */
+
+.page { min-height: 100vh; min-height: 100dvh; background: linear-gradient(180deg, #f7fbfe 0%, #eef8fc 55%, #f8fafc 100%); color: var(--ink); font-family: var(--font-geist-sans), system-ui, sans-serif; }
+.top { display: flex; align-items: center; gap: 12px; max-width: 1120px; margin: 0 auto; padding: 18px 20px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 21px; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
+.actions { margin-left: auto; display: flex; gap: 10px; }
+
+.hero { display: grid; gap: 32px; align-items: center; max-width: 1120px; margin: 0 auto; padding: 36px 20px 24px; }
+.eyebrow { display: inline-flex; align-items: center; gap: 9px; min-height: 34px; padding: 0 14px; border-radius: 99px; background: #fff; border: 1px solid var(--line); color: var(--good-text); font-size: 13.5px; font-weight: 700; }
+.eyebrow i { width: 9px; height: 9px; border-radius: 50%; background: var(--good); animation: pulse 1.8s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgb(22 160 133 / 0.5); } 100% { box-shadow: 0 0 0 9px rgb(22 160 133 / 0); } }
+.hero h1 { margin: 16px 0 14px; font-size: clamp(32px, 6vw, 52px); line-height: 1.08; letter-spacing: -0.035em; max-width: 14ch; }
+.hero p { max-width: 54ch; color: #4a5f78; font-size: 17.5px; line-height: 1.6; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+.art { width: 100%; max-width: 560px; justify-self: center; padding: 20px; border-radius: 28px; background: #fff; border: 1px solid var(--line); box-shadow: 0 16px 48px rgb(16 42 67 / 0.09); }
+.art svg { display: block; width: 100%; height: auto; }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: 1120px; margin: 8px auto 0; padding: 0 20px; }
+.stat { display: grid; gap: 2px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: #fff; box-shadow: var(--shadow); }
+.stat dt { font-size: 13px; color: var(--muted); font-weight: 600; }
+.stat dd { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+
+.roles { display: grid; gap: 14px; max-width: 1120px; margin: 28px auto 0; padding: 0 20px; }
+.role { display: grid; gap: 8px; padding: 22px; border: 1px solid var(--line); border-radius: 22px; background: #fff; box-shadow: var(--shadow); color: inherit; text-decoration: none; transition: border-color 0.15s, transform 0.15s; }
+.role:hover { border-color: #b8d6df; transform: translateY(-2px); }
+.roleIcon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--cyan); color: var(--teal-dark); }
+.role h2 { font-size: 19px; }
+.role p { color: var(--muted); font-size: 15px; }
+.role span:last-child { margin-top: 4px; color: var(--teal); font-weight: 700; font-size: 14.5px; }
+
+.promise { max-width: 1120px; margin: 28px auto 0; padding: 0 20px 56px; }
+.promiseCard { display: flex; gap: 14px; align-items: flex-start; padding: 20px 22px; border-radius: 20px; background: var(--soft-blue); border: 1px solid #cfe3ef; color: #24445f; }
+.promiseCard svg { flex: none; color: var(--teal); margin-top: 2px; }
+.promiseCard b { display: block; color: var(--ink); margin-bottom: 2px; }
+
+@media (min-width: 900px) {
+  .hero { grid-template-columns: 1.05fr 1fr; padding-top: 56px; }
+  .roles { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 520px) {
+  .actions .button { padding: 0 12px; }
+  .stat dd { font-size: 24px; }
+}
+@media (prefers-reduced-motion: reduce) { .eyebrow i { animation: none; } }

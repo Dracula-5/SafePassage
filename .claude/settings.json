@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(timeout 500 node \"C:/Users/prudh/AppData/Local/Temp/claude/d--SafePassage/1928f474-989d-4ad7-9361-4d2a620f0be9/scratchpad/roles-check.mjs\")"
+    ]
+  }
+}

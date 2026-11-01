@@ -17,4 +17,4 @@ USER relief
 WORKDIR /app/backend
 ENV HOME=/home/relief PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "10"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]

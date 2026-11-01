@@ -45,6 +45,8 @@ const nextConfig: NextConfig = {
         // The map's tile servers expect to see which site is asking; this sends the origin and no path.
         { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         { key: "Permissions-Policy", value: "geolocation=(self), camera=(), microphone=()" },
+        // The API already sends this; the pages need it too. Browsers ignore it over plain http, so localhost is unaffected.
+        ...(dev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]),
       ],
     }];
   },

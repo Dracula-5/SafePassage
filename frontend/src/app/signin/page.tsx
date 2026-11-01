@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { SignInForm } from "@/components/AuthForms";
 
-export const metadata: Metadata = { title: "Sign in · ReliefRoute" };
+export const metadata: Metadata = { title: "Sign in · SafePassage" };
 
 export default function Page() {
   return (

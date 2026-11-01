@@ -1,0 +1,118 @@
+/* The sign-up page only. Scoped by CSS Modules, so the sign-in, reset and operator screens keep their own styles. */
+
+.page {
+  --teal: #087f8c;
+  --teal-strong: #056674;
+  --sky: #eaf7fd;
+  --cyan: #e1f5f8;
+  --ink: #102b4e;
+  --muted: #62758c;
+  --line: #e4edf4;
+  --field: #cdd9e5;
+
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+  background: linear-gradient(180deg, #f7fbfe 0%, #eef8fc 100%);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.page *, .page *::before, .page *::after { box-sizing: border-box; }
+
+.card {
+  width: 100%;
+  max-width: 440px;
+  display: grid;
+  gap: 18px;
+  padding: 28px 24px 24px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow: 0 1px 2px rgb(16 43 78 / 0.04), 0 16px 40px rgb(16 43 78 / 0.08);
+}
+
+.brand { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
+
+.illustration { display: block; width: 100%; height: auto; max-height: 150px; }
+
+.heading { display: grid; gap: 6px; text-align: center; }
+.heading h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; }
+.heading p { color: var(--muted); font-size: 15px; }
+
+.roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.role {
+  display: grid; justify-items: center; gap: 6px; min-height: 92px; padding: 12px 6px; border: 1.5px solid var(--line); border-radius: 16px;
+  background: #fff; color: var(--ink); font: inherit; font-size: 13.5px; font-weight: 600; text-align: center; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.role:hover { border-color: #b8d6df; background: var(--sky); }
+.role[aria-checked="true"] { border-color: var(--teal); background: var(--cyan); box-shadow: 0 0 0 3px rgb(8 127 140 / 0.12); }
+.roleIcon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--sky); color: var(--teal); }
+.role[aria-checked="true"] .roleIcon { background: #fff; }
+.role small { font-size: 11.5px; font-weight: 400; color: var(--muted); line-height: 1.2; }
+
+.form { display: grid; gap: 14px; }
+.field { display: grid; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.control {
+  width: 100%; min-height: 50px; padding: 0 14px; border: 1.5px solid var(--field); border-radius: 14px; background: #fff;
+  font: inherit; font-size: 16px; font-weight: 400; color: var(--ink); transition: border-color 0.15s, box-shadow 0.15s;
+}
+.control::placeholder { color: #8a9bb0; }
+.control:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 4px rgb(8 127 140 / 0.15); }
+.passwordWrap { position: relative; }
+.passwordWrap .control { padding-right: 52px; }
+.reveal {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px;
+  border: 0; border-radius: 12px; background: none; color: var(--muted); cursor: pointer;
+}
+.reveal:hover { color: var(--teal); background: var(--sky); }
+.hint { font-size: 12.5px; font-weight: 400; color: var(--muted); }
+
+.approval {
+  display: flex; gap: 12px; align-items: flex-start; padding: 14px; border-radius: 16px; background: var(--sky); border: 1px solid #cfe9f1;
+  color: #2d4a66; font-size: 13.5px; line-height: 1.45;
+}
+.approval b { display: block; margin-bottom: 2px; color: var(--ink); font-size: 14px; }
+.approval svg { flex: none; margin-top: 1px; color: var(--teal); }
+
+.note { font-size: 13px; color: var(--muted); line-height: 1.45; }
+
+.error { padding: 11px 13px; border-radius: 12px; background: #fff0f0; color: #8f1d1d; font-size: 14px; }
+
+.submit {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 52px; border: 0; border-radius: 16px;
+  background: var(--teal); color: #fff; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
+  box-shadow: 0 6px 16px rgb(8 127 140 / 0.28); transition: background 0.15s, transform 0.1s;
+}
+.submit:hover:not(:disabled) { background: var(--teal-strong); }
+.submit:active:not(:disabled) { transform: scale(0.99); }
+.submit:disabled { opacity: 0.6; cursor: default; box-shadow: none; }
+
+.foot { text-align: center; font-size: 14.5px; color: var(--muted); }
+.foot a { color: var(--teal); font-weight: 700; text-decoration: none; }
+.foot a:hover { text-decoration: underline; }
+
+.done { display: grid; gap: 14px; padding: 16px; border-radius: 16px; background: var(--cyan); color: #0b5560; font-size: 15px; line-height: 1.5; text-align: center; }
+
+:focus-visible { outline: 3px solid rgb(8 127 140 / 0.45); outline-offset: 2px; }
+
+@media (min-width: 640px) {
+  .page { padding: 48px 24px; }
+  .card { max-width: 480px; padding: 36px 36px 30px; }
+  .heading h1 { font-size: 30px; }
+  .role { min-height: 104px; }
+}
+
+@media (max-width: 360px) {
+  .card { padding: 22px 16px 18px; }
+  .roles { gap: 6px; }
+  .role { font-size: 12.5px; padding: 10px 4px; }
+  .role small { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role, .submit { transition: none; }
+}

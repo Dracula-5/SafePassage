@@ -297,6 +297,55 @@ async def test_rate_limit_still_works_with_redis_down(monkeypatch):
     monkeypatch.setitem(security.LIMITS, ("GET", "/x"), Limit(2, 60))
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
     get_common_settings.cache_clear()
+
+
+async def test_development_signup_bypasses_rate_limit_only_for_loopback(monkeypatch):
+    hits: dict[str, int] = {}
+
+    async def hit(self, key: str, window_s: int) -> int:
+        hits[key] = hits.get(key, 0) + 1
+        return hits[key]
+
+    monkeypatch.setattr(RateLimit, "_hit", hit)
+    monkeypatch.setitem(security.LIMITS, ("GET", "/api/stream"), Limit(1, 60))
+    app = FastAPI()
+
+    @app.post("/api/auth/signup")
+    async def signup() -> PlainTextResponse:
+        return PlainTextResponse("created", status_code=201)
+
+    @app.get("/api/stream")
+    async def stream_route() -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    app.add_middleware(RateLimit, development=True)
+    async with client_at(app, "127.0.0.1") as local:
+        assert [(await local.post("/api/auth/signup")).status_code for _ in range(35)] == [201] * 35
+        assert (await local.get("/api/stream")).status_code == 200
+        assert (await local.get("/api/stream")).status_code == 429
+    assert sum(hits.values()) == 2  # signup bypassed the counter; the other API limit did not
+
+    async with client_at(app, "203.0.113.9") as remote:
+        assert [(await remote.post("/api/auth/signup")).status_code for _ in range(31)] == [201] * 30 + [429]
+
+
+async def test_production_signup_rate_limit_still_applies_on_loopback(monkeypatch):
+    hits: dict[str, int] = {}
+
+    async def hit(self, key: str, window_s: int) -> int:
+        hits[key] = hits.get(key, 0) + 1
+        return hits[key]
+
+    monkeypatch.setattr(RateLimit, "_hit", hit)
+    app = FastAPI()
+
+    @app.post("/api/auth/signup")
+    async def signup() -> PlainTextResponse:
+        return PlainTextResponse("created", status_code=201)
+
+    app.add_middleware(RateLimit, development=False)
+    async with client_at(app, "127.0.0.1") as local:
+        assert [(await local.post("/api/auth/signup")).status_code for _ in range(31)] == [201] * 30 + [429]
     await bus.close_redis()
     async with client_at(limited_app(Limit(2, 60)), "203.0.113.9") as http:
         assert [(await http.get("/x")).status_code for _ in range(3)] == [200, 200, 429]
