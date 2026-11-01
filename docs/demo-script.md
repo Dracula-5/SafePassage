@@ -30,7 +30,7 @@ Do this 20 minutes ahead.
 - **Procurement:** real government ration stock from AePDS. What can't be found is escalated, not invented.
 - **Route Planner and Critic:** OR-Tools solves the routes, and Valhalla and Shapely prove they clear the hazard. "The LLM reasons. Solvers compute. No model ever produces a coordinate or a stock number."
 
-**5. A human decides (duty officer, 30 s).** On the **Plans** tab, select the plan. Show the brief and *Needs a person*, which lists what could not be found. Press **Approve dispatch**. "The record shows who signed in, not a typed name. And the plan re-checks the world after you approve, so a stale approval can't send a truck into a flood." The routes, with each truck and driver, appear on the map and in the panel a few seconds later.
+**5. Rules decide, a person handles what's unclear (duty officer, 30 s).** A clear plan is approved by rules and dispatched by itself, and the plan says so. To show it, draw the drill over a small inland town: Gooty (`15.12, 77.63`) went out in about 30 seconds, with nobody pressing anything. "The rules are plain code. The AI can add a person, but never remove one." To show a person deciding, draw it over a big city such as Vijayawada: a plan over 300 t stops at **Your decision is needed**, with the reasons listed, and **Approve dispatch** sends it. A real alert with simulated trucks stops there too. Severity alone does not: an extreme drill can still go out by itself, because only an extreme real alert needs a person. Every rule is in `backend/app/agents/approval.py`. `AUTO_APPROVE=false` in `infra\deploy\local.env` sends every plan to a person. The routes, with each truck and driver, appear on the map and in the panel a few seconds later.
 
 **6. The driver (driver, 1 min).** The signed-in driver's screen fills in by itself. A truck with a real person is used before simulated ones, and it moves next to the drill the moment you publish, so it got a route in all 3 clean test drills. Show the DRILL banner, the stops and their times, then press **Read aloud**. Telugu arrives within about a minute of the stops, and the screen says so meanwhile. To show any other truck, press **Driver screen** on its route card: it opens that driver's view in a new tab. About one simulated truck in three has Telugu instructions.
 
@@ -79,9 +79,7 @@ Press **Lose GPS** on another truck for the offline story. It goes offline after
 
 **How accurate is the population?** It's an estimate, and the plan says so. OSM census tags cover about 2.7% of settlements. WorldPop would improve it.
 
-**Why a human gate?** High-stakes dispatch needs accountability. Replans of goods already approved skip the gate, because a truck heading into a flood can't wait for a meeting.
-
-**How many drills can you run in a row?** A few. Gemini's free tier limits calls per minute, and several drills close together bring HTTP 429 errors. The plan still finishes, using text labelled RULE-BASED. Leave a couple of minutes between rehearsals, and let the quota rest before you present.
+**Why isn't every plan checked by a person?** Clear plans shouldn't wait. A person decides anything unclear: an extreme real alert, stale data, an unverified supplier, simulated trucks on a real alert, over 300 t, or a route close to a hazard. Replans of goods already approved skip the gate too, because a truck heading into a flood can't wait for a meeting.
 
 **Do messages go out?** Drills are silent by design: a real supplier can't tell a drill from an order in time. SMS and WhatsApp need a paid Twilio number, which this demo doesn't use. Each message is still recorded.
 
