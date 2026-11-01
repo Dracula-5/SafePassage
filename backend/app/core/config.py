@@ -17,6 +17,8 @@ class CommonSettings(BaseSettings):
     app_env: Literal["development", "production"] = "development"
     database_url: str = Field(description="postgresql://user:pass@host:5432/db")
     redis_url: str = Field(description="redis://host:6379/0")
+    # Render's Key Value has no password on its private address, and no public one when its allow list is empty.
+    redis_private_network: bool = False
     log_level: str = "INFO"
     cors_origins: list[str] = Field(default_factory=list)
     operator_token: str | None = Field(default=None, description="See core/auth.py. Required in production")

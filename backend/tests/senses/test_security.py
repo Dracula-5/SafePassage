@@ -356,6 +356,11 @@ def test_each_unsafe_production_setting_is_named(changes, word):
     assert any(word in found for found in production_problems(settings(**changes)))
 
 
+def test_redis_without_a_password_needs_saying_out_loud():
+    private = settings(redis_url="redis://red-abc:6379", redis_private_network=True)
+    assert production_problems(private) == []
+
+
 def test_every_problem_is_reported_at_once():
     found = production_problems(settings(operator_token=None, enrolment_code=None, cors_origins=["*"]))
     assert len(found) == 3

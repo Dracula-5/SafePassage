@@ -60,7 +60,7 @@ def production_problems(s: CommonSettings) -> list[str]:
         found.append("CORS_ORIGINS may only list https:// origins, and never *")
     if DEFAULT_DB_PASSWORD in s.database_url:
         found.append("DATABASE_URL still uses the development password")
-    if "@" not in s.redis_url:
+    if "@" not in s.redis_url and not s.redis_private_network:
         found.append("REDIS_URL has no password")
     if not s.rate_limit_enabled:
         found.append("RATE_LIMIT_ENABLED must stay on")
