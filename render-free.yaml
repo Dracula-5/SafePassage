@@ -1,0 +1,65 @@
+# Temporary free-tier demo for the API only. See docs/deploy-render-free.md for its limitations.
+# Select this file as the Blueprint path; render.yaml is the full, paid deployment.
+envVarGroups:
+  - name: reliefroute-free-demo
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: OPERATOR_TOKEN
+        generateValue: true
+      - key: ENROLMENT_CODE
+        generateValue: true
+      - key: REDIS_PRIVATE_NETWORK
+        value: "true"
+      - key: PUBLIC_URL
+        value: https://safepassage-frontend.vercel.app
+      - key: REGION_BBOX
+        value: 76.6,12.5,84.9,20.1
+      - key: REGION_NAME
+        value: Andhra Pradesh
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEMO_FLEET
+        value: "false"
+
+services:
+  - type: web
+    name: reliefroute-api-free
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    dockerContext: .
+    dockerfilePath: ./infra/deploy/backend.Dockerfile
+    dockerCommand: sh -c "python -m app.core.migrate && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-server-header --timeout-keep-alive 10"
+    healthCheckPath: /health
+    buildFilter:
+      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile]
+    envVars:
+      - fromGroup: reliefroute-free-demo
+      - key: DATABASE_URL
+        fromDatabase: { name: reliefroute-free-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: reliefroute-free-redis, property: connectionString }
+      - key: VALHALLA_URL
+        value: http://127.0.0.1:8002
+      - key: PORT
+        value: "8000"
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+
+  - type: keyvalue
+    name: reliefroute-free-redis
+    plan: free
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+databases:
+  - name: reliefroute-free-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    databaseName: reliefroute
+    user: reliefroute
+    ipAllowList: []
