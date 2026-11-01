@@ -135,6 +135,26 @@ services:
     command: ["python", "-m", "app.graph.worker"]
     networks: [outbound, private]
 
+  # Simulated drivers for presentations. Only with DEMO_FLEET=true and --profile demo. The tool stays out
+  # of the image and is mounted here. See backend/app/telemetry/demo.py.
+  demo-fleet:
+    <<: *hardening
+    profiles: [demo]
+    image: reliefroute-backend
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 64
+    working_dir: /sim
+    command: ["python", "-m", "tests.tools.demo_fleet"]
+    environment:
+      API_URL: http://api:8000
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN}
+      DEMO_SPEED_MPS: ${DEMO_SPEED_MPS:-}
+    volumes: ["../../backend/tests:/sim/tests:ro"]
+    networks: [private]
+    depends_on: { api: { condition: service_healthy } }
+
   backup:
     <<: *hardening
     image: postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5

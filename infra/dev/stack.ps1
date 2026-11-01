@@ -1,12 +1,14 @@
-# Local stack on Windows.   .\infra\dev\stack.ps1 up | down | status | prod | prod-down
+# Local stack on Windows.   .\infra\dev\stack.ps1 up | down | status | prod | prod-down | demo | demo-off
 # up: containers, migrations, API, both workers and the dashboard, each detached with logs in
 # <data>\logs. down: stops those processes and containers; the data volumes are kept.
 # prod: the real production images on this PC, everything at http://localhost:3000, with their own
 # empty database and secrets in infra\deploy\local.env. prod-down: stops them and keeps the data.
+# demo: prod plus simulated drivers for a presentation, and it stays on until demo-off, which removes
+# them and their stock again.
 # Expects the venv at $HOME\reliefroute-venv (see README); RELIEFROUTE_VENV overrides it.
 # The first `up` creates an operator code and a driver enrolment code in backend\.env, so an open
 # tunnel can never mean an open API. Both are typed once, at sign-up.
-param([ValidateSet("up", "down", "status", "prod", "prod-down")][string]$Action = "status")
+param([ValidateSet("up", "down", "status", "prod", "prod-down", "demo", "demo-off")][string]$Action = "status")
 
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $venv = if ($env:RELIEFROUTE_VENV) { $env:RELIEFROUTE_VENV } else { "$HOME\reliefroute-venv" }
@@ -45,8 +47,33 @@ function Ensure-LocalProdEnv {
 }
 
 function Compose-Prod {
+    $envFile = "$repo\infra\deploy\local.env"
+    $demo = if (Select-String -Path $envFile -Pattern "^DEMO_FLEET=true" -Quiet) { @("--profile", "demo") } else { @() }
     docker compose -f "$repo\infra\deploy\docker-compose.prod.yml" -f "$repo\infra\deploy\docker-compose.local.yml" `
-        --env-file "$repo\infra\deploy\local.env" @args
+        --env-file $envFile @demo @args
+}
+
+function Set-LocalEnv($name, $value) {
+    $file = "$repo\infra\deploy\local.env"
+    $lines = @(Get-Content $file | Where-Object { $_ -notmatch "^$name=" }) + "$name=$value"
+    $lines | Set-Content -Encoding ascii $file
+}
+
+function Start-Prod {
+    New-Item -ItemType Directory -Force $logs | Out-Null
+    Stop-Parts
+    Push-Location $repo
+    docker compose --profile routing stop 2>&1 | Out-Null
+    Pop-Location
+    Ensure-LocalProdEnv
+    Compose-Prod up -d --build
+    Compose-Prod restart caddy  # it reads its config once, and `up` does not notice a changed Caddyfile
+    "ReliefRoute http://localhost:3000"
+    "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in infra\deploy\local.env"
+    "A new database fills from the live sources: facilities in about 5 minutes, stock in about 7"
+    if (Select-String -Path "$repo\infra\deploy\local.env" -Pattern "^DEMO_FLEET=true" -Quiet) {
+        "Presentation mode: simulated drivers are on. The script is in docs\demo-script.md"
+    }
 }
 
 function Start-Part($name, $exe, $arguments, $dir) {
@@ -65,18 +92,19 @@ function Stop-Parts {
 }
 
 switch ($Action) {
-    "prod" {
-        New-Item -ItemType Directory -Force $logs | Out-Null
-        Stop-Parts
-        Push-Location $repo
-        docker compose --profile routing stop 2>&1 | Out-Null
-        Pop-Location
+    "prod" { Start-Prod }
+    "demo" {
         Ensure-LocalProdEnv
-        Compose-Prod up -d --build
-        Compose-Prod restart caddy  # it reads its config once, and `up` does not notice a changed Caddyfile
-        "ReliefRoute http://localhost:3000"
-        "To sign up: a duty officer needs OPERATOR_TOKEN and a driver ENROLMENT_CODE, both in infra\deploy\local.env"
-        "A new database fills from the live sources: facilities in about 5 minutes, stock in about 7"
+        Set-LocalEnv "DEMO_FLEET" "true"
+        Start-Prod
+    }
+    "demo-off" {
+        Compose-Prod stop demo-fleet
+        $token = ((Select-String -Path "$repo\infra\deploy\local.env" -Pattern "^OPERATOR_TOKEN=(.+)$").Matches[0].Groups[1].Value)
+        Invoke-RestMethod -Method Delete -Uri "http://localhost:3000/api/demo" -Headers @{ "X-Operator-Token" = $token } | Out-Null
+        "Simulated trucks and their stock are removed"
+        Set-LocalEnv "DEMO_FLEET" "false"
+        Start-Prod
     }
     "prod-down" {
         if (Test-Path "$repo\infra\deploy\local.env") { Compose-Prod stop }

@@ -1,66 +1,90 @@
-# Live demo script (2 to 3 minutes)
+# Presentation guide
 
-Everything on screen is live. The one exception is the what-if drill, which is labelled DRILL everywhere and exists to show the system on demand.
+For whoever presents ReliefRoute. It shows all three roles, duty officer, driver and supplier, in about 8 minutes, from one laptop or three.
 
-## Before judging
+**What is real and what is simulated.** Hazard alerts, roads, facilities, population, government ration stock and the planning are all live. In presentation mode the **drivers, number plates, truck GPS and the water at depots marked TEST-SIM** are simulated, because nobody can drive a real truck in Andhra Pradesh for the demo. Simulated trucks are orange on the map and carry a SIMULATED badge. Say so up front: it builds trust.
 
-Do this 30 minutes ahead.
+## Before you present
 
-- [ ] Stack up (`.\infra\dev\stack.ps1 prod`), `GEMINI_API_KEY` set in `infra/deploy/local.env`, and `http://localhost:3000/health` says ok.
-- [ ] `GET /api/brain/health` shows Valhalla and the LLM healthy.
-- [ ] Dashboard loaded, source dots green. AePDS has stock (`/api/sources/health`).
-- [ ] **Sign up beforehand.** Create a duty officer and a driver account at `http://localhost:3000/signup`, with the codes in `infra/deploy/local.env`. `sim_driver` reads `ENROLMENT_CODE` from the environment.
-- [ ] **At least two vehicles online inside Andhra Pradesh**, for the reassign beat. Use real phones through a tunnel if a teammate is in the state; otherwise `sim_driver` (its vehicles are named `TEST-SIM-GPS`, so say so).
-- [ ] A real water check-in at `/supplier` from a supplier or teammate. Otherwise water shows as an escalated shortfall, which is honest but less impressive.
-- [ ] Rehearse one full drill, then end it from its popup on the map.
-- [ ] Open three windows: the dashboard, `/driver` on a phone, and a terminal.
+Do this 20 minutes ahead.
+
+1. In the project folder, run `.\infra\dev\stack.ps1 demo`. Presentation mode stays on until you run `demo-off`, and `http://localhost:3000` is the address.
+2. Open three separate browser windows, because one browser can only hold one sign-in. Use a normal window, an incognito window and a second browser, or three laptops.
+   - **Duty officer:** sign in and land on the dashboard. The Sources tab should be green, and *Trucks online* should say 42 or more.
+   - **Supplier:** sign in. If the screen asks you to register, do it once and pick your site.
+   - **Driver:** sign in. If you are outside Andhra Pradesh, open **Not in Andhra Pradesh? Simulate this truck's GPS**, choose **Vijayawada**, set the load capacity to `8000`, and press **Simulate my GPS**.
+3. Rehearse one full drill, then end it from its popup on the map.
+4. A new account needs a code at sign-up. They are in `infra\deploy\local.env`: `OPERATOR_TOKEN` for a duty officer and `ENROLMENT_CODE` for a driver. A supplier needs none.
 
 ## The script
 
-**0:00 Live picture.** "This is Andhra Pradesh right now. These alerts come from NDMA's SACHET feed, GDACS and rainfall forecasts. The dots on the left show how fresh each source is. If one goes down it turns red and says so: we never fill in a gap with a guess."
+**1. The live picture (duty officer, 30 s).** Point at the numbers and the map. "This is Andhra Pradesh right now. These alerts come from NDMA's SACHET feed, GDACS, rainfall forecasts and NASA fire data. The Sources tab shows how fresh each one is, and if one goes down it turns red and says so. We never fill a gap with a guess." Open the **Fleet** tab. "The orange trucks are simulated for today. Everything they do goes through the same system a real phone would use."
 
-**0:20 Trigger.** Click *Draw a what-if drill*, click corners across the Krishna near Vijayawada, name it, set severity *severe*, and press *Publish*. "Judges can draw any disaster. It's labelled DRILL, but it goes through exactly the same pipeline as a real alert."
+**2. The supplier (supplier, 30 s).** Show the stock table. Report some water: item *Water*, a quantity such as `5000`, weight per unit `1`. "Planners can use this straight away." It says *Awaiting verification*, so on the duty officer's screen open **Team** and press **Verify supplier**. The supplier's screen changes to *Verified* within 5 seconds.
 
-**0:35 The swarm reasons.** Open the *Activity* tab and read the steps as they appear. With Gemini this takes about a minute. Point out:
-- **Sentinel:** Gemini's triage, and that it flags low census coverage by itself.
-- **Needs:** real census population, scaled by how much of the mandal is under water. Sphere humanitarian standards turn that into litres and kilos.
-- **Procurement:** real government ration stock from AePDS, split across mandals. What can't be found is escalated, not invented.
-- **Route Planner and Critic:** OR-Tools solves the routes; Valhalla and Shapely prove they clear the hazard. "The LLM reasons. Solvers compute. No model ever produces a coordinate or a stock number."
+**3. Trigger a disaster (duty officer, 30 s).** Press **Draw a what-if drill**, click corners across a town, name it, keep severity *severe*, and press **Publish**. "Anyone can draw a disaster. It's labelled DRILL, but it goes through exactly the same pipeline as a real alert." Within about 20 seconds at least 10 trucks gather around it. Draw it near your supplier's site if you want their stock used: plans take the nearest stock. Vijayawada works well (`16.51, 80.63`).
 
-**1:05 Human in the loop.** On the *Plans* tab, select the plan and show the brief and what needs a person. Press *Approve dispatch*. "The record shows who signed in, not a typed name. And the plan re-checks the world after you approve, so a stale approval can't send a truck into a flood."
+**4. The agents reason (duty officer, 1 min).** Open the **Activity** tab and read the steps as they appear:
+- **Sentinel:** Gemini's triage, which flags low census coverage by itself.
+- **Needs:** census population, scaled by how much of the mandal is under water. Sphere humanitarian standards turn people into litres and kilos.
+- **Procurement:** real government ration stock from AePDS. What can't be found is escalated, not invented.
+- **Route Planner and Critic:** OR-Tools solves the routes, and Valhalla and Shapely prove they clear the hazard. "The LLM reasons. Solvers compute. No model ever produces a coordinate or a stock number."
 
-**1:20 Dispatch.** The route appears on the map. On the phone, show the stops and press *Read aloud* for the Telugu voice. The Telugu text arrives about a minute after the stops; the screen says so meanwhile. Show the PO PDF if there's time. "Every step is idempotent. Press approve twice, kill the worker: nothing is sent twice."
+**5. A human decides (duty officer, 30 s).** On the **Plans** tab, select the plan. Show the brief and *Needs a person*, which lists what could not be found. Press **Approve dispatch**. "The record shows who signed in, not a typed name. And the plan re-checks the world after you approve, so a stale approval can't send a truck into a flood." The routes, with each truck and driver, appear on the map and in the panel a few seconds later.
 
-**1:40 Closed loop.** Draw a second drill across the road ahead of the truck, or have the driver leave the route. Without anyone pressing anything, the timeline shows the Route Monitor detecting it and the Replanner sending a new route, and the phone announces it. "Goods already on the truck stay on it. It didn't ask for approval because these goods were already approved."
+**6. The driver (driver, 1 min).** The signed-in driver's screen fills in by itself. A truck with a real person is used before simulated ones, and it moves next to the drill the moment you publish, so it got a route in all 3 clean test drills. Show the DRILL banner, the stops and their times, then press **Read aloud**. Telugu arrives within about a minute of the stops, and the screen says so meanwhile. To show any other truck, press **Driver screen** on its route card: it opens that driver's view in a new tab. About one simulated truck in three has Telugu instructions.
 
-**2:10 Driver offline.** Stop one vehicle's GPS. About five minutes later it's reassigned, so show a prepared example if time is short. "Goods still at the supplier go to another truck. Goods on the lost truck can't be replanned, so a human gets its last known position."
+**7. Delivery (all three, 1 min).** Trucks move on the map every 5 seconds, and each stop ticks off by itself from their position. If your supplier is in the plan, their **Orders** list shows *Prepare for pickup*, then *On the truck*, then *Delivered*, and *Reserved* in their stock has moved. A full route takes about 5 minutes, so the first stops happen while you talk.
 
-**2:30 Break it.** With a truck online, run `docker stop reliefroute-prod-valhalla-1` in the terminal, then draw a drill. It stops with "routing service unavailable, so no route can be verified as safe". "It refuses to guess. In a disaster, a confident wrong route is the worst outcome." Then run `docker start reliefroute-prod-valhalla-1`.
+**8. It repairs itself (duty officer, 1 min).** On the **Fleet** tab, trucks on a route are at the top. Press **Leave route** on one. Within about 20 seconds the Activity tab shows the deviation and the Replanner sending a new route, with nobody pressing anything. "Goods already on the truck stay on it. It didn't ask for approval because those goods were already approved."
 
-**2:50 Close.** "Live data, real stock, verified routes, a human in control, and it repairs itself."
+Press **Lose GPS** on another truck for the offline story. It goes offline after 2 minutes, and its goods move to another truck after 5, so start this early or just describe it. **Restore GPS** brings it back.
+
+**9. Add a driver live (duty officer, 30 s).** On the **Fleet** tab, open **Add a driver**, type a name and number plate, and choose a town. The truck appears on the map within seconds. **Directory**, at the top of the screen, lists every driver, every supplier with its stock, and everyone with an account, and you can search them.
+
+**10. Ask a particular driver (all roles, 1 min).** Click a drill on the map and press **Find nearest drivers**. The **Fleet** tab sorts by distance, and each truck's number matches its round button on the map. Press **Send request** on the driver you want. A signed-in driver sees it on their screen and presses **Accept**; a simulated driver accepts by itself in about 10 seconds. An accepted truck moves to the edge of the area. Press **Make a plan with accepted drivers**: that driver goes first in the new plan. Requests appear in the app only, not by SMS. A driver on a route or offline can't be asked.
+
+**11. Evacuation (duty officer, 2 min).** While a drill or severe alert is active, a request arrives by itself every 10 to 15 minutes, with the first about 2 minutes after the fleet starts. Or click a zone on the map and press **Request evacuation**. The **Evacuations** tab shows how many people, from which real settlement, and which truck is going. On the map **orange routes carry goods and green routes carry people**, and trucks are white with their number. The truck collects people at a real place just outside the zone, then takes them to a safe point. "With people on board, the way out avoids every active zone, even forecasts that goods can drive through, and it's checked before the truck leaves." Draw a drill across the green line once people are on board, and the truck gets a new way out by itself.
+
+**12. Break it (duty officer, 30 s, optional).** Run `docker stop reliefroute-prod-valhalla-1` in a terminal, then draw a drill. It stops with "routing service unavailable, so no route can be verified as safe". "It refuses to guess. In a disaster, a confident wrong route is the worst outcome." Then run `docker start reliefroute-prod-valhalla-1`.
+
+**Close.** "Live data, real stock, verified routes, a human in control, and it repairs itself."
 
 ## If something fails on stage
 
 | What happens | What to do |
 |---|---|
 | No active real alerts | Normal. Use the drill; it runs the same pipeline |
-| SACHET returning 403 | It rate-limits. Alerts still appear, placed by area name with a *fallback* badge. Point at the badge: that's the design |
+| SACHET returning 403 | It rate-limits. Alerts still appear, placed by area name with a *using backup* badge. Point at the badge: that's the design |
 | A source goes red | Say so. It's the "data stale" edge case, working |
+| Trucks show offline | The simulator stopped. Run `.\infra\dev\stack.ps1 demo` again, which keeps all the data |
+| A plan failed, and you've fixed the cause | Select it and press **Plan again** |
+| The driver's screen stays on *No route yet* | Check the truck is SIMULATED on the Fleet tab, with a capacity of 8 t: a much smaller truck can't carry a part of an order. Otherwise press **Driver screen** on a route card |
 | Gemini overloaded | Each call gives up after 45 seconds and tries the next model. If all fail, the plan continues with text labelled RULE-BASED and a required human review. Say so |
-| No Telugu voice on the phone | The phone has no Telugu speech pack. Show the Telugu text instead |
-| Plan stops at "no online vehicle" | GPS fixes are older than 2 minutes. Reopen the driver app or restart `sim_driver` |
+| No Telugu voice on the laptop | It has no Telugu speech pack. Show the Telugu text instead |
 | Plan fails with "no census population" | The drill missed every settlement with a census tag. Draw it over a town |
 | Plan fails with "no safe relief point" | The drill is too large or too far from schools and shelters. Draw a smaller one |
-| Planning is slow | Valhalla or Gemini is slow. Talk through the timeline: it's progressing live |
-| Backend won't respond | The dashboard says "Cannot reach the server". Run `.\infra\dev\stack.ps1 prod`, which restarts everything, then reload |
+| Planning is slow | Valhalla or Gemini is slow. Talk through the Activity tab: it's progressing live |
+| Trucks drive too fast or too slowly | Set `DEMO_SPEED_MPS` in `infra\deploy\local.env` (1200 by default) and run `stack.ps1 demo` again |
+| Backend won't respond | The dashboard says "Cannot reach the server". Run `.\infra\dev\stack.ps1 demo`, then reload |
 | Venue Wi-Fi fails | Phone tether. The stack runs locally; only live sources and Gemini need internet, and stale data is flagged rather than breaking |
 
-## Questions judges may ask
+## Questions people may ask
 
-**Is any data fake?** No. Hazards, facilities, population, PDS stock and GPS are live or from official open data. Water has no public source, so it needs a supplier check-in. Drills and `sim_driver` vehicles are labelled wherever they appear.
+**Is any data fake?** In this presentation, the drivers, plates, truck GPS and TEST-SIM depots are simulated, and they're marked wherever they appear. Hazards, roads, facilities, population and ration stock are live or official open data. In real use the trucks are real phones, and the simulated fleet is switched off.
+
+**Would a simulated truck ever be sent to a real disaster?** Not without someone choosing it. A plan that uses one always waits for a person, and the mode is off unless it's turned on.
 
 **What if the LLM hallucinates?** It can't touch the numbers. Output is a bounded Pydantic model, and invalid output is sent back with the exact error, up to three times. Translations fail validation if any number changes.
 
 **How accurate is the population?** It's an estimate, and the plan says so. OSM census tags cover about 2.7% of settlements. WorldPop would improve it.
 
 **Why a human gate?** High-stakes dispatch needs accountability. Replans of goods already approved skip the gate, because a truck heading into a flood can't wait for a meeting.
+
+**How many drills can you run in a row?** A few. Gemini's free tier limits calls per minute, and several drills close together bring HTTP 429 errors. The plan still finishes, using text labelled RULE-BASED. Leave a couple of minutes between rehearsals, and let the quota rest before you present.
+
+**Do messages go out?** Drills are silent by design: a real supplier can't tell a drill from an order in time. SMS and WhatsApp need a paid Twilio number, which this demo doesn't use. Each message is still recorded.
+
+## Ending presentation mode
+
+Run `.\infra\dev\stack.ps1 demo-off`. It removes the simulated trucks and their stock and turns the mode off. A driver who simulated their own truck keeps it, with the phone taking over again.

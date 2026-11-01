@@ -155,7 +155,7 @@ cloudflared tunnel --protocol http2 --url http://localhost:3000
 
 Open `https://<tunnel>/signup` and create a driver account with the enrolment code from `backend/.env`. `stack.ps1` creates that code and the operator code on first run. If you start the backend another way, set both yourself, because the API has no protection without them. Stop the tunnel afterwards.
 
-Without a phone in the region, `backend/tests/tools/sim_driver.py` is a labelled test tool that drives a vehicle through the public API. Its vehicles are always named `TEST-SIM-GPS`.
+Without a phone in the region, `.\infra\dev\stack.ps1 demo` turns on presentation mode: 42 simulated trucks across 14 towns, kept online, with at least 10 gathering around any drill. They use the public API like a phone does, and everything downstream is real. They are marked as simulated on every screen and have no phone numbers. `docs/demo-script.md` is the walkthrough for all three roles, and `.\infra\dev\stack.ps1 demo-off` removes them. For a single scripted test run, `backend/tests/tools/sim_driver.py` drives one vehicle.
 
 ## Tests
 

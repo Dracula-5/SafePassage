@@ -6,7 +6,7 @@ Budget about an hour the first time, most of it building the map data. Copying t
 
 ## What you need
 
-- A VM with **8 GB of RAM**, 40 GB of disk and Ubuntu 24.04, or similar.
+- A VM with **8 GB of RAM**, 40 GB of disk and Ubuntu 24.04, or similar. It must be a VPS you can log in to: ordinary shared web hosting can't run Docker.
 - A **domain name** you can point at it. Phones only give GPS over HTTPS, so an IP address will not do.
 - A **Gemini API key**. Without one the system still runs, on labelled rule-based steps, but drivers get English instructions.
 - Optional: Twilio keys for SMS and WhatsApp, Langfuse keys for tracing, a FIRMS key for fire data, and an email provider's SMTP details.
@@ -91,6 +91,16 @@ MAIL_FROM=ReliefRoute <relief@your-domain>
 
 New accounts then get a link to confirm their address, and *Forgot your password?* emails a reset link. Until then, a duty officer makes reset links in the Team tab. Most providers ask you to verify the sending domain first.
 
+## Turning on presentation mode
+
+For a demonstration with nobody in Andhra Pradesh: 42 simulated trucks and water depots, marked as simulated on every screen. Set `DEMO_FLEET=true` in `infra/deploy/.env`, then:
+
+```bash
+docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env --profile demo up -d --build
+```
+
+Anyone who can sign in sees the simulated fleet, so turn it off before real use. Stop `demo-fleet`, call `DELETE /api/demo` with the operator token, set `DEMO_FLEET=false` and run `up -d` without the profile.
+
 ## Updating
 
 ```bash
@@ -107,6 +117,7 @@ On Windows, this runs the same images at **http://localhost:3000**, with no doma
 
 ```powershell
 .\infra\dev\stack.ps1 prod        # stop it with: .\infra\dev\stack.ps1 prod-down
+.\infra\dev\stack.ps1 demo        # the same, with simulated drivers; demo-off removes them
 ```
 
 It keeps its own database and its own secrets and keys in `infra\deploy\local.env`. A browser accepts GPS from `localhost` without HTTPS, so the driver screen works there too.
