@@ -131,7 +131,7 @@ async def test_graph_pauses_for_approval_then_dispatches_idempotently(world):
     assert any("already handled (idempotent)" in e["message"] for e in await events(pool, plan))
 
 
-async def test_a_big_fleet_stays_inside_the_routers_limits_and_a_simulated_truck_needs_a_person(world):
+async def test_a_big_fleet_stays_inside_the_routers_limits(world):
     runner, pool, plan = world["runner"], world["pool"], world["plan"]
     await pool.execute(
         """INSERT INTO vehicles (label, driver_language, capacity_kg, last_position, last_seen_at)
@@ -143,13 +143,10 @@ async def test_a_big_fleet_stays_inside_the_routers_limits_and_a_simulated_truck
     assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "awaiting_approval"
     timeline = await events(pool, plan)
     assert any("Considering the nearest 12 of 41 vehicles" in e["message"] for e in timeline)
-    asked = next(e for e in timeline if e["event_type"] == "approval_requested")
-    # A plan with only a real truck on it stays silent about this, so it must be one the solver picked.
     state = (await runner.graph.aget_state(runner.config(thread))).values
     labels = [r["vehicle_label"] for r in state["routing"]["routes"]]
     assert labels and state["routing"]["vehicles_considered"] == 12
     assert "AP-T1" in labels  # the real truck goes first, ahead of 40 simulated ones
-    assert ("simulated vehicles" in asked["message"]) == any(label.startswith("TEST-SIM-GPS") for label in labels)
 
 
 async def test_a_driver_who_accepted_a_request_goes_first_even_from_farther_away(world):
@@ -164,6 +161,45 @@ async def test_a_driver_who_accepted_a_request_goes_first_even_from_farther_away
     await runner.start(plan, thread, [world["hazard"]])
     state = (await runner.graph.aget_state(runner.config(thread))).values
     assert [r["vehicle_label"] for r in state["routing"]["routes"]] == ["AP-FAR"]  # AP-T1 is much nearer
+
+
+async def test_a_clear_plan_goes_out_by_itself(world):
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    await pool.execute("UPDATE suppliers SET verified = true")
+    await pool.execute("UPDATE vehicles SET capacity_kg = 40000")  # one truck can carry it all
+    world["backend"].review = False
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "dispatched"
+    assert await pool.fetchval("SELECT count(*) FROM routes") >= 1
+    assert await pool.fetchval("SELECT count(*) FROM approvals") == 0
+    assert any("Auto-approved: nothing about this plan is unclear" in e["message"] for e in await events(pool, plan))
+
+
+async def test_an_unclear_plan_says_why_it_needs_a_person(world):
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])  # Test Depot is not verified
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "awaiting_approval"
+    asked = next(e for e in await events(pool, plan) if e["event_type"] == "approval_requested")
+    assert asked["message"].startswith("Needs a duty officer:") and "Unverified supplier" in asked["message"]
+
+
+async def test_a_cyclone_warning_does_not_close_the_state_but_a_person_decides(world):
+    """Tropical Cyclone FOUR-26: GDACS zones this big left no relief point and timed the router out."""
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    await pool.execute("UPDATE suppliers SET verified = true")
+    await pool.execute("UPDATE vehicles SET capacity_kg = 40000")
+    world["backend"].review = False
+    await pool.execute(
+        """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, headline, geom, fetched_at, expires_at)
+           VALUES ('gdacs', 'tc:1', 'tc:1', 'cyclone', 'extreme', 'Tropical Cyclone (red zone)',
+                   ST_Multi(ST_MakeEnvelope(79.5, 15.5, 82.5, 18.5, 4326)), now(), now() + interval '2 hours')""")
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "awaiting_approval"
+    asked = next(e for e in await events(pool, plan) if e["event_type"] == "approval_requested")
+    assert "Route crosses a wide warning area" in asked["message"]
 
 
 async def test_rejection_and_missing_vehicle_paths(world):

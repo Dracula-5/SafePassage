@@ -32,7 +32,10 @@ class BrainSettings(CommonSettings):
     monitor_sweep_s: int = Field(default=30, gt=0)
     critic_max_attempts: int = Field(default=3, ge=1, le=5)
     auto_plan_severities: list[str] = Field(default_factory=lambda: ["severe", "extreme"])
-    approval_weight_kg: float = Field(default=5_000, description="plans heavier than this always need approval")
+    auto_approve: bool = Field(default=True, description="False sends every plan to a person")
+    auto_approve_max_kg: float = Field(default=300_000, description="See agents/approval.py")
+    auto_approve_max_unserved: float = Field(default=0.2, ge=0, le=1)
+    auto_approve_min_clearance_m: float = Field(default=200, ge=0)
     documents_dir: Path = Path.home() / "reliefroute-data" / "documents"
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None

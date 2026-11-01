@@ -60,6 +60,12 @@ def test_only_some_hazards_close_roads(hazard_type, severity, drill, expected):
     assert blocks_roads(hazard_type, severity, drill) is expected
 
 
+def test_a_huge_forecast_is_a_warning_not_a_closure():
+    assert blocks_roads("cyclone", "extreme", False, 4_000) is True
+    assert blocks_roads("cyclone", "extreme", False, 107_000) is False
+    assert blocks_roads("flood", "minor", True, 107_000) is True  # a drill is always a closure
+
+
 def test_first_wave_shares_capacity_across_orders_instead_of_letting_one_fill_it():
     parts = [(f"a#{i}", order("a", 1000)) for i in range(1, 6)] + [(f"b#{i}", order("b", 1000)) for i in range(1, 3)]
     chosen, deferred = first_wave(parts, 4000)

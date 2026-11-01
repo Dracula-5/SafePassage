@@ -12,20 +12,20 @@ import asyncpg
 from langgraph.types import interrupt
 
 from app.agents import data, reasoning
+from app.agents.approval import Limits, reasons_for_a_person
 from app.agents.critic import review
 from app.agents.needs import compute_demand
 from app.agents.planner import MAX_MATRIX_LOCATIONS, Site, VehicleIn, plan_routes
 from app.agents.procurement import StockRow, allocate, haversine_m, nearby_candidates
 from app.agents.reasoning import PlanBrief
 from app.agents.schemas import Allocation, Demand, HazardFact, Routing, Triage
-from app.core.config import SIMULATED_LABEL
 from app.core.resilience import SourceUnavailable
 from app.core.settings_brain import BrainSettings
 from app.dispatch.messaging import Messenger
 from app.llm.client import LLMClient, LLMOutputError
-from app.routing.repository import fetch_road_hazards
+from app.routing.repository import fetch_active_hazards, fetch_road_hazards, is_wide
 from app.routing.valhalla import Location, ValhallaClient, ValhallaError
-from app.solvers.geometry import exclusion_rings
+from app.solvers.geometry import exclusion_rings, verify_route
 
 from . import fallbacks, plans
 from .audit import Audit
@@ -379,18 +379,14 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         demand = Demand.model_validate(state["demand"])
         allocation = Allocation.model_validate(state["allocation"])
         routing = Routing.model_validate(state["routing"])
-        weight = sum(o.weight_kg for o in allocation.orders)
-        reasons = [r for r, hit in [
-            ("Sentinel recommends human review", triage.recommend_human_review),
-            (f"priority {triage.priority}", triage.priority in ("high", "critical")),
-            ("severe/extreme hazard", any(h.severity in ("severe", "extreme") for h in hazards)),
-            (f"{weight:,.0f} kg exceeds {s.approval_weight_kg:,.0f} kg", weight > s.approval_weight_kg),
-            ("unverified supplier", any(not o.supplier_verified for o in allocation.orders)),
-            ("drill", state.get("is_drill", False)),
-            ("simulated vehicles: nothing real would move", any(r.vehicle_label.startswith(SIMULATED_LABEL) for r in routing.routes)),
-            ("shortfalls or unserved orders", bool(allocation.shortfalls or routing.unserved_order_keys)),
-            ("goods deferred to the next wave", bool(routing.deferred_part_keys)),
-        ] if hit]  # fmt: skip
+        area = _area([pt for r in routing.routes for pt in r.geometry])
+        warnings = [h for h in await fetch_active_hazards(deps.pool, bbox=area) if is_wide(h.geom)]
+        crosses_warning = any(not verify_route(r.geometry, warnings).passed for r in routing.routes)
+        reasons = reasons_for_a_person(hazards, triage, allocation, routing, state.get("verdicts", []), state["attempt"],
+                                       Limits(s.auto_approve_max_kg, s.auto_approve_max_unserved, s.auto_approve_min_clearance_m),
+                                       crosses_warning)  # fmt: skip
+        if not s.auto_approve and not reasons:
+            reasons = ["Automatic approval is off"]
         plan_brief: PlanBrief = await _llm_or_fallback(
             audit, "supervisor", "plan brief",
             (lambda: reasoning.plan_brief(deps.llm, hazards, triage, demand, allocation, routing)) if deps.llm else None,
@@ -402,9 +398,9 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         await plans.set_status(deps.pool, state["plan_id"], "awaiting_approval" if reasons else "approved",
                                summary=plan_brief.summary, requires_approval=bool(reasons))
         await audit("supervisor", "approval_requested" if reasons else "decision",
-                    ("Waiting for human approval: " + ", ".join(reasons)) if reasons
+                    ("Needs a duty officer: " + ", ".join(reasons)) if reasons
                     else "Auto-approved: re-route of goods already approved" if state.get("replan_route_id")
-                    else "Auto-approved: low-stakes plan",
+                    else "Auto-approved: nothing about this plan is unclear",
                     {"brief": plan_brief.model_dump(), "reasons": reasons})
         return {"brief": plan_brief.model_dump(), "requires_approval": bool(reasons), "approval_reasons": reasons}
 
