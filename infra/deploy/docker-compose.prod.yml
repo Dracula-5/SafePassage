@@ -149,7 +149,8 @@ services:
     command: ["python", "-m", "tests.tools.demo_fleet"]
     environment:
       API_URL: http://api:8000
-      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN}
+      # Not `:?`: compose checks every service, profile or not, and the API already insists on this token.
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:-}
       DEMO_SPEED_MPS: ${DEMO_SPEED_MPS:-}
     volumes: ["../../backend/tests:/sim/tests:ro"]
     networks: [private]
