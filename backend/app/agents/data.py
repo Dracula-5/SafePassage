@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncpg
 from shapely import MultiPolygon, from_wkb
 
+from app.core.config import SIMULATED_LABEL
 from app.routing.repository import ROAD_BLOCKING_SEVERITIES, ROAD_BLOCKING_TYPES
 
 from .schemas import HazardFact, PopulationEstimate, ReliefPoint
@@ -110,14 +111,21 @@ async def available_stock(conn: Conn, item_codes: list[str]) -> list[asyncpg.Rec
     )
 
 
-async def usable_vehicles(conn: Conn) -> list[asyncpg.Record]:
-    """Online vehicles with a known position that are not already on an active assignment."""
+async def usable_vehicles(conn: Conn, hazard_ids: list[str] | None = None) -> list[asyncpg.Record]:
+    """Online vehicles with a known position that are not already on an active assignment. `simulated`
+    means nobody real is behind it: a person presenting with simulated GPS still counts as a person.
+    `requested` means its driver accepted a duty officer's request to go to one of these hazards."""
     return await conn.fetch(
         """SELECT v.id::text, v.label, v.capacity_kg, v.driver_language, v.driver_phone,
-                  ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat, v.last_seen_at
+                  ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat, v.last_seen_at,
+                  v.label LIKE $1 || '%' AND NOT EXISTS (
+                      SELECT 1 FROM vehicles p WHERE p.id = v.id AND p.account_id IS NOT NULL) AS simulated,
+                  EXISTS (SELECT 1 FROM driver_requests q WHERE q.vehicle_id = v.id AND q.status = 'accepted'
+                            AND q.hazard_id = ANY($2::uuid[])) AS requested
            FROM v_vehicle_status v
            WHERE NOT v.is_offline AND v.last_position IS NOT NULL AND v.status <> 'maintenance'
-             AND NOT EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v.id)"""
+             AND NOT EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v.id)""",
+        SIMULATED_LABEL, hazard_ids,
     )
 
 

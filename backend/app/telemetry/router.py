@@ -41,7 +41,11 @@ class VehicleRegistration(BaseModel):
 
 
 VEHICLE_SELECT = """SELECT id, label, driver_name, driver_language, capacity_kg, status::text, last_seen_at,
-       seconds_since_seen, is_offline, ST_AsGeoJSON(last_position, 6) AS geojson FROM v_vehicle_status"""
+       seconds_since_seen, is_offline, ST_AsGeoJSON(last_position, 6) AS geojson,
+       EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v_vehicle_status.id) AS on_route,
+       EXISTS (SELECT 1 FROM demo_drivers d WHERE d.vehicle_id = v_vehicle_status.id) AS simulated,
+       (SELECT n.fleet_number FROM vehicles n WHERE n.id = v_vehicle_status.id) AS fleet_number
+       FROM v_vehicle_status"""
 
 
 def vehicle_out(r) -> dict:
@@ -50,7 +54,8 @@ def vehicle_out(r) -> dict:
         "capacity_kg": r["capacity_kg"], "status": r["status"],
         "position": None if r["geojson"] is None else json.loads(r["geojson"]),
         "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
-        "seconds_since_seen": r["seconds_since_seen"], "is_offline": r["is_offline"],
+        "seconds_since_seen": r["seconds_since_seen"], "is_offline": r["is_offline"], "on_route": r["on_route"],
+        "simulated": r["simulated"], "fleet_number": r["fleet_number"],
     }  # fmt: skip
 
 
@@ -107,6 +112,8 @@ async def use_this_device(account: Driver) -> dict:
         raise HTTPException(404, "no vehicle registered yet")
     if row["status"] == "maintenance":
         raise HTTPException(403, "this vehicle was taken off the fleet: call your dispatcher")
+    if row["simulated"]:
+        raise HTTPException(409, "this truck's GPS is simulated, so no phone reports for it")
     token, digest = new_token()
     await (await get_pool()).execute("UPDATE vehicles SET device_token_hash = $2, updated_at = now() WHERE id = $1", row["id"], digest)
     return {"vehicle": vehicle_out(row), "device_token": token}

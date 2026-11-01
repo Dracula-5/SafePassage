@@ -131,6 +131,41 @@ async def test_graph_pauses_for_approval_then_dispatches_idempotently(world):
     assert any("already handled (idempotent)" in e["message"] for e in await events(pool, plan))
 
 
+async def test_a_big_fleet_stays_inside_the_routers_limits_and_a_simulated_truck_needs_a_person(world):
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    await pool.execute(
+        """INSERT INTO vehicles (label, driver_language, capacity_kg, last_position, last_seen_at)
+           SELECT 'TEST-SIM-GPS AP 16 T' || i, 'en', 6000, ST_SetSRID(ST_MakePoint(80.75 + i / 500.0, 16.52), 4326), now()
+           FROM generate_series(1, 40) i""")
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])
+
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "awaiting_approval"
+    timeline = await events(pool, plan)
+    assert any("Considering the nearest 12 of 41 vehicles" in e["message"] for e in timeline)
+    asked = next(e for e in timeline if e["event_type"] == "approval_requested")
+    # A plan with only a real truck on it stays silent about this, so it must be one the solver picked.
+    state = (await runner.graph.aget_state(runner.config(thread))).values
+    labels = [r["vehicle_label"] for r in state["routing"]["routes"]]
+    assert labels and state["routing"]["vehicles_considered"] == 12
+    assert "AP-T1" in labels  # the real truck goes first, ahead of 40 simulated ones
+    assert ("simulated vehicles" in asked["message"]) == any(label.startswith("TEST-SIM-GPS") for label in labels)
+
+
+async def test_a_driver_who_accepted_a_request_goes_first_even_from_farther_away(world):
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    await pool.execute("UPDATE vehicles SET capacity_kg = 40000")  # either truck can do this alone
+    far = await pool.fetchval(
+        """INSERT INTO vehicles (label, driver_language, capacity_kg, last_position, last_seen_at)
+           VALUES ('AP-FAR', 'en', 40000, ST_SetSRID(ST_MakePoint(80.95, 16.45), 4326), now()) RETURNING id""")
+    await pool.execute("INSERT INTO driver_requests (vehicle_id, hazard_id, requested_by, status) VALUES ($1, $2, 'test', 'accepted')",
+                       far, world["hazard"])  # fmt: skip
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])
+    state = (await runner.graph.aget_state(runner.config(thread))).values
+    assert [r["vehicle_label"] for r in state["routing"]["routes"]] == ["AP-FAR"]  # AP-T1 is much nearer
+
+
 async def test_rejection_and_missing_vehicle_paths(world):
     runner, pool, plan = world["runner"], world["pool"], world["plan"]
     await pool.execute("UPDATE vehicles SET last_seen_at = now() - interval '1 hour'")  # driver offline

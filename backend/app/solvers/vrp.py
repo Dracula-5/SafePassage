@@ -39,6 +39,7 @@ class VrpVehicle(BaseModel):
     capacity_kg: float = Field(gt=0)
     available_from_s: int = Field(default=0, ge=0)
     available_until_s: int | None = Field(default=None, ge=0)
+    fixed_cost_s: int = Field(default=0, ge=0, description="Added once if this vehicle is used at all. Far below DROP_PENALTY")
 
 
 class VrpStop(BaseModel):
@@ -163,6 +164,7 @@ def solve(problem: VrpProblem) -> VrpSolution:
         for idx in (routing.Start(v_idx), routing.End(v_idx)):
             time_dim.CumulVar(idx).SetRange(vehicle.available_from_s, until)
             routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(idx))
+        routing.SetFixedCostOfVehicle(vehicle.fixed_cost_s, v_idx)
 
     def load_delta(model_node: int) -> int:
         stop = stop_of_model.get(model_node)

@@ -28,6 +28,9 @@ from app.core.validation import Name
 
 from ..accounts.router import router as accounts_router
 from ..suppliers.router import router as portal_router
+from ..telemetry.demo import router as demo_router
+from ..telemetry.requests import router as requests_router
+from ..telemetry.router import VEHICLE_SELECT, vehicle_out
 from ..telemetry.router import router as telemetry_router
 from .stream import router as stream_router
 from ..ingestion.store import publish_hazard_events, set_hazard_status, upsert_hazard
@@ -38,6 +41,8 @@ log = get_logger(__name__)
 router = APIRouter(tags=["senses"])
 # Sub-routers live in their own packages; main.py only discovers this module's `router`.
 router.include_router(telemetry_router)
+router.include_router(demo_router)
+router.include_router(requests_router)
 router.include_router(portal_router)
 router.include_router(stream_router)
 router.include_router(accounts_router)
@@ -148,17 +153,7 @@ async def list_facilities(
 
 @router.get("/api/vehicles", dependencies=[Depends(require_operator)])  # names and live truck positions
 async def list_vehicles() -> list[dict]:
-    rows = await (await get_pool()).fetch(
-        """SELECT id, label, driver_name, driver_language, capacity_kg, status::text, last_seen_at,
-                  seconds_since_seen, is_offline, ST_AsGeoJSON(last_position, 6) AS geojson
-           FROM v_vehicle_status ORDER BY label"""
-    )
-    return [{
-        "id": str(r["id"]), "label": r["label"], "driver_name": r["driver_name"], "driver_language": r["driver_language"],
-        "capacity_kg": r["capacity_kg"], "status": r["status"],
-        "position": None if r["geojson"] is None else json.loads(r["geojson"]),
-        "last_seen_at": _iso(r["last_seen_at"]), "seconds_since_seen": r["seconds_since_seen"], "is_offline": r["is_offline"],
-    } for r in rows]  # fmt: skip
+    return [vehicle_out(r) for r in await (await get_pool()).fetch(VEHICLE_SELECT + " ORDER BY label")]
 
 
 class DrillRequest(BaseModel):

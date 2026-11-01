@@ -100,7 +100,7 @@ async def requeue_stuck_plans(pool: asyncpg.Pool, idle_s: float) -> int:
     return len(pending) + len(approved)
 
 
-PLAN_SUMMARY_SQL = """SELECT id, parent_plan_id, thread_id, status::text, trigger_kind::text, hazard_ids, is_drill,
+PLAN_SUMMARY_SQL = """SELECT id, parent_plan_id, thread_id, status::text, trigger_kind::text, trigger_ref, hazard_ids, is_drill,
        requires_approval, summary, created_at, updated_at FROM plans"""
 
 
@@ -108,4 +108,4 @@ def summary_out(r: asyncpg.Record) -> dict:
     return {"id": str(r["id"]), "parent_plan_id": str(r["parent_plan_id"]) if r["parent_plan_id"] else None,
             "status": r["status"], "trigger_kind": r["trigger_kind"], "hazard_ids": [str(h) for h in r["hazard_ids"]],
             "is_drill": r["is_drill"], "requires_approval": r["requires_approval"], "summary": r["summary"],
-            "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}
+            "evacuation": (r["trigger_ref"] or "").startswith("evacuation:"), "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}

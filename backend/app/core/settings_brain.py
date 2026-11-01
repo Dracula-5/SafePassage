@@ -21,6 +21,7 @@ class BrainSettings(CommonSettings):
     procurement_radius_m: float = Field(default=150_000, gt=0, description="suppliers farther than this are not asked")
     procurement_max_suppliers_per_item: int = Field(default=40, ge=1)
     vehicle_radius_m: float = Field(default=200_000, gt=0, description="vehicles farther than this are not planned")
+    planner_max_vehicles: int = Field(default=12, ge=1, description="Nearest vehicles offered to the solver for one plan")
     max_trips_per_vehicle: int = Field(default=3, ge=1, le=10, description="Goods planned per wave, in vehicle loads")
     max_shift_hours: float = Field(default=12, gt=0, le=72, description="Longest single route for one driver")
     off_route_m: float = Field(default=500, gt=0, description="Farther than this from the route counts as off route")

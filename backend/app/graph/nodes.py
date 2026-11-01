@@ -3,6 +3,7 @@ agent_events (with source ids), and returns validated outputs as JSON-able dicts
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -13,10 +14,11 @@ from langgraph.types import interrupt
 from app.agents import data, reasoning
 from app.agents.critic import review
 from app.agents.needs import compute_demand
-from app.agents.planner import Site, VehicleIn, plan_routes
+from app.agents.planner import MAX_MATRIX_LOCATIONS, Site, VehicleIn, plan_routes
 from app.agents.procurement import StockRow, allocate, haversine_m, nearby_candidates
 from app.agents.reasoning import PlanBrief
 from app.agents.schemas import Allocation, Demand, HazardFact, Routing, Triage
+from app.core.config import SIMULATED_LABEL
 from app.core.resilience import SourceUnavailable
 from app.core.settings_brain import BrainSettings
 from app.dispatch.messaging import Messenger
@@ -65,6 +67,8 @@ class Deps:
     llm: LLMClient | None
     messenger: Messenger
     settings: BrainSettings
+    evacuation_router: ValhallaClient | None = None      # see graph/evacuation.py
+    evacuation_searches: asyncio.Semaphore | None = None
 
 
 def _ids(prefix: str, ids: list[str]) -> list[str]:
@@ -76,6 +80,7 @@ ROUTING_DOWN = "routing service unavailable, so no route can be verified as safe
 ALTERNATE_HUB_RADIUS_FACTOR = 4
 ALTERNATE_HUB_CANDIDATES = 40
 AREA_MARGIN_DEG = 0.5  # about 50 km: hazards farther than this from every location cannot affect the trip
+MIN_VEHICLES_PLANNED = 3
 
 
 def _area(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
@@ -288,7 +293,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         audit = audit_for(state)
         allocation = Allocation.model_validate(state["allocation"])
         demand = Demand.model_validate(state["demand"])
-        rows = [r for r in await data.usable_vehicles(deps.pool) if r["id"] != state.get("excluded_vehicle_id")]
+        rows = [r for r in await data.usable_vehicles(deps.pool, state["hazard_ids"]) if r["id"] != state.get("excluded_vehicle_id")]
         offline = await data.offline_vehicle_count(deps.pool)
         await audit("route_planner", "tool_result", f"{len(rows)} online vehicle(s) with a GPS fix; {offline} offline",
                     {"vehicles": [dict(r) for r in rows]}, _ids("vehicle", [r["id"] for r in rows]))
@@ -298,14 +303,21 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         rows = [r for r in rows if haversine_m(r["lon"], r["lat"], centre.lon, centre.lat) <= s.vehicle_radius_m]
         if not rows:
             return _stop(state, "failed", f"no online vehicle within {s.vehicle_radius_m / 1000:.0f} km: escalated to humans")
-        vehicles = [VehicleIn(vehicle_id=r["id"], label=r["label"], capacity_kg=r["capacity_kg"],
-                              driver_language=r["driver_language"], lon=r["lon"], lat=r["lat"]) for r in rows]  # fmt: skip
+        vehicles = [VehicleIn(vehicle_id=r["id"], label=r["label"], capacity_kg=r["capacity_kg"], driver_language=r["driver_language"],
+                              lon=r["lon"], lat=r["lat"], simulated=r["simulated"], requested=r["requested"]) for r in rows]  # fmt: skip
         onboard_vehicle = state.get("onboard_vehicle_id")
         if onboard_vehicle and all(v.vehicle_id != onboard_vehicle for v in vehicles):
             return _stop(state, "failed", "the vehicle carrying these goods went offline during replanning: escalated to humans")
         sites = {p.facility_id: Site(p.facility_id, p.name, p.lon, p.lat) for p in demand.relief_points}
         for o in allocation.orders:
             sites[o.supplier_facility_id] = Site(o.supplier_facility_id, o.supplier_name, o.supplier_lon, o.supplier_lat)
+        room = max(MIN_VEHICLES_PLANNED, min(s.planner_max_vehicles, MAX_MATRIX_LOCATIONS - len(sites)))
+        if len(vehicles) > room:
+            vehicles.sort(key=lambda v: (v.vehicle_id != onboard_vehicle, not v.requested, v.simulated,
+                                         haversine_m(v.lon, v.lat, centre.lon, centre.lat)))  # fmt: skip
+            await audit("route_planner", "decision", f"Considering the nearest {room} of {len(vehicles)} vehicles: "
+                        f"the router takes {MAX_MATRIX_LOCATIONS} locations at most, and {len(sites)} of them are sites")
+            vehicles = vehicles[:room]
         trip = [(v.lon, v.lat) for v in vehicles] + [(x.lon, x.lat) for x in sites.values()]
         hazards = await fetch_road_hazards(deps.pool, _area(trip), state["hazard_ids"])
         triage = Triage.model_validate(state["triage"])
@@ -375,6 +387,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             (f"{weight:,.0f} kg exceeds {s.approval_weight_kg:,.0f} kg", weight > s.approval_weight_kg),
             ("unverified supplier", any(not o.supplier_verified for o in allocation.orders)),
             ("drill", state.get("is_drill", False)),
+            ("simulated vehicles: nothing real would move", any(r.vehicle_label.startswith(SIMULATED_LABEL) for r in routing.routes)),
             ("shortfalls or unserved orders", bool(allocation.shortfalls or routing.unserved_order_keys)),
             ("goods deferred to the next wave", bool(routing.deferred_part_keys)),
         ] if hit]  # fmt: skip

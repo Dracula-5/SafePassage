@@ -180,7 +180,8 @@ async def dispatch(deps: "Deps", audit: Audit, state: "PlanState") -> str:
 async def _notify(deps: "Deps", audit: Audit, *, route_id: str | None, order_id: str | None, channel: str,
                   to: str | None, language: str, body: str, key: str, who: str, drill: bool) -> None:
     if not to:
-        await audit("dispatcher", "error", f"No phone number for {who}; message not sent", {"idempotency_key": key})
+        await audit("dispatcher", "decision" if drill else "error", f"No phone number for {who}; message not sent",
+                    {"idempotency_key": key})  # fmt: skip
         return
     inserted = await deps.pool.fetchval(
         """INSERT INTO notifications (order_id, route_id, channel, recipient, language, body, idempotency_key)

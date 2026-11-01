@@ -58,7 +58,11 @@ async def overview() -> dict:
                   (SELECT count(*) FROM orders WHERE status IN ('dispatched', 'in_transit')) AS orders_open,
                   (SELECT count(*) FROM orders WHERE status = 'delivered') AS orders_delivered,
                   (SELECT count(*) FROM v_vehicle_status WHERE NOT is_offline AND status <> 'maintenance') AS trucks_online,
-                  (SELECT count(*) FROM v_vehicle_status WHERE status <> 'maintenance') AS trucks_total""")
+                  (SELECT count(*) FROM v_vehicle_status WHERE status <> 'maintenance') AS trucks_total,
+                  (SELECT COALESCE(sum(e.people), 0) FROM evacuations e JOIN routes r ON r.id = e.route_id
+                   WHERE r.status = 'completed') AS people_safe,
+                  (SELECT COALESCE(sum(e.people), 0) FROM evacuations e LEFT JOIN routes r ON r.id = e.route_id
+                   WHERE e.status = 'waiting' OR (e.status = 'assigned' AND r.status IN ('planned', 'active'))) AS people_waiting""")
     return dict(row)
 
 
@@ -95,11 +99,70 @@ def _route_out(r) -> dict:
     return {"id": str(r["id"]), "vehicle_id": str(r["vehicle_id"]), "status": r["status"],
             "geometry": json.loads(r["geojson"]), "distance_m": r["distance_m"], "duration_s": r["duration_s"],
             "load_kg": r["load_kg"], "min_hazard_clearance_m": r["min_hazard_clearance_m"], "stops": r["stops"],
-            "completed_stops": r["completed_stops"]}
+            "completed_stops": r["completed_stops"], "kind": r["kind"]}
 
 
-ROUTE_SQL = """SELECT id, vehicle_id, status::text, ST_AsGeoJSON(geom, 6) AS geojson, distance_m, duration_s, load_kg,
+ROUTE_SQL = """SELECT id, vehicle_id, status::text, kind, ST_AsGeoJSON(geom, 6) AS geojson, distance_m, duration_s, load_kg,
                       min_hazard_clearance_m, stops, completed_stops, instructions FROM routes"""
+
+
+@router.get("/api/routes/live", dependencies=[Depends(require_operator)])
+async def live_routes() -> list[dict]:
+    """Every route a truck is on now, for the map: supply orange, evacuation green. Simplified, because it is
+    asked for every 5 seconds and nobody can see 10 metres at state zoom."""
+    rows = await (await get_pool()).fetch(
+        """SELECT a.route_id, a.vehicle_id, r.kind, ST_AsGeoJSON(ST_Simplify(a.geom, 0.0003), 5) AS geojson
+           FROM v_vehicle_assignment a JOIN routes r ON r.id = a.route_id""")
+    return [{"id": str(r["route_id"]), "vehicle_id": str(r["vehicle_id"]), "kind": r["kind"], "geometry": json.loads(r["geojson"])} for r in rows]
+
+
+class EvacuationRequest(BaseModel):
+    hazard_id: UUID
+    people: int = Field(gt=0, le=500)
+    simulated: bool = Field(default=False, description="Presentation mode made this request up")
+
+
+EVACUATION_STAGES = {"planned": "on_the_way", "active": "on_the_way", "completed": "safe"}
+
+
+def _stage(r) -> str:
+    if r["status"] != "assigned":
+        return r["status"]
+    if r["route_status"] in ("planned", "active") and (r["completed_stops"] or r["is_reroute"]):
+        return "on_board"
+    return EVACUATION_STAGES.get(r["route_status"], "failed")
+
+
+@router.post("/api/evacuations", status_code=201, dependencies=[Depends(require_operator)])
+async def request_evacuation(body: EvacuationRequest, request: Request) -> dict:
+    """People need to leave a zone. The worker sends the nearest free truck (graph/evacuation.py)."""
+    pool = await get_pool()
+    if not await pool.fetchval("SELECT 1 FROM v_active_hazards WHERE id = $1", body.hazard_id):
+        raise HTTPException(422, "that alert or drill has ended")
+    settlement = await pool.fetchval(
+        """SELECT p.name FROM v_places p JOIN v_active_hazards h ON ST_Intersects(p.geom, h.geom)
+           WHERE h.id = $1 AND p.name IS NOT NULL ORDER BY p.population DESC NULLS LAST, p.name LIMIT 1""", body.hazard_id)  # fmt: skip
+    if settlement is None:
+        raise HTTPException(422, "nobody lives inside this zone: draw it over a town")
+    account = await account_for(request)
+    row = await pool.fetchrow(
+        "INSERT INTO evacuations (hazard_id, settlement, people, simulated, requested_by) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        body.hazard_id, settlement, body.people, body.simulated, account["name"] if account else "presentation mode")  # fmt: skip
+    return {"id": str(row["id"]), "settlement": settlement, "people": body.people, "status": "waiting"}
+
+
+@router.get("/api/evacuations", dependencies=[Depends(require_operator)])
+async def list_evacuations() -> list[dict]:
+    rows = await (await get_pool()).fetch(
+        """SELECT e.*, h.headline AS zone, h.source::text = 'drill' AS is_drill, r.status::text AS route_status, r.completed_stops,
+                  r.vehicle_id, COALESCE(jsonb_array_length(r.stops) = 1, false) AS is_reroute
+           FROM evacuations e JOIN hazards h ON h.id = e.hazard_id LEFT JOIN routes r ON r.id = e.route_id
+           WHERE e.created_at > now() - interval '1 day' ORDER BY e.created_at DESC LIMIT 50""")
+    return [{"id": str(r["id"]), "zone": r["zone"], "is_drill": r["is_drill"], "settlement": r["settlement"], "people": r["people"],
+             "simulated": r["simulated"], "stage": _stage(r), "failure": r["failure"], "pickup_name": r["pickup_name"],
+             "safe_name": r["safe_name"], "zones_avoided": r["zones_avoided"], "zones_crossed": r["zones_crossed"],
+             "vehicle_id": str(r["vehicle_id"]) if r["vehicle_id"] else None, "plan_id": str(r["plan_id"]) if r["plan_id"] else None,
+             "created_at": r["created_at"].isoformat()} for r in rows]  # fmt: skip
 
 
 @router.get("/api/plans/{plan_id}", dependencies=[Depends(require_operator)])

@@ -14,8 +14,10 @@ from app.solvers.vrp import VrpProblem, VrpStop, VrpVehicle, solve
 from .schemas import OrderDraft, OrderPart, PlannedRoute, RouteStop, Routing
 
 MAX_ROUTE_LOCATIONS = 20   # Valhalla service_limits.truck.max_locations
+MAX_MATRIX_LOCATIONS = 50  # squared, this is Valhalla's service_limits.truck.max_matrix_location_pairs
 SERVICE_S = 20 * 60          # loading / unloading time at each stop
 MARGINS_M = (250.0, 500.0, 1000.0)  # exclusion margin grows with each Critic rejection
+LAST_CHOICE_COST_S = 6 * 3600  # what the solver pays to start a truck that should only be used if it's needed
 
 
 @dataclass
@@ -26,6 +28,13 @@ class VehicleIn:
     driver_language: str
     lon: float
     lat: float
+    simulated: bool = False  # nobody real behind it: see data.usable_vehicles
+    requested: bool = False  # its driver accepted a duty officer's request for this place
+
+
+def start_cost_s(vehicle: VehicleIn, someone_was_asked: bool) -> int:
+    """A driver who accepted a request goes first, then a truck with a real person."""
+    return 0 if vehicle.requested or not (vehicle.simulated or someone_was_asked) else LAST_CHOICE_COST_S
 
 
 @dataclass
@@ -49,6 +58,13 @@ def split_order(order: OrderDraft, max_kg: float) -> list[tuple[str, OrderDraft]
         })  # fmt: skip
         out.append((f"{order.order_key}#{i + 1}", part))
     return out
+
+
+def part_size_kg(capacities: list[float]) -> float:
+    """Orders are cut to fit most of the fleet, because parts sized for the largest truck can only go on
+    that truck. Vehicles under half its size don't count: one pickup must not cut everything into crumbs."""
+    largest = max(capacities)
+    return min(c for c in capacities if c >= largest / 2)
 
 
 def first_wave(parts: list[tuple[str, OrderDraft]], budget_kg: float) -> tuple[list[tuple[str, OrderDraft]], list[str]]:
@@ -101,11 +117,11 @@ async def plan_routes(
 ) -> Routing:
     margin = MARGINS_M[min(attempt, len(MARGINS_M)) - 1]
     rings = exclusion_rings(hazards, margin_m=margin, simplify_tolerance_m=margin * 0.4)
-    max_cap = max(v.capacity_kg for v in vehicles)
+    part_kg = part_size_kg([v.capacity_kg for v in vehicles])
     # Goods on the truck already fit it and must stay on it; only the rest is split and waved.
     loaded = [(o.order_key, o) for o in orders if o.onboard]
     onboard_kg = sum(o.weight_kg for _, o in loaded)
-    waiting = [p for o in orders if not o.onboard for p in split_order(o, max_cap)]
+    waiting = [p for o in orders if not o.onboard for p in split_order(o, part_kg)]
     wave, deferred = first_wave(waiting, sum(v.capacity_kg for v in vehicles) * max_trips - onboard_kg)
     parts = loaded + wave
 
@@ -133,8 +149,8 @@ async def plan_routes(
         pairs.append((f"P:{key}", f"D:{key}"))
     solution = solve(VrpProblem(
         durations_s=matrix.durations_s, stops=stops, pairs=pairs, horizon_s=horizon_s, time_limit_s=5,
-        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=v.capacity_kg,
-                             available_until_s=shift_s) for i, v in enumerate(vehicles)],
+        vehicles=[VrpVehicle(vehicle_id=v.vehicle_id, start_node=i, end_node=i, capacity_kg=v.capacity_kg, available_until_s=shift_s,
+                             fixed_cost_s=start_cost_s(v, any(x.requested for x in vehicles))) for i, v in enumerate(vehicles)],
     ))  # fmt: skip
 
     by_vehicle = {v.vehicle_id: v for v in vehicles}

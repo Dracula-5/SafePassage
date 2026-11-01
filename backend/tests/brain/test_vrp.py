@@ -25,6 +25,40 @@ def test_capacity_forces_split_across_vehicles():
     assert all(r.load_kg <= 1000 for r in sol.routes)
 
 
+def test_a_real_truck_goes_first_even_from_farther_away():
+    p = VrpProblem(
+        durations_s=matrix(4),
+        vehicles=[VrpVehicle(vehicle_id="simulated", start_node=2, end_node=2, capacity_kg=1000, fixed_cost_s=6 * 3600),
+                  VrpVehicle(vehicle_id="real", start_node=0, end_node=0, capacity_kg=1000)],
+        stops=[VrpStop(stop_id="a", node=3, demand_kg=500)],
+        horizon_s=24 * 3600, time_limit_s=1,
+    )
+    assert [r.vehicle_id for r in solve(p).routes] == ["real"]
+
+
+def test_goods_still_move_on_a_simulated_truck_when_the_real_one_is_full():
+    p = VrpProblem(
+        durations_s=matrix(4),
+        vehicles=[VrpVehicle(vehicle_id="simulated", start_node=0, end_node=0, capacity_kg=1000, fixed_cost_s=6 * 3600),
+                  VrpVehicle(vehicle_id="real", start_node=0, end_node=0, capacity_kg=1000)],
+        stops=[VrpStop(stop_id="a", node=1, demand_kg=700), VrpStop(stop_id="b", node=2, demand_kg=700)],
+        horizon_s=24 * 3600, time_limit_s=1,
+    )
+    sol = solve(p)
+    assert sol.unserved == [] and {r.vehicle_id for r in sol.routes} == {"simulated", "real"}
+
+
+def test_an_all_simulated_fleet_serves_everything():
+    p = VrpProblem(
+        durations_s=matrix(4),
+        vehicles=[VrpVehicle(vehicle_id=f"s{i}", start_node=0, end_node=0, capacity_kg=1000, fixed_cost_s=6 * 3600) for i in range(3)],
+        stops=[VrpStop(stop_id=c, node=1 + i, demand_kg=700) for i, c in enumerate("abc")],
+        horizon_s=24 * 3600, time_limit_s=1,
+    )
+    sol = solve(p)
+    assert sol.unserved == [] and len(sol.routes) == 3
+
+
 def test_a_stranded_truck_does_not_stop_the_others():
     """Node 0 is a truck no road connects, so its whole row and column are unknown, itself included."""
     durations = matrix(3)

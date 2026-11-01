@@ -8,7 +8,7 @@ import pytest
 from reliefroute_contracts.enums import ItemCode
 
 from app.agents.critic import review
-from app.agents.planner import first_wave
+from app.agents.planner import first_wave, part_size_kg
 from app.agents.schemas import (
     Allocation, Demand, OrderDraft, OrderLineDraft, OrderPart, PlannedRoute, PopulationEstimate, ReliefPoint, RouteStop, Routing,
 )
@@ -65,6 +65,17 @@ def test_first_wave_shares_capacity_across_orders_instead_of_letting_one_fill_it
     chosen, deferred = first_wave(parts, 4000)
     assert [k for k, _ in chosen] == ["a#1", "b#1", "a#2", "b#2"]
     assert deferred == ["a#3", "a#4", "a#5"]
+
+
+@pytest.mark.parametrize("capacities,size", [
+    ([8000, 8000, 8000], 8000),         # a fleet of equals
+    ([6000, 8000, 12000], 6000),        # parts sized for the 12-tonne truck could only go on that one
+    ([8000, 8000, 12000], 8000),        # one bigger truck must not lock the others out
+    ([10, 8000, 8000], 8000),           # a mistyped 10 kg pickup must not cut everything into crumbs
+    ([5000], 5000),
+])
+def test_orders_are_cut_to_fit_most_of_the_fleet(capacities, size):
+    assert part_size_kg(capacities) == size
 
 
 def test_first_wave_keeps_everything_when_it_fits():

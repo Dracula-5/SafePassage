@@ -89,6 +89,10 @@ class ValhallaClient:
     def breaker(self) -> CircuitBreaker:
         return self._breaker
 
+    @property
+    def client(self) -> httpx.AsyncClient:
+        return self._client
+
     async def _post(self, endpoint: str, body: dict) -> dict:
         response = await resilient_request(
             self._client, "POST", f"{self._base}/{endpoint}", self._breaker,

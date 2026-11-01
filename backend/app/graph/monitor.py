@@ -31,7 +31,7 @@ from app.routing.repository import blocks_roads, fetch_active_hazards
 from app.solvers.deviation import distance_from_route_m, distance_m, remaining_route
 from app.solvers.geometry import LonLat as Point, verify_route
 
-from . import plans
+from . import evacuation, plans
 from .audit import Audit
 
 log = get_logger(__name__)
@@ -41,7 +41,7 @@ CAPPED_KINDS = ("off_route", "stalled")
 
 TRACKED_SQL = """
 SELECT a.route_id::text, a.plan_id::text, a.vehicle_id::text, a.route_status::text, a.stops, a.is_drill, p.thread_id,
-       r.completed_stops, ST_AsGeoJSON(a.geom) AS geojson, v.label, v.is_offline, v.seconds_since_seen,
+       r.completed_stops, r.kind, ST_AsGeoJSON(a.geom) AS geojson, v.label, v.is_offline, v.seconds_since_seen,
        ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat
 FROM v_vehicle_assignment a
 JOIN routes r ON r.id = a.route_id JOIN plans p ON p.id = a.plan_id JOIN v_vehicle_status v ON v.id = a.vehicle_id
@@ -62,6 +62,7 @@ class Tracked:
     position: Point | None
     is_offline: bool
     seconds_since_seen: float | None
+    kind: str = "supply"
 
     @property
     def next_stop(self) -> dict | None:
@@ -73,7 +74,7 @@ def _tracked(row) -> Tracked:
                    label=row["label"], status=row["route_status"], stops=row["stops"], completed=row["completed_stops"],
                    geometry=[tuple(c) for c in json.loads(row["geojson"])["coordinates"]],
                    position=None if row["lon"] is None else (row["lon"], row["lat"]),
-                   is_offline=row["is_offline"], seconds_since_seen=row["seconds_since_seen"])  # fmt: skip
+                   is_offline=row["is_offline"], seconds_since_seen=row["seconds_since_seen"], kind=row["kind"])  # fmt: skip
 
 
 class RouteMonitor:
@@ -189,12 +190,13 @@ class RouteMonitor:
     async def on_hazard(self, hazard: HazardUpdated) -> None:
         if hazard.change not in ("created", "updated"):
             return
-        if not blocks_roads(hazard.hazard_type.value, hazard.severity.value, hazard.is_drill):
-            return
+        closes_roads = blocks_roads(hazard.hazard_type.value, hazard.severity.value, hazard.is_drill)
         shapes = [h for h in await fetch_active_hazards(self.deps.pool, bbox=hazard.bbox) if h.hazard_id == str(hazard.hazard_id)]
         if not shapes:
             return
         for route in await self._active():
+            if not closes_roads and route.kind != "evacuation":  # with people on board, every zone counts
+                continue
             ahead = remaining_route(route.geometry, route.position) if route.position else route.geometry
             if len(ahead) >= 2 and not verify_route(ahead, shapes).passed:
                 await self._deviate(route, "hazard_on_route", route.position, hazard_id=str(hazard.hazard_id))
@@ -261,6 +263,8 @@ class RouteMonitor:
             deviation.route_id, deviation.kind.value)  # fmt: skip
         if open_id is None:
             return  # already replanned
+        if await evacuation.reroute(self.deps, deviation.kind.value, deviation.route_id, open_id):
+            return
         if deviation.kind.value in CAPPED_KINDS and await self._over_replan_cap(deviation, open_id):
             return
         hazard_ids = [str(r["id"]) for r in await pool.fetch(

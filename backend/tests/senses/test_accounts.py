@@ -420,7 +420,7 @@ async def test_status_and_overview_are_real_counts(http, live_env):
     await sign_up(http, "operator", OPERATOR_CODE)
     overview = (await http.get("/api/overview")).json()
     assert overview == {"plans_awaiting": 0, "routes_live": 0, "kg_on_routes": 0, "orders_open": 0, "orders_delivered": 0,
-                        "trucks_online": 0, "trucks_total": 0}  # fmt: skip
+                        "trucks_online": 0, "trucks_total": 0, "people_safe": 0, "people_waiting": 0}  # fmt: skip
 
 
 # ---------------------------------------------------------------- plain unit tests

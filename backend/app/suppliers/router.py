@@ -5,7 +5,9 @@
 - POST /portal/api/stock        contract endpoint; X-Supplier-Token; emits supplier.stock.updated
 - GET, POST /api/supplier/me    the signed-in supplier account's own organisation
 - POST /api/supplier/stock      the same stock report, for the signed-in account
+- GET  /api/supplier/orders     what dispatched plans have asked this supplier to prepare
 - POST /portal/whatsapp         Twilio-compatible webhook, disabled unless TWILIO_AUTH_TOKEN is set
+- GET  /api/suppliers           operator: every supplier and its stock
 - POST /api/suppliers/{id}/verify  operator decision: vouch for a supplier, or withdraw that and its token
 
 New suppliers start unverified; any plan using one needs a human, who sees that.
@@ -16,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 from typing import Annotated
 from urllib.parse import parse_qsl
 from uuid import UUID
@@ -34,6 +37,7 @@ from ..telemetry.tokens import hash_token, new_token
 from .service import StockLine, parse_whatsapp_stock, publish_stock_events, report_stock
 
 router = APIRouter(tags=["senses"])
+MAX_SUPPLIER_ORDERS = 50
 
 
 Supplier = Annotated[dict, Depends(require_role("supplier"))]
@@ -143,6 +147,21 @@ async def register_my_supplier(body: Registration, account: Supplier) -> dict:
     return {"supplier_id": created["supplier_id"], "verified": False}
 
 
+@router.get("/api/suppliers", dependencies=[Depends(require_operator)])
+async def list_suppliers() -> list[dict]:
+    """Every supplier and what it holds, for the Directory. Most have no account: they come from AePDS."""
+    rows = await (await get_pool()).fetch(
+        """SELECT s.id, s.name, s.verified, s.contact_phone, s.contact_whatsapp, s.account_id IS NOT NULL AS has_account,
+                  f.name AS site, max(st.reported_at) AS reported_at,
+                  COALESCE(json_agg(json_build_object('item_code', st.item_code, 'available', st.available, 'reserved', st.reserved)
+                                    ORDER BY st.item_code) FILTER (WHERE st.supplier_id IS NOT NULL), '[]')::text AS stock
+           FROM suppliers s JOIN facilities f ON f.id = s.facility_id LEFT JOIN v_available_stock st ON st.supplier_id = s.id
+           GROUP BY s.id, f.name ORDER BY s.account_id IS NULL, s.name""")  # fmt: skip
+    return [{"id": str(r["id"]), "name": r["name"], "site": r["site"], "verified": r["verified"], "has_account": r["has_account"],
+             "contact": r["contact_whatsapp"] or r["contact_phone"], "stock": json.loads(r["stock"]),
+             "reported_at": r["reported_at"].isoformat() if r["reported_at"] else None} for r in rows]  # fmt: skip
+
+
 class SupplierDecision(BaseModel):
     verified: bool
 
@@ -197,6 +216,22 @@ async def post_my_stock(body: StockReport, account: Supplier) -> list[dict]:
         events, levels = await _report(body, conn, supplier_id)
     await publish_stock_events(events)
     return levels
+
+
+@router.get("/api/supplier/orders")
+async def my_orders(account: Supplier) -> list[dict]:
+    rows = await (await get_pool()).fetch(
+        """SELECT o.id, o.status::text, o.created_at, o.delivered_at, p.is_drill, f.name AS destination,
+                  json_agg(json_build_object('item_code', l.item_code, 'quantity', l.quantity) ORDER BY l.item_code)::text AS lines
+           FROM orders o JOIN suppliers s ON s.id = o.supplier_id JOIN plans p ON p.id = o.plan_id
+           JOIN facilities f ON f.id = o.destination_facility_id JOIN order_lines l ON l.order_id = o.id
+           WHERE s.account_id = $1
+           GROUP BY o.id, p.is_drill, f.name ORDER BY o.created_at DESC LIMIT $2""",
+        account["id"], MAX_SUPPLIER_ORDERS,
+    )  # fmt: skip
+    return [{"id": str(r["id"]), "status": r["status"], "is_drill": r["is_drill"], "destination": r["destination"],
+             "lines": json.loads(r["lines"]), "created_at": r["created_at"].isoformat(),
+             "delivered_at": r["delivered_at"].isoformat() if r["delivered_at"] else None} for r in rows]  # fmt: skip
 
 
 def twilio_signature_valid(auth_token: str, url: str, params: dict[str, str], signature: str) -> bool:

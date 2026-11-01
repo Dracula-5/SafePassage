@@ -7,6 +7,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SIMULATED_LABEL = "TEST-SIM-GPS"  # starts every simulated vehicle's label, so it can never pass as a real one
+
+
 class CommonSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -26,6 +29,7 @@ class CommonSettings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     mail_from: str | None = None
+    demo_fleet: bool = False  # simulated drivers for presentations, see telemetry/demo.py
     # Default timeout for any outbound HTTP call; individual clients may tighten it.
     http_timeout_s: float = 10.0
 
