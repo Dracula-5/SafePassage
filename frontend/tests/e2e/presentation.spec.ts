@@ -22,6 +22,24 @@ async function signUp(page: Page, role: "operator" | "driver" | "supplier", name
   await page.getByRole("button", { name: "Create account" }).click();
 }
 
+/** The rules send a clear plan and an unclear one waits for a person, which depends on the alerts of the day. A plan
+ *  gone stale before it left is replaced, and the replacement is decided the same way. */
+async function dispatchedPlan(page: Page, hazard: string, headers: Record<string, string> = {}): Promise<string> {
+  const decided = new Set<string>();
+  let planId = "";
+  await expect.poll(async () => {
+    const plans: { id: string; status: string; evacuation: boolean; hazard_ids: string[] }[] = await (await page.request.get("/api/plans", { headers })).json();
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && !p.evacuation);
+    planId = plan?.id ?? "";
+    if (plan?.status === "awaiting_approval" && !decided.has(plan.id)) {
+      decided.add(plan.id);
+      await page.request.post(`/api/plans/${plan.id}/approve`, { headers, data: { decision: "approved", decided_by: "E2E" } });
+    }
+    return plan?.status;
+  }, { timeout: 300_000 }).toBe("dispatched");
+  return planId;
+}
+
 test("the map comes through this site, with warehouses showing at any zoom", async ({ browser }) => {
   const page = await browser.newPage();
   const tiles: number[] = [];
@@ -238,18 +256,8 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
   expect(drill.status()).toBe(201);
   const hazard = (await drill.json()).id as string;
 
-  // The rules send a clear plan, and an unclear one waits here: which it is depends on the alerts of the day.
-  let planId = "";
-  let status = "";
-  await expect.poll(async () => {
-    const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await officer.request.get("/api/plans")).json();
-    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
-    planId = plan?.id ?? "";
-    status = plan?.status ?? "";
-    return ["awaiting_approval", "dispatched"].includes(status);
-  }, { timeout: 240_000 }).toBe(true);
+  const planId = await dispatchedPlan(officer, hazard);
   await officer.locator(`[data-plan="${planId}"]`).click();
-  if (status === "awaiting_approval") await officer.getByRole("button", { name: "Approve dispatch" }).click();
   const card = officer.locator(".route-card").first();  // routes are only written when a plan is dispatched
   await expect(card.locator(".badge.sim")).toBeVisible({ timeout: 60_000 });
   await expect(card.getByRole("link", { name: "Driver screen" })).toBeVisible();
@@ -263,7 +271,7 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
   await desk.close();
 });
 
-test("a clear drill goes out by itself, and the duty officer sees why", async ({ browser }) => {
+test("a big clear job goes out by itself, and the rules keep what is left", async ({ browser }) => {
   test.skip(!process.env.E2E_ROUTING, "needs the road map: set E2E_ROUTING=1");
   test.setTimeout(300_000);
 
@@ -275,7 +283,7 @@ test("a clear drill goes out by itself, and the duty officer sees why", async ({
   await officer.getByRole("button", { name: "Sign in" }).click();
   await expect(officer).toHaveURL(/\/dashboard/);
 
-  const zone = [[77.61, 15.1], [77.65, 15.1], [77.65, 15.14], [77.61, 15.14], [77.61, 15.1]];  // a small town, far inland
+  const zone = [[78, 15.79], [78.08, 15.79], [78.08, 15.86], [78, 15.86], [78, 15.79]];  // Kurnool: far more than one wave can carry
   const drill = await officer.request.post("/api/drill", { data: {
     geometry: { type: "Polygon", coordinates: [zone] }, hazard_type: "flood", severity: "severe", label: `E2E clear ${RUN}`, ttl_minutes: 30,
   } });
@@ -294,6 +302,9 @@ test("a clear drill goes out by itself, and the duty officer sees why", async ({
   await expect(officer.getByText("Approved by the rules", { exact: false })).toBeVisible();
   await expect(officer.locator(".route-card").first()).toBeVisible();
   await expect(officer.getByRole("button", { name: "Approve dispatch" })).toHaveCount(0);
+  await expect(officer.getByText("Still to send", { exact: true })).toBeVisible();
+  await expect(officer.getByText("The rules send the next wave", { exact: false })).toBeVisible();
+  await expect(officer.getByText("Needs a person", { exact: true })).toHaveCount(0);
 
   expect((await officer.request.delete(`/api/drill/${hazard}`)).status()).toBe(204);
   await desk.close();
@@ -324,16 +335,7 @@ test("a signed-in driver with simulated GPS gets a route ahead of the simulated 
   expect(drill.status()).toBe(201);
   const hazard = (await drill.json()).id as string;
 
-  let planId = "";
-  let status = "";
-  await expect.poll(async () => {
-    const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await driver.request.get("/api/plans", { headers })).json();
-    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
-    planId = plan?.id ?? "";
-    status = plan?.status ?? "";
-    return ["awaiting_approval", "dispatched"].includes(status);
-  }, { timeout: 240_000 }).toBe(true);
-  if (status === "awaiting_approval") await driver.request.post(`/api/plans/${planId}/approve`, { headers, data: { decision: "approved", decided_by: "E2E" } });
+  await dispatchedPlan(driver, hazard, headers);
   await expect(driver.getByText("Next stop")).toBeVisible({ timeout: 120_000 });
   await expect(driver.getByText("DRILL. This is not a real dispatch.")).toBeVisible();
 
