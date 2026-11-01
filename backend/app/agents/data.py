@@ -7,7 +7,7 @@ import asyncpg
 from shapely import MultiPolygon, from_wkb
 
 from app.core.config import SIMULATED_LABEL
-from app.routing.repository import ROAD_BLOCKING_SEVERITIES, ROAD_BLOCKING_TYPES
+from app.routing.repository import ROAD_BLOCKING_SEVERITIES, ROAD_BLOCKING_TYPES, WIDE_WARNING_KM2
 
 from .schemas import HazardFact, PopulationEstimate, ReliefPoint
 
@@ -85,18 +85,18 @@ async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limi
     """
     rows = await conn.fetch(
         """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards
-                         WHERE is_drill OR id = ANY($1::uuid[])
-                            OR (hazard_type::text = ANY($4) AND severity::text = ANY($5)))
+                         WHERE is_drill OR ((id = ANY($1::uuid[]) OR (hazard_type::text = ANY($4) AND severity::text = ANY($5)))
+                                            AND ST_Area(geom::geography) / 1e6 <= $7))
            , target AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
            SELECT f.id::text AS facility_id, f.name, f.kind::text AS kind, ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
                   ST_Distance(f.geom::geography, target.g::geography) AS distance_to_hazard_m
            FROM v_facilities f, zone, target
            WHERE f.kind IN ('shelter', 'school', 'hospital')
              AND ST_DWithin(f.geom::geography, target.g::geography, $2)
-             AND NOT ST_DWithin(f.geom::geography, zone.g::geography, $6)
+             AND (zone.g IS NULL OR NOT ST_DWithin(f.geom::geography, zone.g::geography, $6))
            ORDER BY (f.kind = 'shelter') DESC, distance_to_hazard_m
            LIMIT $3""",
-        hazard_ids, radius_m, limit, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES, min_distance_m,
+        hazard_ids, radius_m, limit, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES, min_distance_m, WIDE_WARNING_KM2,
     )  # fmt: skip
     return [ReliefPoint(**dict(r), share=0) for r in rows]
 
