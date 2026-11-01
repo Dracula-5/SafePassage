@@ -14,7 +14,7 @@ from langgraph.types import interrupt
 from app.agents import data, reasoning
 from app.agents.approval import Limits, reasons_for_a_person
 from app.agents.critic import review
-from app.agents.needs import compute_demand
+from app.agents.needs import compute_demand, still_needed
 from app.agents.planner import MAX_MATRIX_LOCATIONS, Site, VehicleIn, plan_routes
 from app.agents.procurement import StockRow, allocate, haversine_m, nearby_candidates
 from app.agents.reasoning import PlanBrief
@@ -204,7 +204,8 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
                     f"share of their mandal, {population.population_unscaled:,} before scaling); "
                     f"{len(points)} safe relief points within {s.relief_search_radius_m / 1000:.0f} km",
                     population.model_dump(), ["view:v_places", "view:v_facilities"])
-        triage: Triage = await _llm_or_fallback(
+        standing = await plans.standing_triage(deps.pool, state["plan_id"])
+        triage: Triage = Triage.model_validate(standing) if standing else await _llm_or_fallback(
             audit, "sentinel", "triage",
             (lambda: reasoning.triage(deps.llm, hazards, population, len(points))) if deps.llm else None,
             lambda reason: fallbacks.triage(hazards, population, reason))
@@ -222,14 +223,18 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         points = await data.relief_points(deps.pool, state["hazard_ids"], s.relief_search_radius_m, s.relief_points_per_plan,
                                           s.relief_min_distance_m)  # fmt: skip
         horizon_days = min(triage.planning_horizon_hours / 24, s.planning_horizon_days_max)
-        demand = compute_demand(population, points, horizon_days)
+        ordered = await plans.ordered_so_far(deps.pool, state["hazard_ids"])
+        demand = still_needed(compute_demand(population, points, horizon_days), ordered)
         await audit("needs", "decision",
                     f"{len(demand.lines)} demand lines for {len(points)} relief points over {horizon_days:g} day(s); "
-                    f"population from census-tagged settlements only ({population.coverage:.0%} settlement coverage)",
+                    f"population from census-tagged settlements only ({population.coverage:.0%} settlement coverage)"
+                    + ("; what is already ordered for this alert is taken off" if ordered else ""),
                     demand.model_dump(mode="json"), _ids("facility", [p.facility_id for p in points]) + ["view:v_places"])
         await plans.set_status(deps.pool, state["plan_id"], "planning", demand=demand.model_dump(mode="json"))
         if not points:
             return _stop(state, "unreachable", "no safe relief point (shelter/school/hospital outside every hazard) nearby")
+        if not demand.lines and ordered:
+            return _stop(state, "failed", f"{plans.NOTHING_LEFT}: everything needed here is already ordered")
         if not demand.lines:
             return _stop(state, "failed", "no census population recorded inside the hazard zone; demand cannot be "
                                           "computed without guessing")
@@ -286,7 +291,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         await plans.set_status(deps.pool, state["plan_id"], "planning", allocation=allocation.model_dump(mode="json"),
                                escalations=escalations)
         if not allocation.orders:
-            return _stop(state, "failed", "no supplier has reachable stock for this demand: escalated to humans")
+            return _stop(state, "failed", "no supplier has reachable stock for this demand")
         return {"allocation": allocation.model_dump(mode="json")}
 
     async def route_planner(state: PlanState) -> dict:

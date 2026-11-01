@@ -53,13 +53,19 @@ def test_goods_left_for_the_next_wave_do_not_hold_a_plan_back():
     assert decide(route=routing(deferred=["b"], parts=parts)) == []
 
 
+def test_a_big_job_is_not_a_question_when_only_a_truckload_leaves_now():
+    """The Kakinada drill: 355 t allocated, under 300 t on the trucks. Waiting for a person moved nothing."""
+    moving, for_later = part("a", 96_000), part("b", 259_000)
+    assert decide(orders=[order(weight=355_000)], route=routing(deferred=["b"], parts=[moving, for_later])) == []
+
+
 @pytest.mark.parametrize("kwargs,reason", [
     ({"hazards": [hazard(is_drill=False, severity="extreme")], "route": routing("AP 16 TX 1")}, "Extreme real alert"),
     ({"hazards": [hazard(is_drill=False)]}, "Real alert, but simulated trucks"),
     ({"hazards": [hazard(is_stale=True)]}, "Hazard data is out of date"),
     ({"tri": triage(recommend_human_review=True)}, "AI is unsure"),
     ({"orders": [order(verified=False)]}, "Unverified supplier"),
-    ({"orders": [order(weight=300_001)]}, "Over 300 t"),
+    ({"route": routing(parts=[part("a", 300_001)])}, "Over 300 t moving at once"),
     ({"route": routing(unserved=["a"], parts=[part("a", 3000), part("b", 7000)])}, "No truck for over 20% of the goods"),
     ({"verdicts": [{"min_clearance_m": {"v1": 150.0, "v2": 900.0}}]}, "Route under 200 m from a hazard"),
     ({"attempt": 2}, "Safety check rejected the first route"),
@@ -90,13 +96,13 @@ def test_a_real_alert_with_a_real_truck_can_go_by_itself():
 
 
 def test_exactly_on_a_limit_is_allowed():
-    assert decide(orders=[order(weight=300_000)]) == []
+    assert decide(route=routing(parts=[part("a", 300_000)])) == []
     assert decide(verdicts=[{"min_clearance_m": {"v1": 200.0}}]) == []
 
 
 def test_every_reason_is_short():
     many = decide(hazards=[hazard(is_drill=False, severity="extreme", is_stale=True)], tri=triage(recommend_human_review=True),
-                  orders=[order(weight=999_999, verified=False)], attempt=3)  # fmt: skip
+                  orders=[order(verified=False)], route=routing(parts=[part("a", 999_999)]), attempt=3)  # fmt: skip
     assert len(many) >= 5 and all(len(reason) <= 45 for reason in many)
 
 

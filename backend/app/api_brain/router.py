@@ -19,7 +19,7 @@ from app.core.logging import scrub
 from app.core.sessions import account_for
 from app.core.settings_brain import get_brain_settings
 from app.core.validation import Name, Text
-from app.graph import plans
+from app.graph import plans, waves
 from app.telemetry.access import require_vehicle_access
 
 router = APIRouter(tags=["brain"])
@@ -182,6 +182,7 @@ async def get_plan(plan_id: UUID) -> dict:
            ORDER BY id DESC LIMIT 1""", plan_id)  # fmt: skip
     return plans.summary_out(row) | {
         "needs_person": asked or [],
+        "waves_left": await waves.left(pool, row["hazard_ids"], get_brain_settings().next_wave_max),
         "demand": [{k: v for k, v in line.items()} for line in (extra["demand"] or {}).get("lines", [])],
         "routes": [_route_out(r) for r in routes],
         "orders": await _orders(pool, plan_id),

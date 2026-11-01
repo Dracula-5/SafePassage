@@ -36,6 +36,9 @@ class BrainSettings(CommonSettings):
     auto_approve_max_kg: float = Field(default=300_000, description="See agents/approval.py")
     auto_approve_max_unserved: float = Field(default=0.2, ge=0, le=1)
     auto_approve_min_clearance_m: float = Field(default=200, ge=0)
+    next_wave_max: int = Field(default=10, ge=0, description="Waves per alert that start by themselves. 0 turns them off")
+    next_wave_window_minutes: int = Field(default=30, gt=0, description="Trucks that finished longer ago start no wave")
+    next_wave_retry_minutes: int = Field(default=5, gt=0, description="A wave that found no stock or truck tries again after this")
     documents_dir: Path = Path.home() / "reliefroute-data" / "documents"
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None

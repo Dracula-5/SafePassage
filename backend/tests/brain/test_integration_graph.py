@@ -13,10 +13,12 @@ import httpx
 import pytest
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from app.core import bus
 from app.core.db import _init_connection
 from app.core.migrate import apply_all
 from app.core.settings_brain import BrainSettings
 from app.dispatch.messaging import Messenger
+from app.graph import plans, waves
 from app.graph.build import PlanRunner
 from app.graph.dispatcher import dispatch
 from app.graph.audit import Audit
@@ -200,6 +202,116 @@ async def test_a_cyclone_warning_does_not_close_the_state_but_a_person_decides(w
     assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "awaiting_approval"
     asked = next(e for e in await events(pool, plan) if e["event_type"] == "approval_requested")
     assert "Route crosses a wide warning area" in asked["message"]
+
+
+async def first_wave_out(world, monkeypatch) -> dict:
+    """One small truck for a job far bigger than it, the plan out by itself and the truck back again."""
+    pool, plan = world["pool"], world["plan"]
+    async def no_redis(*_args, **_kwargs):
+        return True
+    monkeypatch.setattr(bus, "try_publish", no_redis)
+    await pool.execute("UPDATE suppliers SET verified = true")
+    await pool.execute("UPDATE vehicles SET capacity_kg = 1500")
+    world["backend"].review = False
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await world["runner"].start(plan, thread, [world["hazard"]])
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", plan) == "dispatched"
+    demand = await pool.fetchval("SELECT demand FROM plans WHERE id = $1", plan)
+    return {(line["destination_facility_id"], line["item_code"]): line["quantity"] for line in demand["lines"]}
+
+
+async def trucks_finish(pool) -> None:
+    await pool.execute("UPDATE routes SET status = 'completed', completed_at = now() WHERE status IN ('planned', 'active')")
+
+
+async def test_what_the_trucks_could_not_carry_goes_next_by_itself_and_nothing_goes_twice(world, monkeypatch):
+    runner, pool, deps, hazard = world["runner"], world["pool"], world["deps"], world["hazard"]
+    needed = await first_wave_out(world, monkeypatch)
+    first = await plans.ordered_so_far(pool, [hazard])
+    assert sum(first.values()) < sum(needed.values())
+
+    assert await waves.send_due(deps) == 0  # the truck is still out
+    await trucks_finish(pool)
+    assert await waves.send_due(deps) == 1
+    assert await waves.send_due(deps) == 0  # one wave at a time
+
+    deps.llm = None  # as if Gemini is rate limited: the assessment already made still stands
+    wave = await pool.fetchrow("SELECT id::text, thread_id FROM plans WHERE requested_by = 'next wave'")
+    await runner.start(wave["id"], wave["thread_id"], [hazard])
+    assert await pool.fetchval("SELECT status::text FROM plans WHERE id = $1", wave["id"]) == "dispatched"
+    assert await pool.fetchval("SELECT requires_approval FROM plans WHERE id = $1", wave["id"]) is False
+
+    both = await plans.ordered_so_far(pool, [hazard])
+    assert sum(both.values()) > sum(first.values())
+    assert all(quantity <= needed[key] for key, quantity in both.items())
+
+
+@pytest.mark.parametrize("why_not", [
+    "UPDATE hazards SET expires_at = now() - interval '1 minute'",
+    "UPDATE routes SET completed_at = now() - interval '2 hours'",
+    "UPDATE plans SET escalations = '[]'",
+    """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+       SELECT 'person', 'manual', hazard_ids, 'test', 'awaiting_approval' FROM plans""",
+    """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+       SELECT 'person', 'manual', hazard_ids, 'test', 'rejected' FROM plans""",
+    """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+       SELECT 'last', 'replan', hazard_ids, 'test', 'failed' FROM plans""",
+], ids=["alert-ended", "finished-long-ago", "nothing-left", "a-person-is-deciding", "a-person-said-no", "the-last-plan-failed"])
+async def test_a_wave_waits_or_stops_for_a_reason(world, monkeypatch, why_not):
+    pool = world["pool"]
+    await first_wave_out(world, monkeypatch)
+    await trucks_finish(pool)
+    await pool.execute(why_not)
+    assert await waves.send_due(world["deps"]) == 0
+
+
+async def test_a_wave_that_found_no_stock_tries_again_because_depots_refill(world, monkeypatch):
+    pool, deps, hazard = world["pool"], world["deps"], world["hazard"]
+    await first_wave_out(world, monkeypatch)
+    await trucks_finish(pool)
+    assert await waves.send_due(deps) == 1
+    await pool.execute("UPDATE plans SET status = 'failed', unreachable_reason = 'no supplier has reachable stock' WHERE requested_by = 'next wave'")
+
+    assert await waves.send_due(deps) == 0  # too soon: nothing has had time to change
+    await pool.execute("UPDATE plans SET updated_at = now() - interval '6 minutes' WHERE requested_by = 'next wave'")
+    assert await waves.send_due(deps) == 1
+    assert await pool.fetchval("SELECT count(*) FROM plans WHERE requested_by = 'next wave'") == 2
+    assert await waves.left(pool, [hazard], 10) == 9  # the attempt that found nothing does not count
+
+
+async def test_a_finished_job_does_not_try_again(world, monkeypatch):
+    pool, deps = world["pool"], world["deps"]
+    await first_wave_out(world, monkeypatch)
+    await trucks_finish(pool)
+    assert await waves.send_due(deps) == 1
+    await pool.execute("""UPDATE plans SET status = 'failed', unreachable_reason = $1, updated_at = now() - interval '6 minutes'
+                          WHERE requested_by = 'next wave'""", f"{plans.NOTHING_LEFT}: all ordered")  # fmt: skip
+    assert await waves.send_due(deps) == 0
+
+
+async def test_a_fallback_assessment_is_not_reused_so_the_next_wave_can_do_better(world, monkeypatch):
+    pool, deps, plan = world["pool"], world["deps"], world["plan"]
+    await first_wave_out(world, monkeypatch)
+    await trucks_finish(pool)
+    assert await waves.send_due(deps) == 1
+    wave = await pool.fetchval("SELECT id::text FROM plans WHERE requested_by = 'next wave'")
+    assert await plans.standing_triage(pool, plan) is None  # not a wave: it makes its own
+    assert (await plans.standing_triage(pool, wave))["priority"]
+    await pool.execute("UPDATE plans SET triage = triage || '{\"rationale\": \"RULE-BASED FALLBACK\"}' WHERE id = $1", plan)
+    assert await plans.standing_triage(pool, wave) is None
+
+
+async def test_the_wave_limit_holds_and_the_panel_can_tell(world, monkeypatch):
+    pool, deps, hazard = world["pool"], world["deps"], world["hazard"]
+    await first_wave_out(world, monkeypatch)
+    await trucks_finish(pool)
+    assert await waves.left(pool, [hazard], 10) == 10
+    deps.settings.next_wave_max = 0
+    assert await waves.send_due(deps) == 0
+    assert await waves.left(pool, [hazard], 0) == 0
+
+    await pool.execute("UPDATE hazards SET expires_at = now() - interval '1 minute'")
+    assert await waves.left(pool, [hazard], 10) == 0
 
 
 async def test_rejection_and_missing_vehicle_paths(world):
