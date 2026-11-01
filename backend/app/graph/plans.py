@@ -13,6 +13,7 @@ from app.core import bus
 
 NEXT_WAVE = "next wave"  # who asked for a plan that graph/waves.py started
 NOTHING_LEFT = "nothing left to send"  # a wave that stops here is finished: there is nothing to try again
+REVALIDATION = "revalidation"  # who asked for a plan that replaces one gone stale
 
 
 def _json(value: Any) -> Any:
@@ -93,6 +94,13 @@ async def standing_triage(pool: asyncpg.Pool, plan_id: str) -> dict | None:
            WHERE wave.id = $1 AND wave.requested_by = $2 AND earlier.id <> wave.id AND earlier.triage IS NOT NULL
              AND earlier.triage->>'rationale' NOT LIKE 'RULE-BASED%'
            ORDER BY earlier.created_at DESC LIMIT 1""", plan_id, NEXT_WAVE)  # fmt: skip
+
+
+async def fresh_plans_lately(pool: asyncpg.Pool, hazard_ids: list[str]) -> int:
+    """Plans made in the last hour because an earlier one went stale before it could leave."""
+    return await pool.fetchval(
+        """SELECT count(*) FROM plans WHERE requested_by = $1 AND hazard_ids && $2::uuid[]
+           AND created_at > now() - interval '1 hour'""", REVALIDATION, hazard_ids)  # fmt: skip
 
 
 async def abandoned_thread(pool: asyncpg.Pool, plan_id: str, idle_s: float) -> str | None:

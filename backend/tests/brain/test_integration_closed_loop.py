@@ -168,6 +168,23 @@ async def test_stock_taken_while_waiting_supersedes_the_plan_and_requests_a_fres
     assert child["trigger_kind"] == "replan" and child["trigger_ref"] is None and child["parent_plan_id"] == plan
 
 
+async def test_a_plan_that_keeps_going_stale_stops_for_a_person_instead_of_looping(world, published):  # noqa: F811
+    """31 plans went this way in a day: each fresh one failed the same check and spent the LLM quota again."""
+    runner, pool, plan = world["runner"], world["pool"], world["plan"]
+    await pool.execute(
+        """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+           SELECT 'stale-' || n, 'replan', p.hazard_ids, 'revalidation', 'superseded' FROM plans p, generate_series(1, 3) n""")
+    before = await pool.fetchval("SELECT count(*) FROM plans")
+    thread = await pool.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan)
+    await runner.start(plan, thread, [world["hazard"]])
+    await pool.execute("UPDATE stock SET quantity = 1, reported_at = now()")
+    await runner.resume(thread, {"decision": "approved", "decided_by": "officer", "reason": None})
+
+    row = await pool.fetchrow("SELECT status::text, unreachable_reason FROM plans WHERE id = $1", plan)
+    assert row["status"] == "failed" and "3 times in an hour" in row["unreachable_reason"] and "plan needs" in row["unreachable_reason"]
+    assert await pool.fetchval("SELECT count(*) FROM plans") == before and not published
+
+
 async def test_stops_advance_from_gps_and_orders_follow(world, published):  # noqa: F811
     pool, plan = world["pool"], world["plan"]
     await run_to_dispatch(world)

@@ -14,6 +14,7 @@ from app.agents.schemas import Allocation, OrderDraft, OrderLineDraft, Routing
 from app.routing.repository import fetch_road_hazards
 
 MIN_DELAY = timedelta(minutes=1)  # shorter delays do not change anything a driver would notice
+ROUNDING = 0.001  # orders are stored to 3 decimals and stock is not, so an order for all of it can round up past it
 
 
 def carried_orders(allocation: Allocation, routing: Routing) -> list[OrderDraft]:
@@ -57,7 +58,7 @@ async def stock_problems(conn, orders: list[OrderDraft]) -> list[str]:
     for order in orders:
         for line in order.lines:
             have = available.get((order.supplier_id, line.item_code.value), 0.0)
-            if have + 1e-6 < line.quantity:
+            if have + ROUNDING < line.quantity:
                 problems.append(f"{order.supplier_name} now has {have:.0f} {line.item_code.value}, "
                                 f"plan needs {line.quantity:.0f}")
     return problems

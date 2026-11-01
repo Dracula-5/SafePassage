@@ -77,6 +77,8 @@ def _ids(prefix: str, ids: list[str]) -> list[str]:
 
 STOPPED_WITH_REASON = ("unreachable", "failed", "superseded")
 ROUTING_DOWN = "routing service unavailable, so no route can be verified as safe: escalated to humans"
+MAX_FRESH_PLANS = 3  # per alert, per hour
+KEEPS_GOING_STALE = f"this plan went out of date {MAX_FRESH_PLANS} times in an hour"
 ALTERNATE_HUB_RADIUS_FACTOR = 4
 ALTERNATE_HUB_CANDIDATES = 40
 AREA_MARGIN_DEG = 0.5  # about 50 km: hazards farther than this from every location cannot affect the trip
@@ -445,9 +447,14 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             await _escalate_unplaced_goods(deps, state, reason)
         if status == "superseded" and not state.get("replan_route_id") and (
                 still_active := await data.hazard_facts(deps.pool, state["hazard_ids"])):
+            if await plans.fresh_plans_lately(deps.pool, state["hazard_ids"]) >= MAX_FRESH_PLANS:
+                # The same cause would repeat for ever, spending the LLM quota: this one is for a person.
+                await plans.set_status(deps.pool, state["plan_id"], "failed", unreachable_reason=f"{KEEPS_GOING_STALE}: {reason}"[:500])
+                await audit("supervisor", "decision", f"Not planning again: {KEEPS_GOING_STALE}")
+                return {}
             summary, created = await plans.request_plan(
                 deps.pool, trigger_kind="replan", trigger_ref=None, hazard_ids=[h.hazard_id for h in still_active],
-                requested_by="revalidation", idempotency_key=f"stale:{state['plan_id']}", parent_plan_id=state["plan_id"])
+                requested_by=plans.REVALIDATION, idempotency_key=f"stale:{state['plan_id']}", parent_plan_id=state["plan_id"])
             if created:
                 await audit("supervisor", "decision", f"Requested a fresh plan {summary['id']} for the hazards still active")
         return {}
