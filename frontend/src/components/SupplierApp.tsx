@@ -5,7 +5,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
-import { Account, ApiError, FacilityMatch, supplierApi, SupplierProfile } from "@/lib/api";
+import { Account, ApiError, FacilityMatch, supplierApi, SupplierOrder, SupplierProfile } from "@/lib/api";
 import { ago, itemName } from "@/lib/format";
 import { useAccount } from "@/lib/session";
 
@@ -15,6 +15,7 @@ import LiveStatus, { REFRESH_MS } from "./LiveStatus";
 export default function SupplierApp() {
   const account = useAccount("supplier");
   const [profile, setProfile] = useState<SupplierProfile | null>(null);
+  const [orders, setOrders] = useState<SupplierOrder[]>([]);
   const [unregistered, setUnregistered] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
@@ -22,6 +23,7 @@ export default function SupplierApp() {
   const load = useCallback(async () => {
     try {
       setProfile(await supplierApi.me());
+      setOrders(await supplierApi.orders());
       setUnregistered(false);
       setFailed(false);
       setUpdatedAt(Date.now());
@@ -46,7 +48,7 @@ export default function SupplierApp() {
     <AppShell account={account} title="Supplier" status={profile && <LiveStatus updatedAt={updatedAt} failed={failed} />}>
       <main className="page">
         {unregistered ? <Register account={account} onDone={load} />
-          : profile ? <Stock profile={profile} onSaved={load} />
+          : profile ? <Stock profile={profile} orders={orders} onSaved={load} />
           : <Loading />}
       </main>
     </AppShell>
@@ -135,7 +137,13 @@ function Register({ account, onDone }: { account: Account; onDone: () => void })
   );
 }
 
-function Stock({ profile, onSaved }: { profile: SupplierProfile; onSaved: () => void }) {
+const ORDER_STATUS: Record<string, { text: string; tone: string }> = {
+  dispatched: { text: "Prepare for pickup", tone: "orange" },
+  in_transit: { text: "On the truck", tone: "blue" },
+  delivered: { text: "Delivered", tone: "green" },
+};
+
+function Stock({ profile, orders, onSaved }: { profile: SupplierProfile; orders: SupplierOrder[]; onSaved: () => void }) {
   const units = Object.fromEntries(profile.items.map((i) => [i.code, i.unit]));
   const [item, setItem] = useState(profile.items[0]?.code ?? "");
   const [quantity, setQuantity] = useState("");
@@ -164,6 +172,30 @@ function Stock({ profile, onSaved }: { profile: SupplierProfile; onSaved: () => 
         <span className={profile.verified ? "status green" : "status orange"}>{profile.verified ? "Verified" : "Awaiting verification"}</span>
       </section>
       {!profile.verified && <div className="alert warn">A duty officer checks any plan that uses your stock until your organisation is verified.</div>}
+
+      <section className="card">
+        <h2>Orders</h2>
+        {orders.length === 0 ? <p className="empty">No orders yet. When a duty officer approves a plan that uses your stock, it appears here.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Goods</th><th>Going to</th><th>Status</th><th>Ordered</th></tr></thead>
+              <tbody>
+                {orders.map((o) => (
+                  <tr key={o.id}>
+                    <td><b>{o.lines.map((l) => `${Math.round(l.quantity).toLocaleString()} ${itemName(l.item_code)}`).join(", ")}</b></td>
+                    <td>{o.destination}</td>
+                    <td>
+                      <span className={`status ${ORDER_STATUS[o.status]?.tone ?? "grey"}`}>{ORDER_STATUS[o.status]?.text ?? o.status.replace("_", " ")}</span>
+                      {o.is_drill && <span className="badge drill">DRILL</span>}
+                    </td>
+                    <td className="muted small">{ago(o.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <div className="page-grid">
         <section className="card">

@@ -5,8 +5,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Account, AgentEvent, Escalation, PlanDetail, plansApi, PlanSummary, STREAM_URL, Vehicle } from "@/lib/api";
-import { ago } from "@/lib/format";
+import { Account, AgentEvent, Escalation, Evacuation, PlanDetail, plansApi, PlanSummary, STREAM_URL, Vehicle } from "@/lib/api";
+import { ago, plate } from "@/lib/format";
 
 import { REFRESH_MS } from "./LiveStatus";
 import TeamPanel from "./TeamPanel";
@@ -20,7 +20,11 @@ const EVENT_ICONS: Record<string, string> = {
   node_started: "▶", node_finished: "■", tool_call: "⚙", tool_result: "⇣", decision: "✔", critic_rejection: "✖",
   approval_requested: "⏸", approval_decided: "👤", dispatch: "🚚", data_stale: "⚠", error: "⚠",
 };
-const TABS = ["Plans", "Activity", "Team"] as const;
+const TABS = ["Plans", "Evacuations", "Activity", "Team"] as const;
+const EVACUATION_STAGES: Record<Evacuation["stage"], { text: string; tone: string }> = {
+  waiting: { text: "Waiting for a truck", tone: "orange" }, on_the_way: { text: "Truck on the way", tone: "blue" },
+  on_board: { text: "People on board", tone: "blue" }, safe: { text: "Reached safety", tone: "green" }, failed: { text: "Needs a person", tone: "red" },
+};
 
 /** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
 function escalationLines(escalations: Escalation[]): string[] {
@@ -46,14 +50,16 @@ function escalationLines(escalations: Escalation[]): string[] {
 interface Props {
   selectedPlanId: string | null;
   account: Account;
+  vehicles: Vehicle[];
   onSelectPlan: (plan: PlanDetail | null) => void;
   onVehicle: (v: Vehicle) => void;
   onHazardChange: () => void;
 }
 
-export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehicle, onHazardChange }: Props) {
+export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPlan, onVehicle, onHazardChange }: Props) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Plans");
   const [plans, setPlans] = useState<PlanSummary[]>([]);
+  const [evacuations, setEvacuations] = useState<Evacuation[]>([]);
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [live, setLive] = useState<"connecting" | "live" | "reconnecting">("connecting");
@@ -70,6 +76,7 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
   const refreshPlans = useCallback(async () => {
     try {
       setPlans(await plansApi.list());
+      setEvacuations(await plansApi.evacuations());
       if (selected.current) {
         const d = await plansApi.get(selected.current);
         setDetail(d);
@@ -158,7 +165,20 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
     }
   }
 
+  async function planAgain() {
+    if (!detail) return;
+    try {
+      const fresh = await plansApi.planAgain(detail.hazard_ids, account.name);
+      setMsg("Planning again. It starts in a moment.");
+      await refreshPlans();
+      await select(fresh.id);
+    } catch (err) {
+      setMsg((err as Error).message);
+    }
+  }
+
   const awaiting = plans.filter((p) => p.status === "awaiting_approval").length;
+  const evacuating = evacuations.filter((e) => e.stage === "waiting" || e.stage === "on_the_way" || e.stage === "on_board").length;
   const shown = selectedPlanId ? events.filter((e) => e.plan_id === selectedPlanId) : events;
   return (
     <aside className="pane right">
@@ -166,6 +186,7 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
         {TABS.map((t) => (
           <button key={t} className={tab === t ? "tab active" : "tab"} onClick={() => setTab(t)}>
             {t}{t === "Plans" && awaiting > 0 && <span className="count">{awaiting}</span>}
+            {t === "Evacuations" && evacuating > 0 && <span className="count">{evacuating}</span>}
           </button>
         ))}
       </nav>
@@ -184,6 +205,7 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
                     <span className={`status ${STATUS_TONES[p.status] ?? "grey"}`}>{p.status.replace("_", " ")}</span>
                     {p.is_drill && <span className="badge drill">DRILL</span>}
                     {p.parent_plan_id && <span className="badge replan">REROUTE</span>}
+                    {p.evacuation && <span className="badge evacuation">EVACUATION</span>}
                     <span className="small muted plan-time">{ago(p.created_at)}</span>
                   </button>
                 </li>
@@ -195,21 +217,36 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
                 {detail.summary && <p>{detail.summary}</p>}
                 {detail.triage && <p className="small"><b>Priority {detail.triage.priority}</b>, {detail.triage.planning_horizon_hours} h horizon. {detail.triage.rationale}</p>}
                 {detail.unreachable_reason && <div className="alert danger small">{detail.unreachable_reason}</div>}
+                {(detail.status === "failed" || detail.status === "unreachable") && !detail.parent_plan_id && (
+                  <button onClick={planAgain}>Plan again</button>
+                )}
                 {detail.escalations.length > 0 && (
                   <div className="alert warn small">
                     <b>Needs a person</b>
                     <ul>{escalationLines(detail.escalations).map((line) => <li key={line}>{line}</li>)}</ul>
                   </div>
                 )}
-                {detail.routes.map((r) => (
-                  <div className="route-card" key={r.id}>
-                    <b>{(r.distance_m / 1000).toFixed(0)} km</b> · {(r.duration_s / 3600).toFixed(1)} h · {(r.load_kg / 1000).toFixed(1)} t
-                    <div className="progress" aria-label={`${r.completed_stops} of ${r.stops.length} stops`}>
-                      <span style={{ width: `${(100 * r.completed_stops) / r.stops.length}%` }} />
+                {detail.routes.map((r) => {
+                  const truck = vehicles.find((v) => v.id === r.vehicle_id);
+                  return (
+                    <div className="route-card" key={r.id}>
+                      {truck && (
+                        <div className="row-between">
+                          <span>
+                            <span className="truck-no">{truck.fleet_number}</span><b>{plate(truck.label)}</b>{truck.simulated && <span className="badge sim">SIMULATED</span>}
+                            {truck.driver_name && <small className="block muted">{truck.driver_name}</small>}
+                          </span>
+                          <a className="link" href={`/driver-view?vehicle=${truck.id}`} target="_blank" rel="noreferrer">Driver screen</a>
+                        </div>
+                      )}
+                      <b>{(r.distance_m / 1000).toFixed(0)} km</b> · {(r.duration_s / 3600).toFixed(1)} h{r.kind === "evacuation" ? " · evacuation" : ` · ${(r.load_kg / 1000).toFixed(1)} t`}
+                      <div className="progress" aria-label={`${r.completed_stops} of ${r.stops.length} stops`}>
+                        <span style={{ width: `${(100 * r.completed_stops) / r.stops.length}%` }} />
+                      </div>
+                      <small className="muted">{r.completed_stops}/{r.stops.length} stops · {r.status} · keeps {r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m from hazards</small>
                     </div>
-                    <small className="muted">{r.completed_stops}/{r.stops.length} stops · {r.status} · keeps {r.min_hazard_clearance_m?.toFixed(0) ?? "?"} m from hazards</small>
-                  </div>
-                ))}
+                  );
+                })}
                 {detail.critic.length > 0 && (
                   <p className="small muted">Safety check: {detail.critic.map((c) => `attempt ${c.attempt} ${c.passed ? "passed" : `rejected (${c.violations.length} problems)`}`).join(", ")}</p>
                 )}
@@ -229,6 +266,40 @@ export default function OpsPanel({ selectedPlanId, account, onSelectPlan, onVehi
                 )}
               </section>
             )}
+          </>
+        )}
+
+        {tab === "Evacuations" && (
+          <>
+            <p className="small muted">People collected just outside a zone and taken to a safe point. Click a drill or alert on the map to request one.</p>
+            <ul className="list">
+              {evacuations.map((e) => {
+                const truck = vehicles.find((v) => v.id === e.vehicle_id);
+                return (
+                  <li key={e.id}>
+                    <span className={`status ${EVACUATION_STAGES[e.stage].tone}`}>{EVACUATION_STAGES[e.stage].text}</span>
+                    {e.is_drill && <span className="badge drill">DRILL</span>}
+                    {e.simulated && <span className="badge sim">SIMULATED</span>}
+                    <b className="block">{e.people} people from {e.settlement}</b>
+                    <small className="block muted">{e.zone.slice(0, 70)}</small>
+                    {e.pickup_name && <small className="block">{e.pickup_name} → {e.safe_name}</small>}
+                    {e.zones_avoided !== null && (
+                      <small className="block muted">
+                        Way out avoids {e.zones_avoided} active zone{e.zones_avoided === 1 ? "" : "s"}{e.zones_crossed ? `, crosses ${e.zones_crossed} with no way round` : ""}
+                      </small>
+                    )}
+                    {e.failure && <div className="alert danger small">{e.failure}</div>}
+                    {truck && (
+                      <div className="row">
+                        <span className="small"><span className="truck-no">{truck.fleet_number}</span>{truck.driver_name ?? plate(truck.label)}</span>
+                        <a className="link" href={`/driver-view?vehicle=${truck.id}`} target="_blank" rel="noreferrer">Driver screen</a>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+              {evacuations.length === 0 && <li className="empty">No evacuations yet. In presentation mode one is requested every 10 to 15 minutes while a zone is active.</li>}
+            </ul>
           </>
         )}
 

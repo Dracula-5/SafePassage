@@ -125,6 +125,7 @@ test("an address is confirmed, and a forgotten password reset, by email", async 
 
 test("a drill goes from the map to the driver's phone", async ({ browser }) => {
   test.skip(!process.env.E2E_ROUTING, "needs the road map: set E2E_ROUTING=1");
+  test.skip(Boolean(process.env.E2E_DEMO), "this truck must be the only one: a simulated fleet can win the route");
   test.setTimeout(420_000);
 
   const phone = await person(browser, true);

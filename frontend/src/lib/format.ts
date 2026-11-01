@@ -9,6 +9,11 @@ export function ago(iso: string | Date | null): string {
   return `${Math.round(s / 86400)} days ago`;
 }
 
+/** A simulated truck's number plate. The screens show a SIMULATED badge beside it instead of the long label. */
+export function plate(label: string): string {
+  return label.replace(/^TEST-SIM-GPS\s+/, "");
+}
+
 export function tonnes(kg: number): string {
   return kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${Math.round(kg)} kg`;
 }

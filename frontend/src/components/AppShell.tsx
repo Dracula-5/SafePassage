@@ -40,7 +40,13 @@ export default function AppShell({ account, title, status, children }: {
     <div className="shell">
       <header className="topbar">
         <Link href="/" className="brand"><Logo /><span>ReliefRoute</span></Link>
-        <span className="topbar-title">{title}</span>
+        {account.role === "operator" ? (
+          <nav className="topnav" aria-label="Screens">
+            {[["Operations", "/dashboard"], ["Directory", "/directory"]].map(([name, href]) => (
+              <Link key={name} href={href} aria-current={title === name ? "page" : undefined}>{name}</Link>
+            ))}
+          </nav>
+        ) : <span className="topbar-title">{title}</span>}
         <span className="spacer" />
         {status}
         <div className="account">
