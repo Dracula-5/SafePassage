@@ -48,6 +48,30 @@ function escalationLines(escalations: Escalation[]): string[] {
   return [...others, ...grouped];
 }
 
+/** No next wave follows a rejected plan, an alert that ended, or the last wave allowed. A wave that failed tries again. */
+function moreWillGo(plan: PlanDetail): boolean {
+  const retrying = plan.next_wave && plan.status === "failed";
+  return plan.waves_left > 0 && (retrying || ["awaiting_approval", "approved", "dispatched"].includes(plan.status));
+}
+
+/** The rules send what is short in the next wave. Goods on a lost truck are the one thing a person must fetch. */
+function sentByRules(e: Escalation): boolean {
+  return "quantity_short" in e && !e.reason.startsWith("still on the");
+}
+
+function Gaps({ title, tone, note, escalations }: { title: string; tone: string; note?: string; escalations: Escalation[] }) {
+  const lines = escalationLines(escalations);
+  if (lines.length === 0) return null;
+  return (
+    <div className={`alert ${tone} small`}>
+      <b>{title}</b>
+      {note && <div>{note}</div>}
+      <ul>{lines.slice(0, MAX_LINES).map((line) => <li key={line}>{line}</li>)}</ul>
+      {lines.length > MAX_LINES && <small>and {lines.length - MAX_LINES} more</small>}
+    </div>
+  );
+}
+
 interface Props {
   selectedPlanId: string | null;
   account: Account;
@@ -208,6 +232,7 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
                     <span className={`status ${STATUS_TONES[p.status] ?? "grey"}`}>{p.status.replace("_", " ")}</span>
                     {p.is_drill && <span className="badge drill">DRILL</span>}
                     {p.parent_plan_id && <span className="badge replan">REROUTE</span>}
+                    {p.next_wave && <span className="badge replan">NEXT WAVE</span>}
                     {p.evacuation && <span className="badge evacuation">EVACUATION</span>}
                     <span className="small muted plan-time">{ago(p.created_at)}</span>
                   </button>
@@ -226,13 +251,11 @@ export default function OpsPanel({ selectedPlanId, account, vehicles, onSelectPl
                 {(detail.status === "failed" || detail.status === "unreachable") && !detail.parent_plan_id && (
                   <button onClick={planAgain}>Plan again</button>
                 )}
-                {detail.escalations.length > 0 && (
-                  <div className="alert warn small">
-                    <b>Needs a person</b>
-                    <ul>{escalationLines(detail.escalations).slice(0, MAX_LINES).map((line) => <li key={line}>{line}</li>)}</ul>
-                    {escalationLines(detail.escalations).length > MAX_LINES && <small>and {escalationLines(detail.escalations).length - MAX_LINES} more</small>}
-                  </div>
+                {moreWillGo(detail) && (
+                  <Gaps title="Still to send" tone="ok" escalations={detail.escalations.filter(sentByRules)}
+                    note={detail.status === "failed" ? "The rules try again in a few minutes." : "The rules send the next wave when these trucks finish."} />
                 )}
+                <Gaps title="Needs a person" tone="warn" escalations={moreWillGo(detail) ? detail.escalations.filter((e) => !sentByRules(e)) : detail.escalations} />
                 {detail.routes.slice(0, allRoutes ? undefined : MAX_LINES).map((r) => {
                   const truck = vehicles.find((v) => v.id === r.vehicle_id);
                   return (

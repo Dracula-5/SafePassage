@@ -238,14 +238,18 @@ test("a supplier watches their order go from a drill to delivered", async ({ bro
   expect(drill.status()).toBe(201);
   const hazard = (await drill.json()).id as string;
 
+  // The rules send a clear plan, and an unclear one waits here: which it is depends on the alerts of the day.
   let planId = "";
+  let status = "";
   await expect.poll(async () => {
-    const plans: { id: string; status: string; hazard_ids: string[] }[] = await (await officer.request.get("/api/plans")).json();
-    planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.status === "awaiting_approval")?.id ?? "";
-    return planId;
-  }, { timeout: 240_000 }).not.toBe("");
+    const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await officer.request.get("/api/plans")).json();
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
+    planId = plan?.id ?? "";
+    status = plan?.status ?? "";
+    return ["awaiting_approval", "dispatched"].includes(status);
+  }, { timeout: 240_000 }).toBe(true);
   await officer.locator(`[data-plan="${planId}"]`).click();
-  await officer.getByRole("button", { name: "Approve dispatch" }).click();
+  if (status === "awaiting_approval") await officer.getByRole("button", { name: "Approve dispatch" }).click();
   const card = officer.locator(".route-card").first();  // routes are only written when a plan is dispatched
   await expect(card.locator(".badge.sim")).toBeVisible({ timeout: 60_000 });
   await expect(card.getByRole("link", { name: "Driver screen" })).toBeVisible();
@@ -321,12 +325,15 @@ test("a signed-in driver with simulated GPS gets a route ahead of the simulated 
   const hazard = (await drill.json()).id as string;
 
   let planId = "";
+  let status = "";
   await expect.poll(async () => {
     const plans: { id: string; status: string; trigger_kind: string; hazard_ids: string[] }[] = await (await driver.request.get("/api/plans", { headers })).json();
-    planId = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill" && p.status === "awaiting_approval")?.id ?? "";
-    return planId;
-  }, { timeout: 240_000 }).not.toBe("");
-  await driver.request.post(`/api/plans/${planId}/approve`, { headers, data: { decision: "approved", decided_by: "E2E" } });
+    const plan = plans.find((p) => p.hazard_ids.includes(hazard) && p.trigger_kind === "drill");
+    planId = plan?.id ?? "";
+    status = plan?.status ?? "";
+    return ["awaiting_approval", "dispatched"].includes(status);
+  }, { timeout: 240_000 }).toBe(true);
+  if (status === "awaiting_approval") await driver.request.post(`/api/plans/${planId}/approve`, { headers, data: { decision: "approved", decided_by: "E2E" } });
   await expect(driver.getByText("Next stop")).toBeVisible({ timeout: 120_000 });
   await expect(driver.getByText("DRILL. This is not a real dispatch.")).toBeVisible();
 

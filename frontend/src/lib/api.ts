@@ -202,6 +202,7 @@ export interface PlanSummary {
   requires_approval: boolean;
   summary: string | null;
   evacuation: boolean;
+  next_wave: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -258,6 +259,7 @@ export interface PlanDetail extends PlanSummary {
   unreachable_reason: string | null;
   escalations: Escalation[];
   needs_person: string[];
+  waves_left: number;
   triage: { priority: string; planning_horizon_hours: number; rationale: string; key_risks: string[] } | null;
 }
 
