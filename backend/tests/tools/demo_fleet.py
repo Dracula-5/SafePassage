@@ -403,7 +403,9 @@ async def wait_for_places(fleet: Fleet) -> None:
 async def main() -> None:
     speed = float(os.environ.get("DEMO_SPEED_MPS") or DEFAULT_SPEED_MPS)
     headers = {"X-Operator-Token": os.environ["OPERATOR_TOKEN"]}
-    async with httpx.AsyncClient(base_url=os.environ.get("API_URL", "http://api:8000"), headers=headers, timeout=20) as http:
+    api = os.environ.get("API_URL", "http://api:8000")
+    base_url = api if "://" in api else f"http://{api}"  # Render hands over a private address as host:port
+    async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=20) as http:
         fleet = Fleet(http, speed)
         await wait_for_places(fleet)
         while True:

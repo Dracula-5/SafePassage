@@ -47,7 +47,7 @@ services:
     preDeployCommand: python -m app.core.migrate
     healthCheckPath: /health
     buildFilter:
-      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile]
+      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile, infra/deploy/backend.Dockerfile.dockerignore, infra/valhalla/build.sh, infra/osm/extract_facilities.sh, infra/osm/extract_places_admin.sh]
     envVars:
       - fromGroup: reliefroute-shared
       - key: DATABASE_URL
@@ -74,7 +74,7 @@ services:
     dockerfilePath: ./infra/deploy/backend.Dockerfile
     dockerCommand: sh -c "python -m app.core.migrate && exec python -m app.graph.worker"
     buildFilter:
-      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile]
+      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile, infra/deploy/backend.Dockerfile.dockerignore, infra/valhalla/build.sh, infra/osm/extract_facilities.sh, infra/osm/extract_places_admin.sh]
     envVars:
       - fromGroup: reliefroute-shared
       - key: DATABASE_URL
@@ -98,7 +98,7 @@ services:
     dockerfilePath: ./infra/deploy/backend.Dockerfile
     dockerCommand: sh -c "python -m app.core.migrate && exec python -m app.ingestion.worker"
     buildFilter:
-      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile, infra/osm/data/**]
+      paths: [backend/app/**, backend/migrations/**, backend/requirements/**, contracts/**, infra/deploy/backend.Dockerfile, infra/deploy/backend.Dockerfile.dockerignore, infra/valhalla/build.sh, infra/osm/extract_facilities.sh, infra/osm/extract_places_admin.sh]
     envVars:
       - fromGroup: reliefroute-shared
       - key: DATABASE_URL
@@ -124,7 +124,7 @@ services:
     dockerContext: .
     dockerfilePath: ./infra/deploy/demo.Dockerfile
     buildFilter:
-      paths: [backend/tests/tools/**, infra/deploy/demo.Dockerfile]
+      paths: [backend/requirements/constraints.txt, backend/tests/__init__.py, backend/tests/tools/**, infra/deploy/demo.Dockerfile, infra/deploy/demo.Dockerfile.dockerignore]
     envVars:
       - fromGroup: reliefroute-shared
       - key: API_URL
@@ -139,7 +139,7 @@ services:
     dockerContext: .
     dockerfilePath: ./infra/deploy/valhalla.Dockerfile
     buildFilter:
-      paths: [infra/deploy/valhalla.Dockerfile]
+      paths: [infra/deploy/valhalla.Dockerfile, infra/deploy/valhalla.Dockerfile.dockerignore, infra/valhalla/build.sh]
 
   # noeviction: streams hold undelivered events, so a full Redis must refuse writes rather than drop them.
   - type: keyvalue

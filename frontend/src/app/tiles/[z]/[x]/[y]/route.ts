@@ -20,7 +20,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ z: string;
     try {
       const tile = await fetch(source(z, x, y), { headers: { "User-Agent": AGENT }, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (tile.ok) {
-        return new Response(await tile.arrayBuffer(), { headers: { "Content-Type": "image/png", "Cache-Control": `public, max-age=${ONE_DAY_S}` } });
+        // s-maxage: a CDN may keep it too, so each tile runs this once a day and not once per visitor.
+        return new Response(await tile.arrayBuffer(), { headers: { "Content-Type": "image/png", "Cache-Control": `public, max-age=${ONE_DAY_S}, s-maxage=${ONE_DAY_S}` } });
       }
     } catch {
       // Too slow or unreachable: the next map may answer.
