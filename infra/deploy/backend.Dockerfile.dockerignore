@@ -1,7 +1,18 @@
 # BuildKit reads <Dockerfile>.dockerignore; the image only needs the paths the Dockerfile copies.
 **
 !contracts
+!contracts/**
+!backend
 !backend/requirements
+!backend/requirements/**
 !backend/app
+!backend/app/**
 !backend/migrations
+!backend/migrations/**
+!infra
+!infra/osm
+!infra/osm/extract_facilities.sh
+!infra/osm/extract_places_admin.sh
+!infra/valhalla
+!infra/valhalla/build.sh
 **/__pycache__

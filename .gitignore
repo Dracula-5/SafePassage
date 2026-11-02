@@ -13,6 +13,7 @@ __pycache__/
 # node
 node_modules/
 .next/
+.netlify/
 dist/
 # os / editors
 .DS_Store
@@ -20,4 +21,5 @@ dist/
 .vscode/
 # local data
 infra/valhalla_tiles/
+infra/osm/data/
 *.pbf

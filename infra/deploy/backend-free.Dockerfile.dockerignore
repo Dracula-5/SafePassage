@@ -1,0 +1,10 @@
+**
+!contracts
+!contracts/**
+!backend
+!backend/requirements
+!backend/requirements/**
+!backend/app
+!backend/app/**
+!backend/migrations
+!backend/migrations/**

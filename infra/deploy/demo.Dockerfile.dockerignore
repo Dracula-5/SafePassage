@@ -1,0 +1,10 @@
+**
+!backend
+!backend/requirements
+!backend/requirements/constraints.txt
+!backend/tests
+!backend/tests/__init__.py
+!backend/tests/tools
+!backend/tests/tools/**
+**/__pycache__
+*.py[cod]

@@ -125,3 +125,7 @@ It keeps its own database and its own secrets and keys in `infra\deploy\local.en
 ## Hosting the web app on Vercel instead
 
 Not needed, but possible. Set the project's root directory to `frontend`, and set `API_ORIGIN` to the API's address and `NEXT_PUBLIC_REGION_BBOX` to the region. Next then forwards API calls, so sign-in cookies keep working.
+
+For a temporary, limited Render free-tier demo with the frontend on Vercel, see [deploy-render-free.md](deploy-render-free.md). The full Render deployment is separate and uses paid services.
+
+For the full hosted split deployment with the frontend on Netlify and backend on Render, see [deploy-render-netlify.md](deploy-render-netlify.md).

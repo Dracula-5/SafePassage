@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .config import CommonSettings
 
@@ -49,6 +49,12 @@ class BrainSettings(CommonSettings):
     # A drill tells real suppliers to prepare goods unless it stays silent. Off, even with Twilio set.
     drill_send_messages: bool = False
     max_replans_per_hour: int = 6            # per vehicle, for off-route and stalled only
+
+    @field_validator("valhalla_url")
+    @classmethod
+    def _with_scheme(cls, url: str) -> str:
+        """Render hands over a private service's address as host:port."""
+        return url if "://" in url else f"http://{url}"
 
 
 @lru_cache
