@@ -4,7 +4,7 @@ Local stack: `docker compose up -d` starts PostGIS and Redis; `--profile routing
 
 | Service | Host port | Notes |
 |---|---|---|
-| PostGIS 16 / 3.4 | 55432 | 5432/5433 are often taken by a host Postgres |
+| PostGIS 16 / 3.4 | 55432 | 5432/5433 are often taken by a host Postgres. Set `DB_HOST_PORT` in a root `.env` if Windows has reserved 55432 |
 | Redis 7 | 6380 | append-only persistence |
 | Valhalla 3.9 | 8002 | tiles in `$DATA_DIR/valhalla` (default `~/reliefroute-data/valhalla`) |
 

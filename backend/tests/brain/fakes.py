@@ -28,6 +28,7 @@ class SchemaAwareBackend:
 
     def __init__(self, malformed_first: bool = False):
         self.malformed_first = malformed_first
+        self.review = True  # what the Sentinel recommends
         self.calls: list[str] = []
 
     async def complete(self, system: str, turns: list[tuple[str, str]]) -> str:
@@ -39,7 +40,7 @@ class SchemaAwareBackend:
             self.calls.append("sentinel")
             return json.dumps({"priority": "high", "planning_horizon_hours": 24,
                                "rationale": "Severe flood drill near populated settlements; plan one day of water and food.",
-                               "key_risks": ["drill hazard"], "recommend_human_review": True})
+                               "key_risks": ["drill hazard"], "recommend_human_review": self.review})
         if "duty officer" in system:
             self.calls.append("brief")
             return json.dumps({"summary": "Deliver water and rice from the registered supplier to relief points.",

@@ -58,3 +58,9 @@ Live: the SACHET fallback ingested 13 real alerts (`sachet_area_fallback` log li
 2. WhatsApp check-in is untested live (no Twilio).
 3. Overpass was still down; facilities come from the OSM extract fallback, shown as amber in the UI.
 4. The PWA's Telugu voice depends on the phone having a te-IN voice installed.
+
+## Addendum, 2026-10-31: Driver PWA through a real dispatch
+
+The real Driver PWA, in real Chrome with an emulated location, registered through its form, uploaded a fix, received a dispatched route and showed it with stop deadlines and the voice button, with no JavaScript errors. Evidence in `B-G3.md`.
+
+Still open: a real phone inside Andhra Pradesh, and Telugu voice.

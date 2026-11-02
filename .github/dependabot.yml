@@ -1,0 +1,15 @@
+# Opens a pull request when a dependency has an update. Nothing merges by itself, and CI runs on each.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend/requirements
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /infra/deploy
+    schedule: { interval: weekly }

@@ -93,7 +93,7 @@ def parse_overpass(payload: dict) -> list[NormalizedFacility]:
 def parse_extract(path: Path) -> list[NormalizedFacility]:
     """GeoJSON sequence from `osmium export --add-unique-id=type_id` (feature ids like 'n123', 'w45')."""
     out = []
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         for line in fh:
             feature = json.loads(line.lstrip("\x1e"))
             fid = str(feature.get("id", ""))

@@ -1,10 +1,13 @@
-"""Reads of B-owned data, through contract views only (v_active_hazards, v_places,
+"""Reads of B-owned data, through contract views only (v_active_hazards, v_places, v_admin_areas,
 v_facilities, v_available_stock, v_suppliers, v_vehicle_status)."""
 
 from __future__ import annotations
 
 import asyncpg
 from shapely import MultiPolygon, from_wkb
+
+from app.core.config import SIMULATED_LABEL
+from app.routing.repository import ROAD_BLOCKING_SEVERITIES, ROAD_BLOCKING_TYPES, WIDE_WARNING_KM2
 
 from .schemas import HazardFact, PopulationEstimate, ReliefPoint
 
@@ -30,34 +33,70 @@ async def hazard_union(conn: Conn, hazard_ids: list[str]) -> MultiPolygon | None
 
 
 async def population_in(conn: Conn, hazard_ids: list[str]) -> PopulationEstimate:
+    """Census figures of settlements in the zone, without counting a whole city for a partial hit.
+
+    A city or town has one figure at its centre point, so it is scaled by the share of its mandal
+    (OSM admin_level 6) inside the zone, assuming even density across the mandal. Suburbs are
+    skipped when their mandal's city is already counted: its figure includes them.
+    """
     row = await conn.fetchrow(
-        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
-           SELECT count(*) AS total, count(p.population) AS with_pop, COALESCE(sum(p.population), 0) AS pop,
-                  array_remove(array_agg(DISTINCT p.population_source), NULL) AS sources
-           FROM v_places p, zone WHERE ST_Intersects(p.geom, zone.g)""",
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[])),
+           inside AS (
+               SELECT p.place_type, p.population, p.population_source, m.mandal_id, m.share
+               FROM v_places p CROSS JOIN zone
+               LEFT JOIN LATERAL (
+                   SELECT a.id AS mandal_id,
+                          ST_Area(ST_CollectionExtract(ST_Intersection(ST_MakeValid(a.geom), zone.g), 3)::geography)
+                              / NULLIF(ST_Area(a.geom::geography), 0) AS share
+                   FROM v_admin_areas a
+                   WHERE a.admin_level = 6 AND ST_Contains(a.geom, p.geom)
+                   ORDER BY ST_Area(a.geom) LIMIT 1
+               ) m ON p.place_type IN ('city', 'town', 'suburb', 'neighbourhood')
+               WHERE ST_Intersects(p.geom, zone.g)
+           ),
+           city_mandals AS (
+               SELECT DISTINCT mandal_id FROM inside
+               WHERE place_type IN ('city', 'town') AND population IS NOT NULL AND mandal_id IS NOT NULL
+           )
+           SELECT count(*) AS total, count(population) AS with_pop, COALESCE(sum(population), 0) AS unscaled,
+                  round(COALESCE(sum(CASE
+                      WHEN place_type IN ('city', 'town') THEN population * COALESCE(share, 1)
+                      WHEN place_type IN ('suburb', 'neighbourhood')
+                           AND mandal_id IN (SELECT mandal_id FROM city_mandals) THEN 0
+                      ELSE population END), 0))::bigint AS pop,
+                  count(*) FILTER (WHERE place_type IN ('city', 'town') AND population IS NOT NULL
+                                     AND share < 1) AS scaled,
+                  array_remove(array_agg(DISTINCT population_source), NULL) AS sources
+           FROM inside""",
         hazard_ids,
     )
-    return PopulationEstimate(population_lower_bound=row["pop"], places_with_population=row["with_pop"],
-                              places_total=row["total"], sources=sorted(row["sources"] or []))  # fmt: skip
+    return PopulationEstimate(population_lower_bound=row["pop"], population_unscaled=row["unscaled"],
+                              places_with_population=row["with_pop"], places_total=row["total"],
+                              places_scaled=row["scaled"], sources=sorted(row["sources"] or []))  # fmt: skip
 
 
-async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int) -> list[ReliefPoint]:
+async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limit: int,
+                        min_distance_m: float = 0) -> list[ReliefPoint]:
     """Shelters/schools/hospitals OUTSIDE the hazard but within radius_m of it, nearest first.
 
-    Relief goes to safe sites next to the affected area; sites inside the hazard are excluded.
+    Relief goes to safe sites next to the affected area. Sites inside the hazard, or inside any
+    other hazard that closes roads, are excluded, and so are sites closer than min_distance_m: the
+    router keeps away from hazards by a margin, so it could never reach them.
     """
     rows = await conn.fetch(
-        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards)  -- all active hazards: never deliver into one
+        """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards
+                         WHERE is_drill OR ((id = ANY($1::uuid[]) OR (hazard_type::text = ANY($4) AND severity::text = ANY($5)))
+                                            AND ST_Area(geom::geography) / 1e6 <= $7))
            , target AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
            SELECT f.id::text AS facility_id, f.name, f.kind::text AS kind, ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
                   ST_Distance(f.geom::geography, target.g::geography) AS distance_to_hazard_m
            FROM v_facilities f, zone, target
            WHERE f.kind IN ('shelter', 'school', 'hospital')
              AND ST_DWithin(f.geom::geography, target.g::geography, $2)
-             AND NOT ST_Intersects(f.geom, zone.g)
+             AND (zone.g IS NULL OR NOT ST_DWithin(f.geom::geography, zone.g::geography, $6))
            ORDER BY (f.kind = 'shelter') DESC, distance_to_hazard_m
            LIMIT $3""",
-        hazard_ids, radius_m, limit,
+        hazard_ids, radius_m, limit, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES, min_distance_m, WIDE_WARNING_KM2,
     )  # fmt: skip
     return [ReliefPoint(**dict(r), share=0) for r in rows]
 
@@ -72,14 +111,21 @@ async def available_stock(conn: Conn, item_codes: list[str]) -> list[asyncpg.Rec
     )
 
 
-async def usable_vehicles(conn: Conn) -> list[asyncpg.Record]:
-    """Online vehicles with a known position that are not already on an active assignment."""
+async def usable_vehicles(conn: Conn, hazard_ids: list[str] | None = None) -> list[asyncpg.Record]:
+    """Online vehicles with a known position that are not already on an active assignment. `simulated`
+    means nobody real is behind it: a person presenting with simulated GPS still counts as a person.
+    `requested` means its driver accepted a duty officer's request to go to one of these hazards."""
     return await conn.fetch(
         """SELECT v.id::text, v.label, v.capacity_kg, v.driver_language, v.driver_phone,
-                  ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat, v.last_seen_at
+                  ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat, v.last_seen_at,
+                  v.label LIKE $1 || '%' AND NOT EXISTS (
+                      SELECT 1 FROM vehicles p WHERE p.id = v.id AND p.account_id IS NOT NULL) AS simulated,
+                  EXISTS (SELECT 1 FROM driver_requests q WHERE q.vehicle_id = v.id AND q.status = 'accepted'
+                            AND q.hazard_id = ANY($2::uuid[])) AS requested
            FROM v_vehicle_status v
            WHERE NOT v.is_offline AND v.last_position IS NOT NULL AND v.status <> 'maintenance'
-             AND NOT EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v.id)"""
+             AND NOT EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v.id)""",
+        SIMULATED_LABEL, hazard_ids,
     )
 
 

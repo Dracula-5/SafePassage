@@ -18,6 +18,10 @@ def _next_or_finish(nxt: str):
     return lambda state: "finish" if state.get("outcome") else nxt
 
 
+def _entry(state: PlanState) -> str:
+    return "replan_seed" if state.get("replan_route_id") else "sentinel"
+
+
 def _after_critic(state: PlanState) -> str:
     if state.get("outcome"):
         return "finish"
@@ -29,14 +33,16 @@ def build_graph(deps: Deps):
     g = StateGraph(PlanState)
     for name, fn in nodes.items():
         g.add_node(name, fn)
-    g.add_edge(START, "sentinel")
+    g.add_conditional_edges(START, _entry, ["sentinel", "replan_seed"])
+    g.add_conditional_edges("replan_seed", _next_or_finish("route_planner"), ["route_planner", "finish"])
     g.add_conditional_edges("sentinel", _next_or_finish("needs"), ["needs", "finish"])
     g.add_conditional_edges("needs", _next_or_finish("procurement"), ["procurement", "finish"])
     g.add_conditional_edges("procurement", _next_or_finish("route_planner"), ["route_planner", "finish"])
     g.add_conditional_edges("route_planner", _next_or_finish("critic"), ["critic", "finish"])
     g.add_conditional_edges("critic", _after_critic, ["brief", "route_planner", "finish"])
     g.add_edge("brief", "approval_gate")
-    g.add_conditional_edges("approval_gate", _next_or_finish("dispatcher"), ["dispatcher", "finish"])
+    g.add_conditional_edges("approval_gate", _next_or_finish("revalidate"), ["revalidate", "finish"])
+    g.add_conditional_edges("revalidate", _next_or_finish("dispatcher"), ["dispatcher", "finish"])
     g.add_edge("dispatcher", "finish")
     g.add_edge("finish", END)
     return g
@@ -58,9 +64,23 @@ class PlanRunner:
                             "started_at": datetime.now(UTC).isoformat()}  # fmt: skip
         return await self.graph.ainvoke(state, self.config(thread_id))
 
+    async def start_replan(self, plan_id: str, thread_id: str, hazard_ids: list[str], parent_plan_id: str,
+                           route_id: str) -> dict:
+        state: PlanState = {"plan_id": plan_id, "thread_id": thread_id, "hazard_ids": hazard_ids,
+                            "parent_plan_id": parent_plan_id, "replan_route_id": route_id,
+                            "started_at": datetime.now(UTC).isoformat()}  # fmt: skip
+        return await self.graph.ainvoke(state, self.config(thread_id))
+
     async def resume(self, thread_id: str, decision: dict) -> dict | None:
         """Resume a plan paused at the approval gate. Returns None if it is not paused there."""
         snapshot = await self.graph.aget_state(self.config(thread_id))
-        if "approval_gate" not in snapshot.next:
-            return None
-        return await self.graph.ainvoke(Command(resume=decision), self.config(thread_id))
+        if "approval_gate" in snapshot.next:
+            return await self.graph.ainvoke(Command(resume=decision), self.config(thread_id))
+        if snapshot.next:  # a worker died after the approval, part way through dispatch
+            return await self.graph.ainvoke(None, self.config(thread_id))
+        return None
+
+    async def continue_after_crash(self, thread_id: str) -> dict | None:
+        """Pick a plan up at its last checkpoint. Finished nodes (and their LLM calls) do not re-run."""
+        snapshot = await self.graph.aget_state(self.config(thread_id))
+        return await self.graph.ainvoke(None, self.config(thread_id)) if snapshot.next else None

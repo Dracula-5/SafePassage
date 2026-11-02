@@ -6,6 +6,14 @@ import json
 from typing import Any
 
 import asyncpg
+from reliefroute_contracts.events import PlanApproved, PlanRequested
+from reliefroute_contracts.streams import PLAN_APPROVED, PLAN_REQUESTED
+
+from app.core import bus
+
+NEXT_WAVE = "next wave"  # who asked for a plan that graph/waves.py started
+NOTHING_LEFT = "nothing left to send"  # a wave that stops here is finished: there is nothing to try again
+REVALIDATION = "revalidation"  # who asked for a plan that replaces one gone stale
 
 
 def _json(value: Any) -> Any:
@@ -28,36 +36,108 @@ async def claim_for_planning(pool: asyncpg.Pool, plan_id: str) -> asyncpg.Record
     """pending -> planning, exactly once (duplicate plan.requested deliveries are no-ops)."""
     return await pool.fetchrow(
         """UPDATE plans SET status = 'planning', updated_at = now() WHERE id = $1 AND status = 'pending'
-           RETURNING id::text, thread_id, hazard_ids::text[], is_drill""",
+           RETURNING id::text, thread_id, hazard_ids::text[], is_drill, parent_plan_id::text, trigger_kind::text,
+                     trigger_ref""",
         plan_id,
     )
 
 
 async def create_plan(pool: asyncpg.Pool, *, trigger_kind: str, trigger_ref: str | None, hazard_ids: list[str],
-                      requested_by: str, idempotency_key: str | None) -> tuple[asyncpg.Record, bool]:
+                      requested_by: str, idempotency_key: str | None,
+                      parent_plan_id: str | None = None) -> tuple[asyncpg.Record, bool]:
     """Insert a pending plan. With an idempotency key already used, return the original plan (created=False)."""
     if idempotency_key:
         existing = await pool.fetchrow(PLAN_SUMMARY_SQL + " WHERE idempotency_key = $1", idempotency_key)
         if existing:
             return existing, False
     row = await pool.fetchrow(
-        """INSERT INTO plans (thread_id, trigger_kind, trigger_ref, hazard_ids, requested_by, idempotency_key, is_drill)
+        """INSERT INTO plans (thread_id, trigger_kind, trigger_ref, hazard_ids, requested_by, idempotency_key, is_drill,
+                              parent_plan_id)
            VALUES (gen_random_uuid()::text, $1, $2, $3::uuid[], $4, $5,
-                   EXISTS (SELECT 1 FROM v_active_hazards WHERE id = ANY($3::uuid[]) AND is_drill))
+                   EXISTS (SELECT 1 FROM v_active_hazards WHERE id = ANY($3::uuid[]) AND is_drill), $6)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING id""",
-        trigger_kind, trigger_ref, hazard_ids, requested_by, idempotency_key,
+        trigger_kind, trigger_ref, hazard_ids, requested_by, idempotency_key, parent_plan_id,
     )  # fmt: skip
     if row is None:  # lost a race on the same idempotency key
         return await pool.fetchrow(PLAN_SUMMARY_SQL + " WHERE idempotency_key = $1", idempotency_key), False
     return await pool.fetchrow(PLAN_SUMMARY_SQL + " WHERE id = $1", row["id"]), True
 
 
-PLAN_SUMMARY_SQL = """SELECT id, parent_plan_id, thread_id, status::text, trigger_kind::text, hazard_ids, is_drill,
-       requires_approval, summary, created_at, updated_at FROM plans"""
+async def request_plan(pool: asyncpg.Pool, *, trigger_kind: str, trigger_ref: str | None, hazard_ids: list[str],
+                       requested_by: str, idempotency_key: str | None,
+                       parent_plan_id: str | None = None) -> tuple[dict, bool]:
+    row, created = await create_plan(pool, trigger_kind=trigger_kind, trigger_ref=trigger_ref, hazard_ids=hazard_ids,
+                                     requested_by=requested_by, idempotency_key=idempotency_key,
+                                     parent_plan_id=parent_plan_id)  # fmt: skip
+    if created:
+        await bus.try_publish(PLAN_REQUESTED, PlanRequested(
+            plan_id=row["id"], trigger_kind=trigger_kind, trigger_ref=trigger_ref, hazard_ids=hazard_ids,
+            parent_plan_id=parent_plan_id, requested_by=requested_by), dedupe_key=str(row["id"]))  # fmt: skip
+    return summary_out(row), created
+
+
+async def ordered_so_far(pool: asyncpg.Pool, hazard_ids: list[str]) -> dict[tuple[str, str], float]:
+    """Per destination and item, what plans for these alerts have ordered. A cancelled order is not coming."""
+    rows = await pool.fetch(
+        """SELECT o.destination_facility_id::text AS destination, l.item_code::text AS item, sum(l.quantity) AS quantity
+           FROM orders o JOIN order_lines l ON l.order_id = o.id JOIN plans p ON p.id = o.plan_id
+           WHERE p.hazard_ids && $1::uuid[] AND o.status <> 'cancelled'
+           GROUP BY 1, 2""", hazard_ids)  # fmt: skip
+    return {(r["destination"], r["item"]): float(r["quantity"]) for r in rows}
+
+
+async def standing_triage(pool: asyncpg.Pool, plan_id: str) -> dict | None:
+    """A next wave serves the same alert, so the assessment already made stands: asking again spends the free
+    quota, and a busy LLM would stop the wave for nothing. None for any other plan, or if that was only a fallback."""
+    return await pool.fetchval(
+        """SELECT earlier.triage FROM plans wave JOIN plans earlier ON earlier.hazard_ids && wave.hazard_ids
+           WHERE wave.id = $1 AND wave.requested_by = $2 AND earlier.id <> wave.id AND earlier.triage IS NOT NULL
+             AND earlier.triage->>'rationale' NOT LIKE 'RULE-BASED%'
+           ORDER BY earlier.created_at DESC LIMIT 1""", plan_id, NEXT_WAVE)  # fmt: skip
+
+
+async def fresh_plans_lately(pool: asyncpg.Pool, hazard_ids: list[str]) -> int:
+    """Plans made in the last hour because an earlier one went stale before it could leave."""
+    return await pool.fetchval(
+        """SELECT count(*) FROM plans WHERE requested_by = $1 AND hazard_ids && $2::uuid[]
+           AND created_at > now() - interval '1 hour'""", REVALIDATION, hazard_ids)  # fmt: skip
+
+
+async def abandoned_thread(pool: asyncpg.Pool, plan_id: str, idle_s: float) -> str | None:
+    """Thread of a plan left mid-run by a worker that died: claimed, but no progress for a while."""
+    return await pool.fetchval(
+        """SELECT thread_id FROM plans WHERE id = $1 AND status = 'planning'
+             AND updated_at < now() - make_interval(secs => $2)""", plan_id, idle_s)  # fmt: skip
+
+
+async def requeue_stuck_plans(pool: asyncpg.Pool, idle_s: float) -> int:
+    """Re-publish events lost while Redis was down. Their handlers are idempotent, so a plan that
+    is merely slow is unaffected."""
+    pending = await pool.fetch(
+        """SELECT id, trigger_kind::text, trigger_ref, hazard_ids, parent_plan_id, requested_by FROM plans
+           WHERE status = 'pending' AND updated_at < now() - make_interval(secs => $1)""", idle_s)  # fmt: skip
+    approved = await pool.fetch(
+        """SELECT a.id AS approval_id, a.plan_id, a.decided_by, a.decided_at FROM approvals a JOIN plans p ON p.id = a.plan_id
+           WHERE p.status = 'approved' AND a.decision = 'approved' AND p.updated_at < now() - make_interval(secs => $1)""",
+        idle_s)  # fmt: skip
+    for r in pending:
+        await bus.publish(PLAN_REQUESTED, PlanRequested(
+            plan_id=r["id"], trigger_kind=r["trigger_kind"], trigger_ref=r["trigger_ref"], hazard_ids=r["hazard_ids"],
+            parent_plan_id=r["parent_plan_id"], requested_by=r["requested_by"]), dedupe_key=str(r["id"]))  # fmt: skip
+    for r in approved:
+        await bus.publish(PLAN_APPROVED, PlanApproved(plan_id=r["plan_id"], approval_id=r["approval_id"],
+                                                      decided_by=r["decided_by"], decided_at=r["decided_at"]),
+                          dedupe_key=str(r["plan_id"]))  # fmt: skip
+    return len(pending) + len(approved)
+
+
+PLAN_SUMMARY_SQL = """SELECT id, parent_plan_id, thread_id, status::text, trigger_kind::text, trigger_ref, hazard_ids, is_drill,
+       requires_approval, summary, requested_by, created_at, updated_at FROM plans"""
 
 
 def summary_out(r: asyncpg.Record) -> dict:
     return {"id": str(r["id"]), "parent_plan_id": str(r["parent_plan_id"]) if r["parent_plan_id"] else None,
             "status": r["status"], "trigger_kind": r["trigger_kind"], "hazard_ids": [str(h) for h in r["hazard_ids"]],
             "is_drill": r["is_drill"], "requires_approval": r["requires_approval"], "summary": r["summary"],
+            "evacuation": (r["trigger_ref"] or "").startswith("evacuation:"), "next_wave": r["requested_by"] == NEXT_WAVE,
             "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}

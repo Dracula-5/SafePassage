@@ -6,8 +6,10 @@ Events (contracts/openapi.yaml):
   hazard         hazard.updated payloads from Redis Streams
   vehicle        a vehicle whose position or liveness changed
   source_health  a source whose freshness or breaker state changed
-Not emitted: `plan`. Plans are A's table and have no contract view; the dashboard refreshes
-plans from A's GET /api/plans when an agent_event arrives.
+  plan           a plan whose status changed, from A's v_plan_status view
+
+Connections are capped: each one polls the database every second, so without a cap a few hundred idle
+tabs would use up the pool.
 """
 
 from __future__ import annotations
@@ -19,11 +21,15 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query, Request
+import asyncpg
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
+from redis.exceptions import RedisError
 from reliefroute_contracts.events import parse_envelope
 from reliefroute_contracts.streams import HAZARD_UPDATED
 
+from app.core.auth import require_operator
 from app.core.bus import get_redis
 from app.core.db import get_pool
 from app.core.logging import get_logger
@@ -35,8 +41,14 @@ log = get_logger(__name__)
 TICK_S = 1.0
 VEHICLE_EVERY_S = 3.0
 HEALTH_EVERY_S = 10.0
+PLAN_EVERY_S = 2.0
+RECENT_PLANS = 50
 KEEPALIVE_S = 15.0
 BACKLOG = 200  # agent events sent on a fresh connection
+MAX_STREAMS = 50
+MAX_EVENT_ID = 2**63 - 1  # agent_events.id is a bigint
+DEPENDENCY_ERRORS = (OSError, ConnectionError, RedisError, asyncpg.PostgresError, asyncpg.InterfaceError)
+open_streams = 0
 
 
 def sse(event: str, data: object, event_id: str | None = None) -> str:
@@ -53,7 +65,28 @@ async def _agent_events(after_id: int, plan_id: UUID | None) -> list[dict]:
     return [dict(r) | {"plan_id": str(r["plan_id"]) if r["plan_id"] else None} for r in rows]
 
 
+async def _plans(plan_id: UUID | None) -> list[dict]:
+    """Newest plans, in the PlanSummary shape of contracts/openapi.yaml."""
+    rows = await (await get_pool()).fetch(
+        """SELECT id, parent_plan_id, status::text, trigger_kind::text, hazard_ids, is_drill, requires_approval, summary,
+                  created_at, updated_at
+           FROM v_plan_status WHERE $1::uuid IS NULL OR id = $1 ORDER BY updated_at DESC LIMIT $2""",
+        plan_id, RECENT_PLANS,
+    )  # fmt: skip
+    return [dict(r) | {"id": str(r["id"]), "parent_plan_id": str(r["parent_plan_id"]) if r["parent_plan_id"] else None,
+                       "hazard_ids": [str(h) for h in r["hazard_ids"]]} for r in reversed(rows)]  # fmt: skip
+
+
 async def event_stream(request: Request, plan_id: UUID | None, last_event_id: int | None) -> AsyncIterator[str]:
+    global open_streams
+    try:
+        async for chunk in _events(request, plan_id, last_event_id):
+            yield chunk
+    finally:
+        open_streams -= 1
+
+
+async def _events(request: Request, plan_id: UUID | None, last_event_id: int | None) -> AsyncIterator[str]:
     pool = await get_pool()
     redis = get_redis()
     if last_event_id is None:  # fresh connection: start with the most recent backlog
@@ -61,7 +94,8 @@ async def event_stream(request: Request, plan_id: UUID | None, last_event_id: in
     hazard_cursor = "$"
     vehicles_seen: dict[str, tuple] = {}
     health_seen: dict[str, tuple] = {}
-    next_vehicle = next_health = next_keepalive = 0.0
+    plans_seen: dict[str, object] = {}
+    next_vehicle = next_health = next_keepalive = next_plan = 0.0
     yield "retry: 3000\n\n"
     while not await request.is_disconnected():
         now = time.monotonic()
@@ -76,7 +110,12 @@ async def event_stream(request: Request, plan_id: UUID | None, last_event_id: in
             for _, items in entries or []:
                 for entry_id, fields in items:
                     hazard_cursor = entry_id
-                    yield sse("hazard", parse_envelope(fields["data"]).payload.model_dump(mode="json"))
+                    try:
+                        payload = parse_envelope(fields["data"]).payload
+                    except ValidationError:  # the bus parks these; one bad entry must not end the stream
+                        log.warning("stream_skipped_invalid_event", entry_id=entry_id)
+                        continue
+                    yield sse("hazard", payload.model_dump(mode="json"))
             if now >= next_vehicle:
                 next_vehicle = now + VEHICLE_EVERY_S
                 for r in await pool.fetch(VEHICLE_SELECT):
@@ -84,6 +123,12 @@ async def event_stream(request: Request, plan_id: UUID | None, last_event_id: in
                     if vehicles_seen.get(str(r["id"])) != key:
                         vehicles_seen[str(r["id"])] = key
                         yield sse("vehicle", vehicle_out(r))
+            if now >= next_plan:
+                next_plan = now + PLAN_EVERY_S
+                for row in await _plans(plan_id):
+                    if plans_seen.get(row["id"]) != row["updated_at"]:
+                        plans_seen[row["id"]] = row["updated_at"]
+                        yield sse("plan", row)
             if now >= next_health:
                 next_health = now + HEALTH_EVERY_S
                 for r in await pool.fetch("SELECT * FROM v_source_freshness"):
@@ -94,19 +139,30 @@ async def event_stream(request: Request, plan_id: UUID | None, last_event_id: in
             if now >= next_keepalive:
                 next_keepalive = now + KEEPALIVE_S
                 yield ": keepalive\n\n"
-        except (OSError, ConnectionError) as exc:  # DB/Redis hiccup: tell the client, keep the stream
+        except DEPENDENCY_ERRORS as exc:  # DB/Redis hiccup: tell the client, keep the stream
             log.warning("stream_dependency_error", error=str(exc))
             yield sse("error", {"message": "live data temporarily unavailable"})
             await asyncio.sleep(3)
         await asyncio.sleep(TICK_S)
 
 
-@router.get("/api/stream")
+def _resume_from(last_event_id: str | None) -> int | None:
+    if not (last_event_id and last_event_id.isascii() and last_event_id.isdigit() and len(last_event_id) <= 19):
+        return None
+    value = int(last_event_id)
+    return value if value <= MAX_EVENT_ID else None
+
+
+@router.get("/api/stream", dependencies=[Depends(require_operator)])
 async def stream(
     request: Request,
     plan_id: Annotated[UUID | None, Query()] = None,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
-    resume = int(last_event_id) if last_event_id and last_event_id.isdigit() else None
+    global open_streams
+    if open_streams >= MAX_STREAMS:
+        raise HTTPException(503, "too many live connections; try again shortly")
+    open_streams += 1
+    resume = _resume_from(last_event_id)
     return StreamingResponse(event_stream(request, plan_id, resume), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # fmt: skip

@@ -22,10 +22,13 @@ from .core.bus import close_redis, get_redis
 from .core.config import get_common_settings
 from .core.db import close_pool, get_pool
 from .core.logging import configure_logging, get_logger
+from .core.security import BodyLimit, RateLimit, SecurityHeaders, problem, production_problems
 
 log = get_logger(__name__)
 
 ROUTER_MODULES = ("app.api_brain.router", "app.api_senses.router")
+CORS_METHODS = ["GET", "POST", "DELETE"]
+CORS_HEADERS = ["Content-Type", "X-Operator-Token", "Idempotency-Key", "Last-Event-ID"]
 
 
 def load_router(module_name: str) -> APIRouter | None:
@@ -45,14 +48,6 @@ def load_router(module_name: str) -> APIRouter | None:
     return router
 
 
-def problem(status: int, title: str, detail: object = None) -> JSONResponse:
-    """RFC 9457-style error body, the contract's Problem schema."""
-    body: dict = {"type": "about:blank", "title": title, "status": status}
-    if detail is not None:
-        body["detail"] = detail if isinstance(detail, str) else str(detail)
-    return JSONResponse(body, status_code=status, media_type="application/problem+json")
-
-
 def install_problem_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -62,6 +57,12 @@ def install_problem_handlers(app: FastAPI) -> None:
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
         errors = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
         return problem(422, "Validation error", errors)
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
+        # The details belong in the log, never in a response: they can name tables, hosts and paths.
+        log.error("unhandled_error", path=request.url.path, error=type(exc).__name__, exc_info=exc)
+        return problem(500, "Internal error", "something went wrong on our side")
 
 
 @asynccontextmanager
@@ -75,12 +76,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app(router_modules: tuple[str, ...] = ROUTER_MODULES) -> FastAPI:
     settings = get_common_settings()
     configure_logging(settings.log_level)
-    app = FastAPI(title="ReliefRoute API", version="0.1.0", lifespan=lifespan)
+    if problems := production_problems(settings):
+        raise RuntimeError("Refusing to start in production:\n  - " + "\n  - ".join(problems))
+    production = settings.app_env == "production"
+    app = FastAPI(title="ReliefRoute API", version="0.1.0", lifespan=lifespan, docs_url=None if production else "/docs",
+                  redoc_url=None if production else "/redoc", openapi_url=None if production else "/openapi.json")  # fmt: skip
     install_problem_handlers(app)
+    # Last added runs first. The rate limit stays inside CORS so a browser can read its 429.
+    app.add_middleware(RateLimit, enabled=settings.rate_limit_enabled)
+    app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     if settings.cors_origins:
         app.add_middleware(
-            CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
+            CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=CORS_METHODS, allow_headers=CORS_HEADERS
         )
+    app.add_middleware(SecurityHeaders, production=production)
 
     @app.get("/health", tags=["core"])
     async def health() -> JSONResponse:

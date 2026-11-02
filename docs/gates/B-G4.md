@@ -1,0 +1,39 @@
+# Gate 4 report: Instance B (Senses & Face), polish, deploy, docs
+
+Run on 2026-10-31, on branch `integration/gate3`.
+
+## Done
+
+- **`README.md`:** setup for Windows, macOS and Linux, Mermaid architecture diagram, and a data-source table that states what is live and what was never wired.
+- **`docs/senses.md`** and **`docs/demo-script.md`:** a timed script for the edge cases, a table of what to do when something fails on stage, and likely questions.
+- **`infra/dev/stack.ps1`:** one command to run everything on Windows.
+- **`infra/deploy/`:** backend and dashboard images, and a compose file that runs everything on one VM behind one address. See [deploy.md](../deploy.md).
+- **Final audit:** 0 findings.
+
+## Deployment checks
+
+Nothing is deployed. These checks ran locally:
+
+```
+docker compose ... config --services      db redis migrate valhalla api brain ingestion
+docker build -f infra/deploy/backend.Dockerfile     exit 0, 808 MB
+run: imports ok; 7 migrations; driver app True True; user 1000
+/data/documents owned by relief and writable (a first build would have failed to write PO PDFs)
+next build                                exit 0
+```
+
+The image was built and started here, but the full production stack was not run: there was not enough free disk. **It was run later the same day: see [A-G4-security.md](A-G4-security.md).**
+
+## Blocked, needing a person
+
+| Item | Needs |
+|---|---|
+| Deploy backend | A VM with 8 GB RAM, or Fly.io/Railway accounts |
+| Deploy dashboard | Nothing more: it is now in the production stack |
+| Real phone test | Someone inside Andhra Pradesh |
+
+In production the API now refuses to start without `OPERATOR_TOKEN` and `ENROLMENT_CODE`.
+
+## Demo water stock
+
+`infra/demo/seed_demo_water.py` was **not run**, and stays clearly labelled. Water shows as an escalated shortfall until a real supplier checks in at `/portal`, which is the honest state under the zero-fake-data rule. The script remains in the repo in case the owner chooses to use it, disclosed.

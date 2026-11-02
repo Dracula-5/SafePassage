@@ -54,6 +54,32 @@ async def test_trigger_is_idempotent_and_emits_plan_requested(api):
     assert detail["routes"] == [] and detail["approval"] is None
 
 
+async def test_approving_after_every_hazard_ended_closes_the_plan(api):
+    client, conn = api
+    hazard = await conn.fetchval(
+        """INSERT INTO hazards (source, source_ref, dedupe_key, hazard_type, severity, status, headline, geom, fetched_at)
+           VALUES ('gdacs', 'y', 'y', 'flood', 'severe', 'expired', 'h', ST_Multi(ST_MakeEnvelope(80, 16, 80.1, 16.1, 4326)), now())
+           RETURNING id""")
+    plan = await conn.fetchval(
+        """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+           VALUES ('t-expired', 'manual', $1, 'x', 'awaiting_approval') RETURNING id""", [hazard])
+    response = await client.post(f"/api/plans/{plan}/approve", json={"decision": "approved", "decided_by": "officer"})
+    assert response.status_code == 409 and "ended" in response.text
+    row = await conn.fetchrow("SELECT status::text, unreachable_reason FROM plans WHERE id = $1", plan)
+    assert row["status"] == "superseded" and "ended before approval" in row["unreachable_reason"]
+    assert await conn.fetchval("SELECT count(*) FROM approvals") == 0
+    assert "refused" in await conn.fetchval("SELECT message FROM agent_events WHERE plan_id = $1", plan)
+
+
+async def test_rejecting_after_every_hazard_ended_is_still_allowed(api):
+    client, conn = api
+    plan = await conn.fetchval(
+        """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status)
+           VALUES ('t-rej', 'manual', ARRAY[gen_random_uuid()], 'x', 'awaiting_approval') RETURNING id""")
+    response = await client.post(f"/api/plans/{plan}/approve", json={"decision": "rejected", "decided_by": "officer"})
+    assert response.status_code == 200
+
+
 async def test_approval_rules_and_problem_errors(api):
     client, conn = api
     plan = await conn.fetchval(

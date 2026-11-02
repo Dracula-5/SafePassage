@@ -45,8 +45,9 @@ async def report_stock(
 
 
 async def publish_stock_events(events: list[SupplierStockUpdated]) -> None:
+    """The stock is committed and planning reads it from the table, so a Redis outage loses nothing."""
     for e in events:
-        await bus.publish(SUPPLIER_STOCK_UPDATED, e, dedupe_key=f"{e.supplier_id}:{e.item_code}:{e.reported_at.isoformat()}")
+        await bus.try_publish(SUPPLIER_STOCK_UPDATED, e, dedupe_key=f"{e.supplier_id}:{e.item_code}:{e.reported_at.isoformat()}")
 
 
 def parse_whatsapp_stock(body: str) -> list[StockLine]:

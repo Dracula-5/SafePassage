@@ -15,7 +15,7 @@ from enum import StrEnum
 
 import httpx
 
-from .logging import get_logger
+from .logging import get_logger, scrub
 
 log = get_logger(__name__)
 
@@ -99,7 +99,7 @@ async def resilient_request(
                 return response
             last_error = f"HTTP {response.status_code}"
         except httpx.TransportError as exc:  # includes timeouts and connection errors
-            last_error = f"{type(exc).__name__}: {exc}"
+            last_error = scrub(f"{type(exc).__name__}: {exc}")
         log.warning("http_attempt_failed", source=breaker.name, attempt=attempt + 1, error=last_error)
         if attempt < retries:
             await asyncio.sleep(backoff_base_s * (2**attempt) * (0.5 + random.random()))

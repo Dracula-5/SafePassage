@@ -141,4 +141,4 @@ async def test_facilities_vehicles_and_health(api, live_env):
     assert len((await api.get("/api/facilities", params={"bbox": "81,17,82,18"})).json()["features"]) == 1
     assert (await api.get("/api/facilities", params={"kind": "castle"})).status_code == 422
     assert (await api.get("/api/vehicles")).json() == []
-    assert (await api.get("/api/sources/health")).json() == []
+    assert {s["source"] for s in (await api.get("/api/sources/health")).json()} == {"brain_worker", "ingestion_worker"}

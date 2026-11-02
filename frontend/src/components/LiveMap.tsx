@@ -8,17 +8,13 @@ import type { GeoJSONSource, LngLatBoundsLike, Map as MlMap, MapMouseEvent } fro
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef } from "react";
 
-import { api, FacilityProperties, FeatureCollection, HazardProperties, PlanRoute, Vehicle } from "@/lib/api";
+import { api, FacilityProperties, FeatureCollection, HazardProperties, LiveRoute, PlanRoute, Vehicle } from "@/lib/api";
+import { plate } from "@/lib/format";
 
-export const SEVERITY_COLORS: Record<string, string> = {
-  extreme: "#b3002d",
-  severe: "#e8590c",
-  moderate: "#f2b705",
-  minor: "#4c9be8",
-  unknown: "#868e96",
-};
+import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./Dashboard";
 
 const FACILITY_KINDS = ["hospital", "shelter", "warehouse", "godown", "school", "depot"];
+const STORAGE_KINDS = ["warehouse", "godown", "depot"]; // a few hundred, so these show at any zoom
 const FACILITY_MIN_ZOOM = 9; // below this, tens of thousands of points would be requested
 
 // Worker file served from public/ by scripts/copy-maplibre-worker.mjs (postinstall).
@@ -34,8 +30,12 @@ interface Props {
   onMapClick: (lngLat: [number, number]) => void;
   onCancelDrill: (id: string) => void;
   onFacilitiesStatus: (status: string) => void;
+  onFindDrivers: (hazardId: string) => void;
+  onAskTruck: (vehicleId: string) => void;
+  onEvacuate: (hazardId: string) => void;
   vehicles: Vehicle[];
   routes: PlanRoute[];
+  liveRoutes: LiveRoute[];
 }
 
 function escapeHtml(text: string): string {
@@ -51,6 +51,8 @@ function hazardPopup(p: HazardProperties): string {
     <div>${escapeHtml(p.hazard_type)} &middot; <b>${escapeHtml(p.severity)}</b> &middot; source ${escapeHtml(p.source)}</div>
     ${p.area_desc ? `<div class="muted">${escapeHtml(p.area_desc.slice(0, 160))}</div>` : ""}
     <div class="muted">expires ${escapeHtml(expires)} &middot; v${p.version} &middot; ref ${escapeHtml(p.source_ref)}</div>
+    <button data-find-drivers="${p.id}">Find nearest drivers</button>
+    <button data-evacuate="${p.id}">Request evacuation</button>
     ${p.is_drill ? `<button class="danger" data-cancel-drill="${p.id}">End drill</button>` : ""}
   </div>`;
 }
@@ -61,6 +63,7 @@ export default function LiveMap(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const drillMarkers = useRef<maplibregl.Marker[]>([]);
+  const truckNumbers = useRef(new Map<string, maplibregl.Marker>());
 
   // Create the map once.
   useEffect(() => {
@@ -74,10 +77,11 @@ export default function LiveMap(props: Props) {
         sources: {
           osm: {
             type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            // Absolute, like the worker's address, and through this site: see app/tiles.
+            tiles: [`${window.location.origin}/tiles/{z}/{x}/{y}.png`],
             tileSize: 256,
             maxzoom: 19,
-            attribution: "&copy; OpenStreetMap contributors",
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
           },
         },
         layers: [{ id: "osm", type: "raster", source: "osm" }],
@@ -111,10 +115,11 @@ export default function LiveMap(props: Props) {
             "warehouse", "#5f3dc4", "godown", "#5f3dc4", "#495057"],
           "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
       m.addLayer({ id: "route-casing", type: "line", source: "routes", paint: { "line-color": "#fff", "line-width": 7 } });
-      m.addLayer({ id: "route-line", type: "line", source: "routes", paint: { "line-color": "#0b7285", "line-width": 4 } });
+      m.addLayer({ id: "route-line", type: "line", source: "routes",
+        paint: { "line-color": ["match", ["get", "kind"], "evacuation", EVACUATION_ROUTE, SUPPLY_ROUTE], "line-width": 4 } });
       m.addLayer({ id: "vehicle-points", type: "circle", source: "vehicles",
-        paint: { "circle-radius": 8, "circle-color": ["case", ["get", "is_offline"], "#868e96", "#0b7285"],
-          "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
+        paint: { "circle-radius": 11, "circle-color": ["case", ["get", "is_offline"], "#adb5bd", "#fff"],
+          "circle-stroke-color": ["case", ["get", "simulated"], SIMULATED_TRUCK, "#0b7285"], "circle-stroke-width": 2 } });
       m.addLayer({ id: "draft-fill", type: "fill", source: "draft", paint: { "fill-color": "#6f2dbd", "fill-opacity": 0.2 } });
       m.addLayer({ id: "draft-line", type: "line", source: "draft", paint: { "line-color": "#6f2dbd", "line-width": 2 } });
       m.addLayer({ id: "draft-pts", type: "circle", source: "draft", filter: ["==", ["geometry-type"], "Point"],
@@ -143,6 +148,18 @@ export default function LiveMap(props: Props) {
         latest.current.onCancelDrill((ev.currentTarget as HTMLButtonElement).dataset.cancelDrill!);
         popup.remove();
       });
+      popup.getElement().querySelector<HTMLButtonElement>("[data-find-drivers]")?.addEventListener("click", (ev: MouseEvent) => {
+        latest.current.onFindDrivers((ev.currentTarget as HTMLButtonElement).dataset.findDrivers!);
+        popup.remove();
+      });
+      popup.getElement().querySelector<HTMLButtonElement>("[data-evacuate]")?.addEventListener("click", (ev: MouseEvent) => {
+        latest.current.onEvacuate((ev.currentTarget as HTMLButtonElement).dataset.evacuate!);
+        popup.remove();
+      });
+      popup.getElement().querySelector<HTMLButtonElement>("[data-ask-truck]")?.addEventListener("click", (ev: MouseEvent) => {
+        latest.current.onAskTruck((ev.currentTarget as HTMLButtonElement).dataset.askTruck!);
+        popup.remove();
+      });
     });
     m.on("moveend", loadFacilities);
 
@@ -155,29 +172,71 @@ export default function LiveMap(props: Props) {
 
   function vehiclePopup(p: Record<string, unknown>): string {
     const seen = p.last_seen_at ? new Date(String(p.last_seen_at)).toLocaleTimeString() : "never";
-    return `<div class="popup"><strong>${escapeHtml(String(p.label))}</strong>
-      <div>${p.is_offline === true || p.is_offline === "true" ? '<span class="badge stale">OFFLINE</span>' : "online"} &middot; ${escapeHtml(String(p.status))}</div>
-      <div class="muted">capacity ${p.capacity_kg} kg &middot; last GPS ${escapeHtml(seen)}</div></div>`;
+    const offline = p.is_offline === true || p.is_offline === "true";
+    const onRoute = p.on_route === true || p.on_route === "true";
+    return `<div class="popup"><strong>Truck ${escapeHtml(String(p.fleet_number))} &middot; ${escapeHtml(plate(String(p.label)))}</strong>
+      ${p.simulated === true || p.simulated === "true" ? '<span class="badge sim">SIMULATED</span>' : ""}
+      ${p.driver_name ? `<div>${escapeHtml(String(p.driver_name))}</div>` : ""}
+      <div>${offline ? '<span class="badge stale">OFFLINE</span>' : "online"} &middot; ${onRoute ? "on a route" : "waiting"}</div>
+      <div class="muted">capacity ${p.capacity_kg} kg &middot; last GPS ${escapeHtml(seen)}</div>
+      <a href="/driver-view?vehicle=${escapeHtml(String(p.id))}" target="_blank" rel="noreferrer">Driver screen</a>
+      ${offline || onRoute ? "" : `<button data-ask-truck="${escapeHtml(String(p.id))}">Send request</button>`}</div>`;
   }
 
   function renderOverlays() {
     const m = map.current;
     if (!m) return;
-    const { vehicles, routes } = latest.current;
+    const { routes, liveRoutes } = latest.current;
+    const vehicles = latest.current.vehicles.filter((v) => v.position && v.status !== "maintenance");
     (m.getSource("vehicles") as GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
-      features: vehicles.filter((v) => v.position).map((v) => ({
+      features: vehicles.map((v) => ({
         type: "Feature", geometry: v.position!,
-        properties: { id: v.id, label: v.label, status: v.status, is_offline: v.is_offline, capacity_kg: v.capacity_kg, last_seen_at: v.last_seen_at },
+        properties: { id: v.id, label: v.label, status: v.status, is_offline: v.is_offline, capacity_kg: v.capacity_kg, last_seen_at: v.last_seen_at,
+          simulated: Boolean(v.simulated), on_route: Boolean(v.on_route), driver_name: v.driver_name, fleet_number: v.fleet_number },
       })),
     });
+    // The number sits on the round button as HTML: the raster basemap has no font glyphs for symbol layers.
+    // It lets clicks through, so the button underneath still opens the popup and a drill can be drawn across it.
+    const numbers = truckNumbers.current;
+    for (const [id, marker] of numbers) {
+      if (!vehicles.some((v) => v.id === id)) {
+        marker.remove();
+        numbers.delete(id);
+      }
+    }
+    for (const v of vehicles) {
+      const at = v.position!.coordinates as [number, number];
+      const known = numbers.get(v.id);
+      if (known) {
+        known.setLngLat(at);
+        continue;
+      }
+      const el = document.createElement("div");
+      el.className = "truck-number";
+      el.textContent = String(v.fleet_number);
+      numbers.set(v.id, new maplibregl.Marker({ element: el }).setLngLat(at).addTo(m));
+    }
     (m.getSource("routes") as GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
-      features: routes.map((r) => ({ type: "Feature", geometry: r.geometry, properties: { id: r.id } })),
+      // Every route on the road now, plus the selected plan's finished ones. Supply first, so green draws on top.
+      features: [...new Map([...routes, ...liveRoutes].map((r) => [r.id, r])).values()]
+        .sort((a, b) => Number(a.kind === "evacuation") - Number(b.kind === "evacuation"))
+        .map((r) => ({ type: "Feature", geometry: r.geometry, properties: { id: r.id, kind: r.kind } })),
     });
   }
 
-  useEffect(renderOverlays, [props.vehicles, props.routes]);
+  useEffect(renderOverlays, [props.vehicles, props.routes, props.liveRoutes]);
+
+  // At state zoom a route is a few pixels; show it when a plan with routes is selected. Keyed on the
+  // route ids so a refresh of the same plan does not move the map under the operator.
+  const routeKey = props.routes.map((r) => r.id).join(",");
+  useEffect(() => {
+    const coordinates = latest.current.routes.flatMap((r) => r.geometry.coordinates as [number, number][]);
+    if (!coordinates.length) return;
+    const bounds = coordinates.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coordinates[0], coordinates[0]));
+    map.current?.fitBounds(bounds, { padding: 70, maxZoom: 13, duration: 800 });
+  }, [routeKey]);
 
   function facilityPopup(p: FacilityProperties): string {
     return `<div class="popup"><strong>${escapeHtml(p.name)}</strong>
@@ -190,16 +249,14 @@ export default function LiveMap(props: Props) {
     const m = map.current;
     if (!m) return;
     const source = m.getSource("facilities") as GeoJSONSource | undefined;
-    if (m.getZoom() < FACILITY_MIN_ZOOM) {
-      source?.setData(EMPTY);
-      latest.current.onFacilitiesStatus(`zoom in to level ${FACILITY_MIN_ZOOM} to load facilities`);
-      return;
-    }
+    const close = m.getZoom() >= FACILITY_MIN_ZOOM;
     const b = m.getBounds();
     try {
-      const fc = await api.facilities([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], FACILITY_KINDS);
+      const fc = await api.facilities([Math.max(b.getWest(), -180), Math.max(b.getSouth(), -90), Math.min(b.getEast(), 180), Math.min(b.getNorth(), 90)],
+        close ? FACILITY_KINDS : STORAGE_KINDS);
       source?.setData(fc as unknown as GeoJSON.FeatureCollection);
-      latest.current.onFacilitiesStatus(`${fc.features.length} facilities in view`);
+      latest.current.onFacilitiesStatus(close ? `${fc.features.length} facilities in view`
+        : `${fc.features.length} warehouses and godowns in view. Zoom in for hospitals, schools and shelters`);
     } catch (err) {
       latest.current.onFacilitiesStatus(`facilities unavailable: ${(err as Error).message}`);
     }

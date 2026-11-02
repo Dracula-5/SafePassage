@@ -1,0 +1,36 @@
+# Netlify's half of the hosted system: the web app, with the API behind it on Render (render.yaml). Steps and costs:
+# docs/deploy-render-netlify.md. The rules below keep one address for both, so the sign-in cookie stays first-party
+# and the CSP holds, and Netlify's CDN answers them, so a dashboard refreshing every 5 seconds runs no functions.
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_PUBLIC_REGION_BBOX = "76.6,12.5,84.9,20.1"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://reliefroute-api.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/portal/api/*"
+  to = "https://reliefroute-api.onrender.com/portal/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/portal/whatsapp"
+  to = "https://reliefroute-api.onrender.com/portal/whatsapp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/health"
+  to = "https://reliefroute-api.onrender.com/health"
+  status = 200
+  force = true

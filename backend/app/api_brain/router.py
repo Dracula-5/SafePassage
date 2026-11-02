@@ -6,28 +6,33 @@ import json
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from reliefroute_contracts.enums import OrderStatus, PlanStatus
 from reliefroute_contracts.events import PlanApproved
 from reliefroute_contracts.streams import PLAN_APPROVED
 
 from app.core import bus
+from app.core.auth import require_operator
 from app.core.db import get_pool
+from app.core.logging import scrub
+from app.core.sessions import account_for
 from app.core.settings_brain import get_brain_settings
-from app.graph import plans
-from app.graph.worker import request_plan
+from app.core.validation import Name, Text
+from app.graph import plans, waves
+from app.telemetry.access import require_vehicle_access
 
 router = APIRouter(tags=["brain"])
+MAX_ORDERS = 2_000
 
 
 class PlanTrigger(BaseModel):
     hazard_ids: list[UUID] = Field(default_factory=list, description="Empty: all active hazards")
-    reason: str | None = Field(default=None, max_length=500)
-    requested_by: str = Field(min_length=1, max_length=100)
+    reason: Text | None = Field(default=None, max_length=500)
+    requested_by: Name = Field(min_length=1, max_length=100)
 
 
-@router.post("/api/plans/trigger", status_code=202)
+@router.post("/api/plans/trigger", status_code=202, dependencies=[Depends(require_operator)])
 async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None, Header(max_length=200)] = None) -> dict:
     pool = await get_pool()
     hazard_ids = [str(h) for h in body.hazard_ids] or [
@@ -37,13 +42,31 @@ async def trigger_plan(body: PlanTrigger, idempotency_key: Annotated[str | None,
     active = await pool.fetchval("SELECT count(*) FROM v_active_hazards WHERE id = ANY($1::uuid[])", hazard_ids)
     if active != len(hazard_ids):
         raise HTTPException(422, "some hazard_ids are not active hazards")
-    summary, _ = await request_plan(pool, trigger_kind="manual", trigger_ref=body.reason, hazard_ids=hazard_ids,
-                                    requested_by=body.requested_by,
-                                    idempotency_key=f"manual:{idempotency_key}" if idempotency_key else None)  # fmt: skip
+    summary, _ = await plans.request_plan(pool, trigger_kind="manual", trigger_ref=body.reason, hazard_ids=hazard_ids,
+                                          requested_by=body.requested_by,
+                                          idempotency_key=f"manual:{idempotency_key}" if idempotency_key else None)  # fmt: skip
     return summary
 
 
-@router.get("/api/plans")
+@router.get("/api/overview", dependencies=[Depends(require_operator)])
+async def overview() -> dict:
+    """The operations numbers on the dashboard, asked for every 5 seconds. Every figure is a live count."""
+    row = await (await get_pool()).fetchrow(
+        """SELECT (SELECT count(*) FROM plans WHERE status = 'awaiting_approval') AS plans_awaiting,
+                  (SELECT count(*) FROM routes WHERE status IN ('planned', 'active')) AS routes_live,
+                  (SELECT COALESCE(sum(load_kg), 0) FROM routes WHERE status IN ('planned', 'active')) AS kg_on_routes,
+                  (SELECT count(*) FROM orders WHERE status IN ('dispatched', 'in_transit')) AS orders_open,
+                  (SELECT count(*) FROM orders WHERE status = 'delivered') AS orders_delivered,
+                  (SELECT count(*) FROM v_vehicle_status WHERE NOT is_offline AND status <> 'maintenance') AS trucks_online,
+                  (SELECT count(*) FROM v_vehicle_status WHERE status <> 'maintenance') AS trucks_total,
+                  (SELECT COALESCE(sum(e.people), 0) FROM evacuations e JOIN routes r ON r.id = e.route_id
+                   WHERE r.status = 'completed') AS people_safe,
+                  (SELECT COALESCE(sum(e.people), 0) FROM evacuations e LEFT JOIN routes r ON r.id = e.route_id
+                   WHERE e.status = 'waiting' OR (e.status = 'assigned' AND r.status IN ('planned', 'active'))) AS people_waiting""")
+    return dict(row)
+
+
+@router.get("/api/plans", dependencies=[Depends(require_operator)])
 async def list_plans(status: PlanStatus | None = None, limit: Annotated[int, Query(ge=1, le=200)] = 50) -> list[dict]:
     rows = await (await get_pool()).fetch(
         plans.PLAN_SUMMARY_SQL + " WHERE ($1::plan_status IS NULL OR status = $1) ORDER BY created_at DESC LIMIT $2",
@@ -58,8 +81,8 @@ async def _orders(pool, plan_id: UUID | None = None, status: str | None = None) 
                            FILTER (WHERE l.order_id IS NOT NULL), '[]') AS lines
            FROM orders o LEFT JOIN order_lines l ON l.order_id = o.id
            WHERE ($1::uuid IS NULL OR o.plan_id = $1) AND ($2::order_status IS NULL OR o.status = $2)
-           GROUP BY o.id ORDER BY o.created_at""",
-        plan_id, status,
+           GROUP BY o.id ORDER BY o.created_at DESC LIMIT $3""",
+        plan_id, status, MAX_ORDERS,
     )
     return [{
         "id": str(r["id"]), "plan_id": str(r["plan_id"]), "route_id": str(r["route_id"]) if r["route_id"] else None,
@@ -75,14 +98,74 @@ async def _orders(pool, plan_id: UUID | None = None, status: str | None = None) 
 def _route_out(r) -> dict:
     return {"id": str(r["id"]), "vehicle_id": str(r["vehicle_id"]), "status": r["status"],
             "geometry": json.loads(r["geojson"]), "distance_m": r["distance_m"], "duration_s": r["duration_s"],
-            "load_kg": r["load_kg"], "min_hazard_clearance_m": r["min_hazard_clearance_m"], "stops": r["stops"]}
+            "load_kg": r["load_kg"], "min_hazard_clearance_m": r["min_hazard_clearance_m"], "stops": r["stops"],
+            "completed_stops": r["completed_stops"], "kind": r["kind"]}
 
 
-ROUTE_SQL = """SELECT id, vehicle_id, status::text, ST_AsGeoJSON(geom, 6) AS geojson, distance_m, duration_s, load_kg,
-                      min_hazard_clearance_m, stops, instructions FROM routes"""
+ROUTE_SQL = """SELECT id, vehicle_id, status::text, kind, ST_AsGeoJSON(geom, 6) AS geojson, distance_m, duration_s, load_kg,
+                      min_hazard_clearance_m, stops, completed_stops, instructions FROM routes"""
 
 
-@router.get("/api/plans/{plan_id}")
+@router.get("/api/routes/live", dependencies=[Depends(require_operator)])
+async def live_routes() -> list[dict]:
+    """Every route a truck is on now, for the map: supply orange, evacuation green. Simplified, because it is
+    asked for every 5 seconds and nobody can see 10 metres at state zoom."""
+    rows = await (await get_pool()).fetch(
+        """SELECT a.route_id, a.vehicle_id, r.kind, ST_AsGeoJSON(ST_Simplify(a.geom, 0.0003), 5) AS geojson
+           FROM v_vehicle_assignment a JOIN routes r ON r.id = a.route_id""")
+    return [{"id": str(r["route_id"]), "vehicle_id": str(r["vehicle_id"]), "kind": r["kind"], "geometry": json.loads(r["geojson"])} for r in rows]
+
+
+class EvacuationRequest(BaseModel):
+    hazard_id: UUID
+    people: int = Field(gt=0, le=500)
+    simulated: bool = Field(default=False, description="Presentation mode made this request up")
+
+
+EVACUATION_STAGES = {"planned": "on_the_way", "active": "on_the_way", "completed": "safe"}
+
+
+def _stage(r) -> str:
+    if r["status"] != "assigned":
+        return r["status"]
+    if r["route_status"] in ("planned", "active") and (r["completed_stops"] or r["is_reroute"]):
+        return "on_board"
+    return EVACUATION_STAGES.get(r["route_status"], "failed")
+
+
+@router.post("/api/evacuations", status_code=201, dependencies=[Depends(require_operator)])
+async def request_evacuation(body: EvacuationRequest, request: Request) -> dict:
+    """People need to leave a zone. The worker sends the nearest free truck (graph/evacuation.py)."""
+    pool = await get_pool()
+    if not await pool.fetchval("SELECT 1 FROM v_active_hazards WHERE id = $1", body.hazard_id):
+        raise HTTPException(422, "that alert or drill has ended")
+    settlement = await pool.fetchval(
+        """SELECT p.name FROM v_places p JOIN v_active_hazards h ON ST_Intersects(p.geom, h.geom)
+           WHERE h.id = $1 AND p.name IS NOT NULL ORDER BY p.population DESC NULLS LAST, p.name LIMIT 1""", body.hazard_id)  # fmt: skip
+    if settlement is None:
+        raise HTTPException(422, "nobody lives inside this zone: draw it over a town")
+    account = await account_for(request)
+    row = await pool.fetchrow(
+        "INSERT INTO evacuations (hazard_id, settlement, people, simulated, requested_by) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        body.hazard_id, settlement, body.people, body.simulated, account["name"] if account else "presentation mode")  # fmt: skip
+    return {"id": str(row["id"]), "settlement": settlement, "people": body.people, "status": "waiting"}
+
+
+@router.get("/api/evacuations", dependencies=[Depends(require_operator)])
+async def list_evacuations() -> list[dict]:
+    rows = await (await get_pool()).fetch(
+        """SELECT e.*, h.headline AS zone, h.source::text = 'drill' AS is_drill, r.status::text AS route_status, r.completed_stops,
+                  r.vehicle_id, COALESCE(jsonb_array_length(r.stops) = 1, false) AS is_reroute
+           FROM evacuations e JOIN hazards h ON h.id = e.hazard_id LEFT JOIN routes r ON r.id = e.route_id
+           WHERE e.created_at > now() - interval '1 day' ORDER BY e.created_at DESC LIMIT 50""")
+    return [{"id": str(r["id"]), "zone": r["zone"], "is_drill": r["is_drill"], "settlement": r["settlement"], "people": r["people"],
+             "simulated": r["simulated"], "stage": _stage(r), "failure": r["failure"], "pickup_name": r["pickup_name"],
+             "safe_name": r["safe_name"], "zones_avoided": r["zones_avoided"], "zones_crossed": r["zones_crossed"],
+             "vehicle_id": str(r["vehicle_id"]) if r["vehicle_id"] else None, "plan_id": str(r["plan_id"]) if r["plan_id"] else None,
+             "created_at": r["created_at"].isoformat()} for r in rows]  # fmt: skip
+
+
+@router.get("/api/plans/{plan_id}", dependencies=[Depends(require_operator)])
 async def get_plan(plan_id: UUID) -> dict:
     pool = await get_pool()
     row = await pool.fetchrow(plans.PLAN_SUMMARY_SQL + " WHERE id = $1", plan_id)
@@ -94,7 +177,12 @@ async def get_plan(plan_id: UUID) -> dict:
         """SELECT payload, created_at FROM agent_events WHERE plan_id = $1 AND node = 'critic'
              AND event_type IN ('decision', 'critic_rejection') ORDER BY id""", plan_id)
     approval = await pool.fetchrow("SELECT * FROM approvals WHERE plan_id = $1", plan_id)
+    asked = await pool.fetchval(
+        """SELECT payload->'reasons' FROM agent_events WHERE plan_id = $1 AND event_type = 'approval_requested'
+           ORDER BY id DESC LIMIT 1""", plan_id)  # fmt: skip
     return plans.summary_out(row) | {
+        "needs_person": asked or [],
+        "waves_left": await waves.left(pool, row["hazard_ids"], get_brain_settings().next_wave_max),
         "demand": [{k: v for k, v in line.items()} for line in (extra["demand"] or {}).get("lines", [])],
         "routes": [_route_out(r) for r in routes],
         "orders": await _orders(pool, plan_id),
@@ -112,13 +200,27 @@ async def get_plan(plan_id: UUID) -> dict:
 
 class ApprovalRequest(BaseModel):
     decision: Literal["approved", "rejected"]
-    decided_by: str = Field(min_length=1, max_length=100)
-    reason: str | None = Field(default=None, max_length=1000)
+    decided_by: Name = Field(min_length=1, max_length=100)
+    reason: Text | None = Field(default=None, max_length=1000)
 
 
-@router.post("/api/plans/{plan_id}/approve")
-async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
+async def _close_expired(conn, plan_id: UUID, decided_by: str) -> None:
+    reason = "every hazard of this plan ended before approval"
+    await conn.execute("""UPDATE plans SET status = 'superseded', unreachable_reason = $2, updated_at = now()
+                          WHERE id = $1""", plan_id, reason)
+    await conn.execute(
+        """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
+           SELECT id, thread_id, 'human', 'approval_decided', $2, $3 FROM plans WHERE id = $1""",
+        plan_id, f"Approval by {decided_by} refused: {reason}", {"decided_by": decided_by})  # fmt: skip
+
+
+@router.post("/api/plans/{plan_id}/approve", dependencies=[Depends(require_operator)])
+async def decide_plan(plan_id: UUID, body: ApprovalRequest, request: Request) -> dict:
+    # A signed-in operator's name comes from their account, so the record shows who really decided.
+    account = await account_for(request)
+    decided_by = f"{account['name']} <{account['email']}>" if account else body.decided_by
     pool = await get_pool()
+    expired = False
     async with pool.acquire() as conn, conn.transaction():
         status = await conn.fetchval("SELECT status::text FROM plans WHERE id = $1 FOR UPDATE", plan_id)
         if status is None:
@@ -127,32 +229,43 @@ async def decide_plan(plan_id: UUID, body: ApprovalRequest) -> dict:
             raise HTTPException(409, "this plan already has a decision")
         if status != "awaiting_approval":
             raise HTTPException(409, f"plan is {status}, not awaiting approval")
-        row = await conn.fetchrow(
-            """INSERT INTO approvals (plan_id, decision, decided_by, reason) VALUES ($1, $2, $3, $4) RETURNING *""",
-            plan_id, body.decision, body.decided_by, body.reason)
-        await conn.execute("UPDATE plans SET status = $2::plan_status, updated_at = now() WHERE id = $1", plan_id, body.decision)
-        thread_id = await conn.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan_id)
-        await conn.execute(
-            """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
-               VALUES ($1, $2, 'human', 'approval_decided', $3, $4)""",
-            plan_id, thread_id, f"{body.decision.upper()} by {body.decided_by}" + (f": {body.reason}" if body.reason else ""),
-            {"decision": body.decision, "decided_by": body.decided_by},
-        )  # fmt: skip
+        expired = body.decision == "approved" and await conn.fetchval(
+            """SELECT cardinality(p.hazard_ids) > 0
+                      AND NOT EXISTS (SELECT 1 FROM v_active_hazards h WHERE h.id = ANY(p.hazard_ids))
+               FROM plans p WHERE p.id = $1""", plan_id)  # fmt: skip
+        if expired:
+            await _close_expired(conn, plan_id, decided_by)
+        else:
+            row = await conn.fetchrow(
+                """INSERT INTO approvals (plan_id, decision, decided_by, reason) VALUES ($1, $2, $3, $4) RETURNING *""",
+                plan_id, body.decision, decided_by, body.reason)
+            await conn.execute("UPDATE plans SET status = $2::plan_status, updated_at = now() WHERE id = $1",
+                               plan_id, body.decision)  # fmt: skip
+            thread_id = await conn.fetchval("SELECT thread_id FROM plans WHERE id = $1", plan_id)
+            await conn.execute(
+                """INSERT INTO agent_events (plan_id, thread_id, node, event_type, message, payload)
+                   VALUES ($1, $2, 'human', 'approval_decided', $3, $4)""",
+                plan_id, thread_id,
+                f"{body.decision.upper()} by {decided_by}" + (f": {body.reason}" if body.reason else ""),
+                {"decision": body.decision, "decided_by": decided_by},
+            )  # fmt: skip
+    if expired:  # raised here so the transaction above commits the closed plan
+        raise HTTPException(409, "every hazard of this plan has ended; it was closed without dispatching")
     # The paused graph resumes on plan.approved. A rejection ends the plan here; the paused
     # thread is simply never resumed.
     if body.decision == "approved":
-        await bus.publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=body.decided_by,
-                                                      decided_at=row["decided_at"]), dedupe_key=str(plan_id))  # fmt: skip
-    return {"id": str(row["id"]), "plan_id": str(plan_id), "decision": body.decision, "decided_by": body.decided_by,
+        await bus.try_publish(PLAN_APPROVED, PlanApproved(plan_id=plan_id, approval_id=row["id"], decided_by=decided_by,
+                                                          decided_at=row["decided_at"]), dedupe_key=str(plan_id))  # fmt: skip
+    return {"id": str(row["id"]), "plan_id": str(plan_id), "decision": body.decision, "decided_by": decided_by,
             "reason": body.reason, "decided_at": row["decided_at"].isoformat()}
 
 
-@router.get("/api/orders")
+@router.get("/api/orders", dependencies=[Depends(require_operator)])
 async def list_orders(plan_id: UUID | None = None, status: OrderStatus | None = None) -> list[dict]:
     return await _orders(await get_pool(), plan_id, status.value if status else None)
 
 
-@router.get("/api/vehicles/{vehicle_id}/assignment")
+@router.get("/api/vehicles/{vehicle_id}/assignment", dependencies=[Depends(require_vehicle_access)])
 async def get_vehicle_assignment(vehicle_id: UUID) -> dict:
     pool = await get_pool()
     a = await pool.fetchrow("SELECT route_id, plan_id, is_drill FROM v_vehicle_assignment WHERE vehicle_id = $1", vehicle_id)
@@ -166,7 +279,7 @@ async def get_vehicle_assignment(vehicle_id: UUID) -> dict:
                              "audio_url": None}}  # fmt: skip
 
 
-@router.get("/api/brain/health")
+@router.get("/api/brain/health", dependencies=[Depends(require_operator)])
 async def brain_health() -> list[dict]:
     """A-side dependencies, in the SourceHealth shape. Reports configuration and a live Valhalla probe."""
     import httpx
@@ -180,7 +293,7 @@ async def brain_health() -> list[dict]:
             await ValhallaClient(settings.valhalla_url, http, retries=0, timeout_s=5).status()
             valhalla_ok, error = True, None
         except Exception as exc:  # report, never fail the health endpoint
-            valhalla_ok, error = False, f"{type(exc).__name__}: {exc}"[:200]
+            valhalla_ok, error = False, scrub(f"{type(exc).__name__}: {exc}")[:200]
     out.append({"source": "valhalla", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
                 "last_error": error, "ttl_seconds": 60, "fallback_source": None, "is_stale": not valhalla_ok})
     out.append({"source": "llm", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
@@ -191,4 +304,8 @@ async def brain_health() -> list[dict]:
     out.append({"source": "twilio", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
                 "last_error": None if twilio else "credentials not configured; messages are recorded, not sent",
                 "ttl_seconds": 60, "fallback_source": None, "is_stale": not twilio})
+    parked = await bus.dead_letter_count()
+    out.append({"source": "event_bus", "breaker_state": "closed", "last_success_at": None, "last_failure_at": None,
+                "last_error": f"{parked} event(s) parked in dead-letter streams" if parked else None,
+                "ttl_seconds": 60, "fallback_source": None, "is_stale": bool(parked)})
     return out

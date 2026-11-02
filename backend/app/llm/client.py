@@ -12,13 +12,16 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.logging import get_logger
 from app.core.resilience import CircuitBreaker, SourceUnavailable, resilient_request
+
+if TYPE_CHECKING:
+    from .tracing import LangfuseTracer
 
 log = get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -74,9 +77,17 @@ def extract_json(text: str) -> str:
 
 
 class LLMClient:
-    def __init__(self, backend: ChatBackend, max_attempts: int = 3):
+    def __init__(self, backend: ChatBackend, max_attempts: int = 3, tracer: "LangfuseTracer | None" = None):
         self.backend = backend
         self.max_attempts = max_attempts
+        self.tracer = tracer
+
+    async def _trace(self, schema: type[BaseModel], system: str, prompt: str, reply: str | None, attempts: list[Attempt],
+                     error: str | None) -> None:
+        if self.tracer:
+            await self.tracer.record(name=schema.__name__, model=self.backend.model, system=system, prompt=prompt,
+                                     output=reply, latency_ms=sum(a.latency_ms for a in attempts),
+                                     attempts=len(attempts), error=error)  # fmt: skip
 
     async def generate(self, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
         schema_text = json.dumps(schema.model_json_schema(), separators=(",", ":"))
@@ -84,6 +95,7 @@ class LLMClient:
                         f"against this JSON Schema:\n{schema_text}")  # fmt: skip
         turns: list[tuple[str, str]] = [("user", prompt)]
         attempts: list[Attempt] = []
+        reply: str | None = None
         for _ in range(self.max_attempts):
             started = time.monotonic()
             reply = await self.backend.complete(instructions, turns)
@@ -97,41 +109,52 @@ class LLMClient:
                 turns += [("model", reply), ("user", f"That reply was invalid: {error}\nReturn the corrected JSON object only.")]
                 continue
             attempts.append(Attempt(ok=True, error=None, latency_ms=latency))
+            await self._trace(schema, system, prompt, reply, attempts, None)
             return LLMResult(value=value, model=self.backend.model, attempts=attempts)
-        raise LLMOutputError(f"{schema.__name__}: no valid output after {self.max_attempts} attempts", attempts)
+        failure = f"{schema.__name__}: no valid output after {self.max_attempts} attempts"
+        await self._trace(schema, system, prompt, reply, attempts, failure)
+        raise LLMOutputError(failure, attempts)
 
 
 class GeminiBackend:
     """Google Gemini via the public REST API (generateContent), over an ordered list of models.
 
     Gemini models come and go (404 when retired) and are often overloaded (503/429 or slow).
-    Each call tries the models in order with its own breaker and time budget; the model that
-    answers moves to the front, and `model` names it for the audit trail.
+    Each call tries the models in order; the model that answers moves to the front, and `model`
+    names it for the audit trail. Waiting on the chain used to hold a plan for minutes, so a retired
+    model is dropped for good, one that failed rests for REST_S, and a call gives up after budget_s.
+    A plan then carries on with the labelled rule-based step instead of leaving a truck waiting.
     """
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
     SKIP_STATUS = {404, 429, 500, 503}
+    RETIRED_STATUS = 404
+    REST_S = 120
+    ANSWER_TIMEOUT_S = 25.0
 
-    def __init__(self, api_key: str, models: list[str], http: httpx.AsyncClient, timeout_s: float = 30.0,
-                 temperature: float = 0.2):
+    def __init__(self, api_key: str, models: list[str], http: httpx.AsyncClient, timeout_s: float = ANSWER_TIMEOUT_S,
+                 temperature: float = 0.2, budget_s: float = 45.0):
         self.api_key = api_key
         self.models = list(models)
         self.http = http
         self.timeout_s = timeout_s
+        self.budget_s = budget_s
         self.temperature = temperature
-        self.breakers = {m: CircuitBreaker(f"gemini:{m}", failure_threshold=2, reset_after_s=300) for m in self.models}
+        self.breakers: dict[str, CircuitBreaker] = {}
         self.breaker = CircuitBreaker("gemini")  # used only for list_models
 
     @property
     def model(self) -> str:
         return self.models[0] if self.models else ""
 
-    async def _call(self, model: str, body: dict) -> str:
-        breaker = self.breakers.setdefault(model, CircuitBreaker(f"gemini:{model}", failure_threshold=2, reset_after_s=300))
+    async def _call(self, model: str, body: dict, timeout_s: float | None = None) -> str:
+        breaker = self.breakers.setdefault(model, CircuitBreaker(f"gemini:{model}", failure_threshold=1, reset_after_s=self.REST_S))
         resp = await resilient_request(
             self.http, "POST", f"{self.BASE}/models/{model}:generateContent", breaker,
-            timeout_s=self.timeout_s, retries=0, json=body, headers={"x-goog-api-key": self.api_key},
+            timeout_s=timeout_s or self.timeout_s, retries=0, json=body, headers={"x-goog-api-key": self.api_key},
         )  # fmt: skip
+        if resp.status_code == self.RETIRED_STATUS and model in self.models:
+            self.models.remove(model)
         if resp.status_code in self.SKIP_STATUS:
             breaker.record_failure()
             raise SourceUnavailable(f"gemini:{model}", f"HTTP {resp.status_code}")
@@ -151,9 +174,14 @@ class GeminiBackend:
             "generationConfig": {"temperature": self.temperature, "responseMimeType": "application/json"},
         }
         errors = []
+        deadline = time.monotonic() + self.budget_s
         for model in list(self.models):
+            left = deadline - time.monotonic()
+            if left < 1:
+                errors.append(f"gave up after {self.budget_s:.0f} s")
+                break
             try:
-                text = await self._call(model, body)
+                text = await self._call(model, body, min(self.timeout_s, left))
             except SourceUnavailable as exc:
                 errors.append(f"{model}: {exc.reason}")
                 log.warning("gemini_model_unavailable", model=model, reason=exc.reason)

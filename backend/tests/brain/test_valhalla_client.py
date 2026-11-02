@@ -73,6 +73,52 @@ async def test_matrix_maps_nulls_to_none():
     assert m.durations_s == [[0.0, None]] and m.distances_m == [[0.0, None]]
 
 
+AT_SEA = Location(lon=81.5, lat=16.0)
+
+
+def valhalla_refusing(bad: dict, code: int = 170):
+    """Like Valhalla: refuses the whole request when a location cannot connect to the others."""
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        points = body["sources"] + body["targets"]
+        if bad in points and any(p != bad for p in points):
+            return httpx.Response(400, json={"error_code": code, "error": "Locations are in unconnected regions"})
+        return httpx.Response(200, json={"sources_to_targets": [
+            [{"from_index": i, "to_index": j, "time": 60.0, "distance": 1.0} for j in range(len(body["targets"]))]
+            for i in range(len(body["sources"]))]})
+
+    return handler, calls
+
+
+@pytest.mark.parametrize("code", [170, 171, 442])
+async def test_one_unconnected_location_is_unreachable_and_the_rest_still_plan(code):
+    handler, _ = valhalla_refusing({"lon": 81.5, "lat": 16.0}, code)
+    m = await client_with(handler).matrix([A, AT_SEA], [A, B])
+    assert m.durations_s == [[60.0, 60.0], [None, None]]
+    assert m.distances_m == [[1000.0, 1000.0], [None, None]]
+
+
+async def test_an_unconnected_target_is_dropped_too():
+    handler, _ = valhalla_refusing({"lon": 81.5, "lat": 16.0})
+    m = await client_with(handler).matrix([A, B], [AT_SEA, B])
+    assert m.durations_s == [[None, 60.0], [None, 60.0]]
+
+
+async def test_a_healthy_matrix_costs_one_request():
+    handler, calls = valhalla_refusing({"lon": 0.0, "lat": 0.0})
+    await client_with(handler).matrix([A], [A, B])
+    assert len(calls) == 1
+
+
+async def test_a_real_failure_is_not_mistaken_for_a_bad_location():
+    client = client_with(lambda r: httpx.Response(400, json={"error_code": 999, "error": "x"}))
+    with pytest.raises(ValhallaError):
+        await client.matrix([A], [B])
+
+
 @pytest.mark.parametrize("code,exc", [(442, NoRouteError), (171, LocationNotRoutableError), (999, ValhallaError)])
 async def test_error_codes_become_typed_errors(code, exc):
     client = client_with(lambda r: httpx.Response(400, json={"error_code": code, "error": "x"}))

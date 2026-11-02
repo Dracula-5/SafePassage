@@ -35,14 +35,16 @@ class Triage(BaseModel):
 class PopulationEstimate(BaseModel):
     """Sum of census figures (OSM `population` tags) of settlements whose point lies in the zone.
 
-    Not a strict bound either way: untagged settlements add nothing (undercount), while a city's
-    single figure counts in full when its centre is inside a zone that covers only part of it
-    (overcount). `places_with_population / places_total` is reported next to it everywhere.
+    Not a strict bound either way: untagged settlements add nothing (undercount), while cities and
+    towns are scaled by the zone's share of their mandal, assuming even density (an estimate).
+    `places_with_population / places_total` is reported next to it everywhere.
     """
 
     population_lower_bound: int = Field(ge=0, description="Historic name; see class docstring")
+    population_unscaled: int = Field(default=0, ge=0, description="Sum before scaling, for the audit trail")
     places_with_population: int = Field(ge=0)
     places_total: int = Field(ge=0)
+    places_scaled: int = Field(default=0, ge=0, description="Cities/towns only partly inside the zone")
     sources: list[str]
 
     @property
@@ -91,6 +93,7 @@ class OrderDraft(BaseModel):
     lines: list[OrderLineDraft]
     weight_kg: float = Field(gt=0)
     travel_s: float | None
+    onboard: bool = Field(default=False, description="Already on the truck (replans): no pickup, no new PO")
 
 
 class Shortfall(BaseModel):
@@ -142,6 +145,8 @@ class Routing(BaseModel):
     routes: list[PlannedRoute]
     parts: list[OrderPart] = Field(default_factory=list)
     unserved_order_keys: list[str]
+    deferred_part_keys: list[str] = Field(default_factory=list, description="Beyond this wave's fleet capacity")
+    onboard_part_keys: list[str] = Field(default_factory=list, description="Loaded before this route began")
     margin_m: float
     vehicles_considered: int
 

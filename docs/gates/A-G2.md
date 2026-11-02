@@ -79,3 +79,11 @@ The run exposed one bug, now fixed: the 1,048,240 figure is Vijayawada city's si
 1. Paste the Gemini key into `backend/.env` and **save** (I'll copy it into the integration `.env`).
 2. To finish the live E2E, can a team member check in stock **they actually hold, or a real supplier's figures**, at `/portal`? I won't enter stock myself.
 3. Can I expose the local API through a temporary Cloudflare quick tunnel (a public random HTTPS URL, no account) so a phone can run the Driver PWA? Anyone with the URL could reach the API until it's stopped.
+
+## Addendum, 2026-10-31: live approval and dispatch
+
+The gaps above are closed, except the live LLM on this machine. On real AP data, with labelled simulated vehicles and no key set (rule-based steps, labelled as such), a drill went through the approval gate to dispatch: 6 orders of real PDS rice, 6 PO PDFs, and routes of 88 km (2 h) and 276 km (7.2 h). Full timeline in `A-G3.md`.
+
+Live runs fixed three issues listed above: population overcounting (Vijayawada now scales from 1,048,240 to 468,972 for a zone covering 44.7% of its mandal), the 72 h single-truck route, and stale approvals.
+
+Still open: live Gemini on this machine, and Telugu translation has never been exercised live.

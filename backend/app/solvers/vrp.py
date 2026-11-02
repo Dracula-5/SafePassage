@@ -4,6 +4,8 @@ Inputs are indices into a travel-time matrix from Valhalla (already hazard-aware
 vehicle starts and ends at its own matrix node. Stops reference matrix nodes too; several
 stops may share a node (one supplier filling several orders). Stop kinds:
   deliver  - goods preloaded at the vehicle's start; load counts up as they are delivered
+  unload   - goods already on `vehicle_id` when the route begins (replans); the truck starts
+             with them on board and has that room back once they are off
   pickup   - goods loaded here (+demand)
   dropoff  - goods unloaded here (-demand); always paired with a pickup via `pairs`
 A pair is served by one vehicle, pickup first, or dropped together.
@@ -37,6 +39,7 @@ class VrpVehicle(BaseModel):
     capacity_kg: float = Field(gt=0)
     available_from_s: int = Field(default=0, ge=0)
     available_until_s: int | None = Field(default=None, ge=0)
+    fixed_cost_s: int = Field(default=0, ge=0, description="Added once if this vehicle is used at all. Far below DROP_PENALTY")
 
 
 class VrpStop(BaseModel):
@@ -45,10 +48,11 @@ class VrpStop(BaseModel):
     stop_id: str
     node: int = Field(ge=0)
     demand_kg: float = Field(ge=0)
-    kind: Literal["deliver", "pickup", "dropoff"] = "deliver"
+    kind: Literal["deliver", "pickup", "dropoff", "unload"] = "deliver"
     window_start_s: int = Field(default=0, ge=0)
     window_end_s: int | None = Field(default=None, ge=0)
     service_s: int = Field(default=0, ge=0)
+    vehicle_id: str | None = None
 
 
 class VrpProblem(BaseModel):
@@ -82,7 +86,10 @@ class VrpProblem(BaseModel):
                 raise ValueError(f"pair {pickup}->{dropoff} must be pickup -> dropoff")
             if by_id[pickup].demand_kg != by_id[dropoff].demand_kg:
                 raise ValueError(f"pair {pickup}->{dropoff} must carry the same load")
-        unpaired = {s.stop_id for s in self.stops if s.kind != "deliver"} - set(paired)
+        fleet = {v.vehicle_id for v in self.vehicles}
+        if any(s.kind == "unload" and s.vehicle_id not in fleet for s in self.stops):
+            raise ValueError("an unload stop needs a vehicle from the fleet")
+        unpaired = {s.stop_id for s in self.stops if s.kind in ("pickup", "dropoff")} - set(paired)
         if unpaired:
             raise ValueError(f"pickup/dropoff stops without a pair: {sorted(unpaired)}")
         return self
@@ -135,6 +142,8 @@ def solve(problem: VrpProblem) -> VrpSolution:
     unreachable = problem.horizon_s + 1  # an arc this long can never fit in the horizon
 
     def travel(i: int, j: int) -> int:
+        if i == j:  # staying put, even where no road connects: otherwise a stranded truck's empty route
+            return 0  # is impossible, and that makes the whole model infeasible for every other truck
         value = problem.durations_s[i][j]
         return unreachable if value is None else math.ceil(value)
 
@@ -155,20 +164,31 @@ def solve(problem: VrpProblem) -> VrpSolution:
         for idx in (routing.Start(v_idx), routing.End(v_idx)):
             time_dim.CumulVar(idx).SetRange(vehicle.available_from_s, until)
             routing.AddVariableMinimizedByFinalizer(time_dim.CumulVar(idx))
+        routing.SetFixedCostOfVehicle(vehicle.fixed_cost_s, v_idx)
 
     def load_delta(model_node: int) -> int:
         stop = stop_of_model.get(model_node)
         if stop is None:
             return 0
         amount = math.ceil(stop.demand_kg)
-        return -amount if stop.kind == "dropoff" else amount
+        return -amount if stop.kind in ("dropoff", "unload") else amount
 
+    # What each vehicle starts with on board; capacity stretches to it so rounding up cannot strand a load.
+    on_board = {v.vehicle_id: sum(math.ceil(s.demand_kg) for s in problem.stops if s.kind == "unload" and s.vehicle_id == v.vehicle_id)
+                for v in problem.vehicles}  # fmt: skip
+    capacities = [max(math.floor(v.capacity_kg), on_board[v.vehicle_id]) for v in problem.vehicles]
     demand_cb = routing.RegisterUnaryTransitCallback(lambda index: load_delta(manager.IndexToNode(index)))
-    routing.AddDimensionWithVehicleCapacity(demand_cb, 0, [math.floor(v.capacity_kg) for v in problem.vehicles], True, "load")
+    routing.AddDimensionWithVehicleCapacity(demand_cb, 0, capacities, False, "load")
     load_dim = routing.GetDimensionOrDie("load")
+    for v_idx, vehicle in enumerate(problem.vehicles):
+        load_dim.CumulVar(routing.Start(v_idx)).SetValue(on_board[vehicle.vehicle_id])
 
+    vehicle_index = {v.vehicle_id: i for i, v in enumerate(problem.vehicles)}
     for stop in problem.stops:
-        routing.AddDisjunction([manager.NodeToIndex(model_of_stop[stop.stop_id])], DROP_PENALTY)
+        index = manager.NodeToIndex(model_of_stop[stop.stop_id])
+        routing.AddDisjunction([index], DROP_PENALTY)
+        if stop.kind == "unload":
+            routing.VehicleVar(index).SetValues([-1, vehicle_index[stop.vehicle_id]])  # -1: dropped
     for pickup, dropoff in problem.pairs:
         p, d = manager.NodeToIndex(model_of_stop[pickup]), manager.NodeToIndex(model_of_stop[dropoff])
         routing.AddPickupAndDelivery(p, d)
@@ -214,7 +234,7 @@ def solve(problem: VrpProblem) -> VrpSolution:
                 vehicle_id=vehicle.vehicle_id, nodes=nodes, visits=visits,
                 start_s=assignment.Value(time_dim.CumulVar(routing.Start(v_idx))),
                 end_s=assignment.Value(time_dim.CumulVar(routing.End(v_idx))),
-                load_kg=moved, peak_load_kg=max(v.load_after_kg for v in visits),
+                load_kg=moved, peak_load_kg=max(on_board[vehicle.vehicle_id], *(v.load_after_kg for v in visits)),
             ))  # fmt: skip
     unserved = [s.stop_id for s in problem.stops if s.stop_id not in served]
     return VrpSolution(status=status_name, routes=routes, unserved=unserved, objective=assignment.ObjectiveValue())

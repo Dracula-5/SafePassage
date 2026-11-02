@@ -1,0 +1,5 @@
+# The production stack on one PC, at http://localhost:3000, with no domain or certificate needed. Everything
+# else is exactly what a VM runs. Used by `.\infra\dev\stack.ps1 prod`; PUBLIC_URL comes from local.env.
+services:
+  caddy:
+    ports: !override ["127.0.0.1:3000:3000"]

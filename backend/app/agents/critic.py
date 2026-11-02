@@ -27,7 +27,7 @@ def review(routing: Routing, hazards: list[HazardShape], attempt: int, start: da
         late = [s for s in route.stops if s.eta > deadline]
         if late:
             violations.append(f"{label}: {len(late)} stop(s) arrive after the planning horizon ({deadline.isoformat()})")
-        pickups: set[str] = set()
+        pickups: set[str] = set(routing.onboard_part_keys)
         for stop in route.stops:
             if stop.kind == "pickup":
                 pickups.update(stop.order_keys)
