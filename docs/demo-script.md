@@ -8,8 +8,8 @@ For whoever presents ReliefRoute. It shows all three roles, duty officer, driver
 
 Do this 20 minutes ahead.
 
-1. In the project folder, run `.\infra\dev\stack.ps1 demo`. Presentation mode stays on until you run `demo-off`, and `http://localhost:3000` is the address. After a restart, run `.\infra\dev\stack.ps1 present` instead: it starts Docker if needed, waits for the stack, opens the ngrok tunnel window and checks the hosted site. Each step prints a line.
-   **Present from `http://localhost:3000` on this laptop.** The hosted site (`https://safepassage-frontend.vercel.app`) reaches this laptop through a free ngrok tunnel, which allows 20,000 requests a month. One open dashboard uses about 6,500 an hour, and one session on 2026-11-03 had already used 21,000. Keep the hosted link for people who must open it on their own device, and close hosted tabs you are not using.
+1. In the project folder, run `.\infra\dev\stack.ps1 demo`. Presentation mode stays on until you run `demo-off`, and `http://localhost:3000` is the address. After a restart, run `.\infra\dev\stack.ps1 present` instead: it starts Docker if needed, waits for the stack, checks the Tailscale Funnel and checks the hosted site. Each step prints a line.
+   **Present from `http://localhost:3000` on this laptop** when you can: it needs no tunnel. The hosted site (`https://safepassage-frontend.vercel.app`) reaches this laptop through a free Tailscale Funnel, which stays on across restarts. Close hosted tabs you are not using. The ngrok tunnel used before ran out of its free monthly data on 2026-11-04, and sign-in on the hosted site then failed with 403.
 2. Open three separate browser windows, because one browser can only hold one sign-in. Use a normal window, an incognito window and a second browser, or three laptops.
    - **Duty officer:** sign in and land on the dashboard. The Sources tab should be green, and *Trucks online* should say 42 or more.
    - **Supplier:** sign in. If the screen asks you to register, do it once and pick your site.

@@ -57,19 +57,16 @@ If the log says `Refusing to start in production`, it lists each setting to fix.
 
 ### The full live demo from a laptop, free
 
-The free Render API has no data worker, planning worker, road router or simulated fleet, so its screens stay empty. For a presentation, the whole stack can run on a laptop, exactly as `.\infra\dev\stack.ps1 demo` runs it, and the Vercel site can reach it through a free ngrok tunnel. The site is live while the laptop is on and Docker is running; otherwise it shows "Cannot reach the server".
+The free Render API has no data worker, planning worker, road router or simulated fleet, so its screens stay empty. For a presentation, the whole stack can run on a laptop, exactly as `.\infra\dev\stack.ps1 demo` runs it, and the Vercel site can reach it through a free Tailscale Funnel. The site is live while the laptop is on and Docker is running; otherwise it shows "Cannot reach the server".
 
 1. Start the stack: `.\infra\dev\stack.ps1 demo`, then check <http://localhost:3000/health>.
-2. Make a free account at <https://ngrok.com>, install the agent (`winget install ngrok.ngrok`), and run `ngrok config add-authtoken <your token>` once.
-3. A free account gets one fixed address, such as `something.ngrok-free.dev`, shown in the ngrok dashboard under **Domains**. ngrok uses it by itself, so Vercel only needs setting once.
-4. Start the tunnel and leave it running:
-   `ngrok http 3000`
-   On the laptop, Caddy answers any host name (`docker-compose.local.yml`), so the tunnel needs no `--host-header`. That flag is deprecated, and ngrok 3.39 did not apply it reliably. Before this change, Caddy answered tunnelled calls with an empty 200, and sign-in said "Unexpected end of JSON input".
-5. In Vercel, set `API_ORIGIN` to `https://<your-domain>` for Production and Preview, then redeploy. To go back to Render later, set it back and redeploy.
+2. Install Tailscale (`winget install Tailscale.Tailscale`, then approve the Windows prompt), run `tailscale login`, and sign in through the link it prints.
+3. Run `tailscale funnel --bg 3000`. The first time, it prints a link to allow Funnel and HTTPS for your tailnet. Approve both, then run it again. It prints the fixed address, such as `https://itachiuchiha.tail9ec12e.ts.net`. `--bg` keeps the Funnel on across restarts, run by the Tailscale service, with no window to keep open.
+4. In Vercel, set `API_ORIGIN` to that address for Production and Preview, then redeploy. To go back to Render later, set it back and redeploy.
 
-ngrok's free plan puts a warning page in front of browser traffic. `frontend/src/proxy.ts` adds `ngrok-skip-browser-warning` to every call the site forwards, so API calls never see that page. Accounts on the laptop are the local database's, not Render's.
+On the laptop, Caddy answers any host name (`docker-compose.local.yml`), so the tunnel arrives under its own address. Accounts on the laptop are the local database's, not Render's. After a restart, `.\infra\dev\stack.ps1 present` brings Docker and the stack back, checks the Funnel, then checks the hosted site.
 
-The free plan also allows 20,000 HTTP requests a month (checked 2026-11-04). A dashboard polls about 9 calls every 5 seconds, which is roughly 6,500 an hour, so a tab left open for an evening uses up the month. On the laptop itself, use `http://localhost:3000`, which never goes through the tunnel. After a restart, `.\infra\dev\stack.ps1 present` brings Docker, the stack and the tunnel back, then checks the hosted site.
+**Why not ngrok.** It was used first. Its free plan allows 1 GB and 20,000 requests a month, and on 2026-11-04 a dashboard left open overnight used up the gigabyte. From then on ngrok answered every call with a 403 (`ERR_NGROK_725`) until the monthly reset, so sign-in on the hosted site failed. A dashboard then moved about 50 KB every 5 seconds, plus 1.8 MB of hazard shapes each time an alert changed, all uncompressed. Caddy now compresses API answers, about six times less data, and leaves `/api/stream` uncompressed. `frontend/src/proxy.ts` still adds ngrok's `ngrok-skip-browser-warning` header, which is harmless anywhere else, in case ngrok is used again.
 
 ## 2. Point Vercel at it
 

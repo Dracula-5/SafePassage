@@ -121,6 +121,28 @@ function Start-Presentation {
         if (-not (Wait-Until "The stack" 300 $stack)) { return }
     }
     "Stack:       up at http://localhost:3000"
+    # Tailscale Funnel: a fixed address, which the Tailscale service keeps across restarts. It replaced ngrok, whose
+    # free 1 GB a month ran out on 2026-11-04 (ERR_NGROK_725, a 403 on every call).
+    $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+    if (Test-Path $tailscale) {
+        & $tailscale funnel --bg 3000 *> $null
+        $tunnel = (& $tailscale funnel status 2>$null | Select-String -Pattern "https://[^\s]+" | Select-Object -First 1).Matches.Value
+        if (-not $tunnel) { Write-Warning "Tailscale Funnel is not on: run '& `"$tailscale`" funnel 3000' once and follow its link"; return }
+        "Tunnel:      $tunnel (Tailscale Funnel, kept across restarts)"
+    } else {
+        $tunnel = Start-Ngrok
+        if (-not $tunnel) { return }
+    }
+    $hosted = { try { $null -ne (Invoke-RestMethod -Uri "$hostedSite/api/status" -TimeoutSec 20).hazards_active } catch { $false } }
+    if (Wait-Until "The hosted site" 90 $hosted) {
+        $s = Invoke-RestMethod -Uri "$hostedSite/api/status"
+        "Hosted site: $hostedSite is live: $($s.hazards_active) hazards, $($s.sources_fresh) of $($s.sources_total) sources on time"
+    } else {
+        "If the tunnel's address changed, set API_ORIGIN in Vercel to $tunnel and redeploy"
+    }
+}
+
+function Start-Ngrok {
     if (-not (Get-Process ngrok -ErrorAction SilentlyContinue)) {
         $ngrok = (Get-Command ngrok -ErrorAction SilentlyContinue).Source
         if (-not $ngrok) {
@@ -132,16 +154,10 @@ function Start-Presentation {
         Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle = 'SafePassage tunnel - keep open'; & '$ngrok' http 3000")
     }
     $tunnels = { try { (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 3).tunnels.Count -gt 0 } catch { $false } }
-    if (-not (Wait-Until "The tunnel" 60 $tunnels)) { return }
-    $tunnel = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels[0].public_url
-    "Tunnel:      $tunnel (keep its window open)"
-    $hosted = { try { $null -ne (Invoke-RestMethod -Uri "$hostedSite/api/status" -TimeoutSec 20).hazards_active } catch { $false } }
-    if (Wait-Until "The hosted site" 90 $hosted) {
-        $s = Invoke-RestMethod -Uri "$hostedSite/api/status"
-        "Hosted site: $hostedSite is live: $($s.hazards_active) hazards, $($s.sources_fresh) of $($s.sources_total) sources on time"
-    } else {
-        "If the tunnel's address changed, set API_ORIGIN in Vercel to $tunnel and redeploy"
-    }
+    if (-not (Wait-Until "The tunnel" 60 $tunnels)) { return $null }
+    $url = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels[0].public_url
+    Write-Host "Tunnel:      $url (ngrok: keep its window open)"
+    return $url
 }
 
 switch ($Action) {

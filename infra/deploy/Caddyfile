@@ -1,10 +1,22 @@
 # One address: the web app, with the API behind it. With an https:// PUBLIC_URL, Caddy gets and renews the certificate by
 # itself. It replaces any X-Forwarded-For a client sends, so the rate limiter sees real addresses, and it
-# streams /api/stream unbuffered without being told. Keep this free of `encode`: compression would hold
-# back the stream.
+# streams /api/stream unbuffered without being told. Never compress the stream: that would hold its events back.
 {$PUBLIC_URL} {
 	request_body {
 		max_size 2MB
+	}
+	# API answers are compressed: a dashboard polls about 50 KB every 5 seconds and the hazard shapes are 1.8 MB, which
+	# used up a free tunnel's 1 GB in a day (2026-11-04). JSON shrinks about tenfold. The stream stays as it is.
+	@compressible {
+		path /api/* /portal/api/*
+		not path /api/stream
+	}
+	encode @compressible zstd gzip {
+		match {
+			header Content-Type application/json*
+			header Content-Type application/geo+json*
+			header Content-Type application/problem+json*
+		}
 	}
 	@backend path /api/* /health /portal/api/* /portal/whatsapp
 	handle @backend {
