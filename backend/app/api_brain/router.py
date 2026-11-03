@@ -9,8 +9,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from reliefroute_contracts.enums import OrderStatus, PlanStatus
-from reliefroute_contracts.events import PlanApproved
-from reliefroute_contracts.streams import PLAN_APPROVED
+from reliefroute_contracts.events import LonLat, PlanApproved, VehicleDeviation
+from reliefroute_contracts.streams import PLAN_APPROVED, VEHICLE_DEVIATION
 
 from app.core import bus
 from app.core.auth import require_operator
@@ -20,6 +20,7 @@ from app.core.sessions import account_for
 from app.core.settings_brain import get_brain_settings
 from app.core.validation import Name, Text
 from app.graph import plans, waves
+from app.graph.audit import Audit
 from app.telemetry.access import require_vehicle_access
 
 router = APIRouter(tags=["brain"])
@@ -281,6 +282,54 @@ async def get_vehicle_assignment(vehicle_id: UUID) -> dict:
             "route": _route_out(route),
             "instructions": {"language": instructions.get("language", "en"), "text": instructions.get("text", ""),
                              "audio_url": None}}  # fmt: skip
+
+
+class ProblemReport(BaseModel):
+    problem: Literal["traffic", "road_blocked", "breakdown", "accident"]
+    note: Text | None = Field(default=None, max_length=200)
+
+
+# A truck that cannot go on is 'stalled': the goods still at suppliers move to another truck. One that is held up is
+# 'off_route': it keeps its load and gets a way round the road ahead (agents/replan seed, solvers/deviation.py).
+DEVIATION_FOR = {"traffic": "off_route", "road_blocked": "off_route", "breakdown": "stalled", "accident": "stalled"}
+PROBLEM_WORDS = {"traffic": "heavy traffic", "road_blocked": "a blocked road", "breakdown": "a breakdown", "accident": "an accident"}
+
+
+@router.post("/api/vehicles/{vehicle_id}/problem", status_code=202, dependencies=[Depends(require_vehicle_access)])
+async def report_problem(vehicle_id: UUID, body: ProblemReport, request: Request) -> dict:
+    """What no GPS rule can see, from the driver (or a duty officer for them). It opens a deviation exactly as the
+    monitor does, so the usual re-route follows, within the same per-hour cap."""
+    pool = await get_pool()
+    a = await pool.fetchrow(
+        """SELECT a.route_id, a.plan_id, p.thread_id, v.label, ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat
+           FROM v_vehicle_assignment a JOIN plans p ON p.id = a.plan_id JOIN v_vehicle_status v ON v.id = a.vehicle_id
+           WHERE a.vehicle_id = $1""", vehicle_id)  # fmt: skip
+    if a is None:
+        raise HTTPException(409, "this truck has no route to change")
+    kind = DEVIATION_FOR[body.problem]
+    row = await pool.fetchrow(
+        """INSERT INTO route_deviations (route_id, plan_id, vehicle_id, kind, last_position, reported_problem, reported_note)
+           VALUES ($1, $2, $3, $4, CASE WHEN $5::float8 IS NULL THEN NULL ELSE ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326) END,
+                   $7, $8)
+           ON CONFLICT (route_id, kind) WHERE resolved_at IS NULL DO NOTHING RETURNING detected_at""",
+        a["route_id"], a["plan_id"], vehicle_id, kind, a["lon"], a["lat"], body.problem, body.note)  # fmt: skip
+    if row is None:
+        return {"status": "already_rerouting", "kind": kind}
+    account = await account_for(request)
+    if account and account["role"] == "operator":
+        reporter = f"Duty officer {account['name']}, for {a['label']},"
+    elif request.headers.get("x-operator-token"):
+        reporter = f"A duty officer, for {a['label']},"
+    else:
+        reporter = f"Driver of {a['label']}"
+    await Audit(pool, str(a["plan_id"]), a["thread_id"])(
+        "replanner", "decision", f"{reporter} reported {PROBLEM_WORDS[body.problem]}" + (f": {body.note}" if body.note else ""),
+        {"problem": body.problem, "kind": kind, "note": body.note}, [f"route:{a['route_id']}", f"vehicle:{vehicle_id}"])
+    position = LonLat(lon=a["lon"], lat=a["lat"]) if a["lon"] is not None else None
+    await bus.try_publish(VEHICLE_DEVIATION, VehicleDeviation(
+        vehicle_id=vehicle_id, plan_id=a["plan_id"], route_id=a["route_id"], kind=kind, detected_at=row["detected_at"],
+        last_position=position), dedupe_key=f"{a['route_id']}:{kind}:{row['detected_at'].isoformat()}")  # fmt: skip
+    return {"status": "rerouting", "kind": kind}
 
 
 @router.get("/api/brain/health", dependencies=[Depends(require_operator)])

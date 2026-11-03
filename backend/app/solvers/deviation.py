@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from shapely import LineString, Point
+from shapely import LineString, Point, Polygon
 from shapely.ops import substring
 
 from .geometry import LonLat, _project, local_projection
@@ -35,3 +35,15 @@ def remaining_route(route: Sequence[LonLat], point: LonLat) -> list[LonLat]:
     if not isinstance(ahead, LineString) or ahead.length < 1:
         return [tuple(c) for c in route[-2:]]
     return [(x, y) for x, y in _project(ahead, inv).coords]
+
+
+def blocked_ahead(route: Sequence[LonLat], point: LonLat, ahead_m: float, radius_m: float) -> Polygon | None:
+    """A small circle on the route `ahead_m` past `point`, for a driver who reports the road ahead blocked or jammed.
+    None when the route ends sooner: the next stops are that close, and there is no way round to look for."""
+    line = LineString(route)
+    fwd, inv = local_projection([line])
+    line_m = _project(line, fwd)
+    at = line_m.project(_project(Point(point), fwd)) + ahead_m
+    if at >= line_m.length:
+        return None
+    return _project(line_m.interpolate(at).buffer(radius_m), inv)

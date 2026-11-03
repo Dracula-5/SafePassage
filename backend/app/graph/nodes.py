@@ -4,12 +4,14 @@ agent_events (with source ids), and returns validated outputs as JSON-able dicts
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 import asyncpg
 from langgraph.types import interrupt
+from shapely.geometry import mapping, shape
 
 from app.agents import data, reasoning
 from app.agents.approval import Limits, reasons_for_a_person, waived_in_presentation
@@ -25,7 +27,8 @@ from app.dispatch.messaging import Messenger
 from app.llm.client import LLMClient, LLMOutputError
 from app.routing.repository import fetch_active_hazards, fetch_road_hazards, is_wide
 from app.routing.valhalla import Location, ValhallaClient, ValhallaError
-from app.solvers.geometry import exclusion_rings, verify_route
+from app.solvers.deviation import blocked_ahead
+from app.solvers.geometry import HazardShape, exclusion_rings, verify_route
 
 from . import fallbacks, plans
 from .audit import Audit
@@ -43,6 +46,8 @@ class PlanState(TypedDict, total=False):
     onboard_vehicle_id: str
     excluded_vehicle_id: str
     stranded: list[dict]        # goods on a lost truck; kept with the plan's other escalations
+    avoid: dict                 # GeoJSON: the road ahead a driver reported blocked, kept out of the new route
+    keep_vehicle_id: str        # a held-up driver keeps the deliveries: only the way there changes
     is_drill: bool
     started_at: str
     hazards: list[dict]
@@ -83,6 +88,10 @@ ALTERNATE_HUB_RADIUS_FACTOR = 4
 ALTERNATE_HUB_CANDIDATES = 40
 AREA_MARGIN_DEG = 0.5  # about 50 km: hazards farther than this from every location cannot affect the trip
 MIN_VEHICLES_PLANNED = 3
+ROAD_PROBLEMS = ("traffic", "road_blocked")  # a driver held up keeps the load and needs a way round
+# Far enough ahead that the truck stays outside the zone even at the widest exclusion margin (1 km, agents/planner.py).
+BLOCKED_AHEAD_M = 1500.0
+BLOCKED_RADIUS_M = 150.0
 
 
 def _area(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
@@ -177,16 +186,23 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         await plans.set_status(deps.pool, state["plan_id"], "planning", allocation=allocation.model_dump(mode="json"),
                                demand=parent["demand"], triage=parent["triage"], escalations=seed.stranded,
                                is_drill=parent["is_drill"])  # fmt: skip
+        avoid = None
+        if seed.reported_problem in ROAD_PROBLEMS and seed.position and seed.geometry:
+            zone = blocked_ahead(seed.geometry, seed.position, BLOCKED_AHEAD_M, BLOCKED_RADIUS_M)
+            avoid = json.loads(json.dumps(mapping(zone))) if zone is not None else None  # plain lists for the checkpoint
+        cause = f"{seed.reported_problem.replace('_', ' ')} reported" if seed.reported_problem else seed.kind.replace("_", " ")
         await audit("replanner", "decision",
-                    f"{seed.kind.replace('_', ' ')}: {len(allocation.orders)} order(s) to re-route, "
-                    f"{len(seed.stranded)} line(s) stranded on the vehicle", allocation.model_dump(mode="json"),
-                    [f"route:{route_id}", f"vehicle:{seed.vehicle_id}"])  # fmt: skip
+                    f"{cause}: {len(allocation.orders)} order(s) to re-route, {len(seed.stranded)} line(s) stranded on the vehicle"
+                    + (f"; the new route avoids the road about {BLOCKED_AHEAD_M / 1000:.1f} km ahead" if avoid else ""),
+                    allocation.model_dump(mode="json"), [f"route:{route_id}", f"vehicle:{seed.vehicle_id}"])  # fmt: skip
         if not allocation.orders:
             return _stop(state, "failed", "nothing can be re-routed: the goods are on a vehicle that cannot move")
         return {"allocation": allocation.model_dump(mode="json"), "demand": parent["demand"], "triage": parent["triage"],
                 "hazards": [h.model_dump(mode="json") for h in hazards], "is_drill": parent["is_drill"], "attempt": 1,
                 "verdicts": [], "onboard_vehicle_id": seed.onboard_vehicle_id,
-                "excluded_vehicle_id": seed.excluded_vehicle_id, "stranded": seed.stranded}  # fmt: skip
+                "excluded_vehicle_id": seed.excluded_vehicle_id, "stranded": seed.stranded,
+                **({"avoid": avoid} if avoid else {}),
+                **({"keep_vehicle_id": seed.vehicle_id} if seed.reported_problem in ROAD_PROBLEMS else {})}  # fmt: skip
 
     async def sentinel(state: PlanState) -> dict:
         audit = audit_for(state)
@@ -312,6 +328,12 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             return _stop(state, "failed", f"no online vehicle within {s.vehicle_radius_m / 1000:.0f} km: escalated to humans")
         vehicles = [VehicleIn(vehicle_id=r["id"], label=r["label"], capacity_kg=r["capacity_kg"], driver_language=r["driver_language"],
                               lon=r["lon"], lat=r["lat"], simulated=r["simulated"], requested=r["requested"]) for r in rows]  # fmt: skip
+        keep = state.get("keep_vehicle_id")
+        if keep and any(v.vehicle_id == keep for v in vehicles):
+            # These deliveries were planned for this truck, so they fit it; a closer one taking them would leave its
+            # driver, who only asked for a way round, with nothing to do.
+            vehicles = [v for v in vehicles if v.vehicle_id == keep]
+            await audit("route_planner", "decision", f"Keeping the deliveries with {vehicles[0].label}, whose driver asked for a way round")
         onboard_vehicle = state.get("onboard_vehicle_id")
         if onboard_vehicle and all(v.vehicle_id != onboard_vehicle for v in vehicles):
             return _stop(state, "failed", "the vehicle carrying these goods went offline during replanning: escalated to humans")
@@ -327,9 +349,11 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
             vehicles = vehicles[:room]
         trip = [(v.lon, v.lat) for v in vehicles] + [(x.lon, x.lat) for x in sites.values()]
         hazards = await fetch_road_hazards(deps.pool, _area(trip), state["hazard_ids"])
+        # Not a hazard, so the Critic does not hold the route to it: it only steers this one re-route off the road.
+        blocked = [HazardShape(hazard_id="driver-report", geom=shape(state["avoid"]))] if state.get("avoid") else []
         triage = Triage.model_validate(state["triage"])
         try:
-            routing = await plan_routes(deps.valhalla, allocation.orders, vehicles, sites, hazards,
+            routing = await plan_routes(deps.valhalla, allocation.orders, vehicles, sites, hazards + blocked,
                                         datetime.fromisoformat(state["started_at"]), triage.planning_horizon_hours * 3600,
                                         state["attempt"], max_trips=s.max_trips_per_vehicle,
                                         shift_s=int(s.max_shift_hours * 3600), onboard_vehicle_id=onboard_vehicle)  # fmt: skip

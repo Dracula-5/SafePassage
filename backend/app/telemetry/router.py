@@ -23,6 +23,7 @@ from app.core.auth import require_enrolment, require_operator, require_role
 from app.core.db import get_pool
 from app.core.validation import Name
 
+from .access import require_vehicle_access
 from .tokens import hash_token, new_token
 
 router = APIRouter(tags=["senses"])
@@ -44,7 +45,8 @@ VEHICLE_SELECT = """SELECT id, label, driver_name, driver_language, capacity_kg,
        seconds_since_seen, is_offline, ST_AsGeoJSON(last_position, 6) AS geojson,
        EXISTS (SELECT 1 FROM v_vehicle_assignment a WHERE a.vehicle_id = v_vehicle_status.id) AS on_route,
        EXISTS (SELECT 1 FROM demo_drivers d WHERE d.vehicle_id = v_vehicle_status.id) AS simulated,
-       (SELECT n.fleet_number FROM vehicles n WHERE n.id = v_vehicle_status.id) AS fleet_number
+       (SELECT n.fleet_number FROM vehicles n WHERE n.id = v_vehicle_status.id) AS fleet_number,
+       (SELECT n.gps_checkin_at FROM vehicles n WHERE n.id = v_vehicle_status.id) AS gps_checkin_at
        FROM v_vehicle_status"""
 
 
@@ -56,6 +58,7 @@ def vehicle_out(r) -> dict:
         "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
         "seconds_since_seen": r["seconds_since_seen"], "is_offline": r["is_offline"], "on_route": r["on_route"],
         "simulated": r["simulated"], "fleet_number": r["fleet_number"],
+        "gps_checkin_at": r["gps_checkin_at"].isoformat() if r["gps_checkin_at"] else None,
     }  # fmt: skip
 
 
@@ -117,6 +120,17 @@ async def use_this_device(account: Driver) -> dict:
     token, digest = new_token()
     await (await get_pool()).execute("UPDATE vehicles SET device_token_hash = $2, updated_at = now() WHERE id = $1", row["id"], digest)
     return {"vehicle": vehicle_out(row), "device_token": token}
+
+
+@router.post("/api/vehicles/{vehicle_id}/check-in", dependencies=[Depends(require_vehicle_access)])
+async def gps_check_in(vehicle_id: UUID) -> dict:
+    """The driver answers, with no GPS fix on the phone, that the truck is still on its route. It is not a position:
+    it only holds off the re-route a silent truck gets, for one grace period (graph/monitor.py)."""
+    at = await (await get_pool()).fetchval(
+        "UPDATE vehicles SET gps_checkin_at = now(), updated_at = now() WHERE id = $1 RETURNING gps_checkin_at", vehicle_id)
+    if at is None:
+        raise HTTPException(404, "vehicle not found")
+    return {"vehicle_id": str(vehicle_id), "checked_in_at": at.isoformat()}
 
 
 @router.post("/api/vehicles/{vehicle_id}/revoke", dependencies=[Depends(require_operator)])

@@ -4,15 +4,34 @@
 // from the trip hook (real GPS state, the real assignment). Nothing is invented: no delivery confirmation exists in
 // the backend, so none is offered, and stops complete by themselves as the truck reaches them.
 
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 
-import { Account } from "@/lib/api";
+import { Account, DriverProblem } from "@/lib/api";
 import { plate, tonnes } from "@/lib/format";
 import { signOut } from "@/lib/session";
 
-import { Icon } from "../ui";
+import { ConfirmDialog, Icon } from "../ui";
 import styles from "./driver.module.css";
-import { stopVerb, Trip } from "./useTrip";
+import { ProblemReport, stopVerb, Trip } from "./useTrip";
+
+// What each report does is decided by the backend (POST /api/vehicles/{id}/problem); these lines tell the driver.
+const PROBLEMS: { key: DriverProblem; label: string; effect: string }[] = [
+  { key: "traffic", label: "Heavy traffic", effect: "You keep your load and get a way round." },
+  { key: "road_blocked", label: "Road blocked", effect: "You keep your load and get a way round." },
+  { key: "breakdown", label: "Vehicle breakdown", effect: "Goods still at suppliers go to another truck." },
+  { key: "accident", label: "Accident", effect: "If anyone is hurt, call 108 first. Goods still at suppliers go to another truck." },
+];
+const KEEPS_LOAD: DriverProblem[] = ["traffic", "road_blocked"];
+
+function reportText(report: ProblemReport): string {
+  const label = PROBLEMS.find((p) => p.key === report.problem)?.label ?? report.problem;
+  if (report.status === "sending") return `Sending your report: ${label}…`;
+  if (report.status === "failed") return `Could not send your report (${report.message}). Check your signal and try again.`;
+  if (report.status === "already") return `${label} reported. This route is already being changed; the new one appears here shortly.`;
+  return KEEPS_LOAD.includes(report.problem)
+    ? `${label} reported. A way round is being worked out, and your new route appears here in about a minute. Keep your load.`
+    : `${label} reported. Stay with the truck. Goods still at suppliers go to another truck; a duty officer will contact you about the load on board.`;
+}
 
 export type DriverView = "home" | "assignments" | "route" | "stops" | "status" | "profile";
 
@@ -61,6 +80,17 @@ function Banners({ trip, view }: { trip: Trip; view: DriverView }) {
         <div className={`${styles.notice} ${styles.nRoute}`} role="alert">
           <span>New route. Follow the stops.{view !== "stops" && <> <button type="button" className="link" style={{ color: "inherit", textDecoration: "underline", minHeight: 0 }} onClick={() => { trip.dismissRouteChange(); goDriver("stops"); }}>Open stops</button></>}</span>
         </div>
+      )}
+      {trip.report && (
+        <div className={`${styles.notice} ${trip.report.status === "failed" ? styles.nBad : styles.nWarn}`} role="status">
+          <span>{reportText(trip.report)}{" "}
+            {trip.report.status !== "sending" && <button type="button" className="link" style={{ color: "inherit", textDecoration: "underline", minHeight: 0 }}
+              onClick={trip.report.status === "failed" ? trip.openProblem : trip.dismissReport}>{trip.report.status === "failed" ? "Try again" : "OK"}</button>}
+          </span>
+        </div>
+      )}
+      {trip.checkedInAt && trip.gpsFailed && (
+        <div className={`${styles.notice} ${styles.nWarn}`}>You confirmed at {trip.checkedInAt} that you are on your route. Turn location on for this browser so your position reaches the duty officer.</div>
       )}
       {assignment?.is_drill && <div className={`${styles.notice} ${styles.nDrill}`}>DRILL. This is not a real dispatch.</div>}
       {assignment?.route.kind === "evacuation" && <div className={`${styles.notice} ${styles.nGood}`}><span><b>Evacuation.</b> You are carrying people. The way out avoids the active hazard zones.</span></div>}
@@ -133,9 +163,55 @@ export function HomeScreen({ trip, account }: { trip: Trip; account: Account | n
             <button type="button" className={styles.big} onClick={() => goDriver("stops")}>See all stops</button>
             <button type="button" className={styles.big} onClick={() => goDriver("route")}>Route details</button>
           </div>
+          {next && <ReportButton trip={trip} />}
         </section>
       )}
     </>
+  );
+}
+
+function ReportButton({ trip }: { trip: Trip }) {
+  return (
+    <button type="button" className={`${styles.big} ${styles.report}`} onClick={trip.openProblem}>
+      <Icon name="alert" size={20} /> {trip.watching ? "Report a problem for this driver" : "Report a problem"}
+    </button>
+  );
+}
+
+/** Heavy traffic, a blocked road, a breakdown or an accident: the backend re-routes as the choice says. */
+export function ProblemDialog({ trip }: { trip: Trip }) {
+  const [choice, setChoice] = useState<DriverProblem | null>(null);
+  const [note, setNote] = useState("");
+  const close = () => { trip.closeProblem(); setChoice(null); setNote(""); };
+  return (
+    <ConfirmDialog open={trip.problemOpen} title="What is the problem?" confirmLabel="Send and re-route" disabled={!choice}
+      busy={trip.report?.status === "sending"} onCancel={close}
+      onConfirm={async () => { if (choice) { await trip.reportProblem(choice, note.trim()); setChoice(null); setNote(""); } }}>
+      <div className={styles.choices} role="radiogroup" aria-label="Problem">
+        {PROBLEMS.map((p) => (
+          <button key={p.key} type="button" role="radio" aria-checked={choice === p.key} className={`${styles.choice} ${choice === p.key ? styles.choiceOn : ""}`}
+            onClick={() => setChoice(p.key)}>
+            <b>{p.label}</b><small>{p.effect}</small>
+          </button>
+        ))}
+      </div>
+      <label className={styles.noteField}>Anything to add (optional)
+        <input maxLength={200} placeholder="e.g. bridge flooded near the market" value={note} onChange={(e) => setNote(e.target.value)} />
+      </label>
+      {trip.report?.status === "failed" && <div className={`${styles.notice} ${styles.nBad}`} role="alert">{reportText(trip.report)}</div>}
+    </ConfirmDialog>
+  );
+}
+
+/** Asked when the phone has signal but no GPS fix on a route: a silent truck's goods go to another one after 5 minutes. */
+export function GpsQuestion({ trip }: { trip: Trip }) {
+  return (
+    <ConfirmDialog open={trip.gpsQuestion} title="We can't see your GPS" confirmLabel="Yes, I'm on my route" cancelLabel="Not now"
+      onConfirm={trip.confirmOnRoute} onCancel={trip.dismissGpsQuestion}>
+      <p>Your position has not reached the duty officer for over a minute. Are you still driving your route?</p>
+      <p className="muted small">With no answer and no GPS for 5 minutes, your goods may be given to another truck.</p>
+      <button type="button" className={styles.big} onClick={trip.openProblem}>No, I have a problem</button>
+    </ConfirmDialog>
   );
 }
 
@@ -202,6 +278,7 @@ export function RouteScreen({ trip }: { trip: Trip }) {
               : <p className="muted">Preparing your instructions in your language. The stops are ready now.</p>}
           </section>
           <button type="button" className={styles.big} onClick={() => goDriver("stops")}>See the stops</button>
+          {route.completed_stops < route.stops.length && <ReportButton trip={trip} />}
         </>
       )}
     </>

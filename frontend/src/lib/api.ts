@@ -296,6 +296,8 @@ export interface Vehicle {
   on_route: boolean;
   simulated: boolean;
   fleet_number: number;
+  /** When the driver last confirmed, with no GPS fix, that the truck is still on its route. */
+  gps_checkin_at?: string | null;
 }
 
 export interface DriverRequest {
@@ -353,6 +355,8 @@ export interface Assignment {
   instructions: { language: string; text: string };
 }
 
+export type DriverProblem = "traffic" | "road_blocked" | "breakdown" | "accident";
+
 export interface DeviceRegistration {
   vehicle: Vehicle;
   device_token: string;
@@ -374,6 +378,16 @@ export const driverApi = {
       headers: { ...json, ...(token ? { "X-Device-Token": token } : {}) },
       body: JSON.stringify({ accept }),
     }),
+  /** Traffic or a blocked road gets a way round with the same load; a breakdown or accident gives the waiting goods to another truck. */
+  reportProblem: (vehicleId: string, token: string, problem: DriverProblem, note?: string) =>
+    send<{ status: "rerouting" | "already_rerouting"; kind: string }>(`/api/vehicles/${vehicleId}/problem`, {
+      method: "POST",
+      headers: { ...json, ...(token ? { "X-Device-Token": token } : {}) },
+      body: JSON.stringify({ problem, note: note || undefined }),
+    }),
+  /** "Still on my route" with no GPS fix: holds off giving this truck's goods to another for one grace period. */
+  checkIn: (vehicleId: string, token: string) =>
+    send<{ checked_in_at: string }>(`/api/vehicles/${vehicleId}/check-in`, { method: "POST", headers: token ? { "X-Device-Token": token } : undefined }),
   telemetry: (vehicleId: string, token: string, fixes: unknown[]) =>
     send<{ accepted: number; duplicates: number }>("/api/telemetry", {
       method: "POST",

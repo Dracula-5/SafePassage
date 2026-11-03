@@ -99,6 +99,63 @@ def test_carried_orders_only_cover_parts_a_vehicle_takes():
     assert carried[0].weight_kg == 2000 and carried[0].lines[0].quantity == 2000
 
 
+def test_a_reported_blockage_is_avoided_on_the_road_ahead_and_never_around_the_truck():
+    from app.graph.nodes import BLOCKED_AHEAD_M, BLOCKED_RADIUS_M
+    from app.solvers.deviation import blocked_ahead, distance_m
+
+    road = [(80.60, 16.50), (80.62, 16.50), (80.64, 16.50), (80.66, 16.50)]  # about 6.4 km east
+    truck = (80.601, 16.5001)
+    zone = blocked_ahead(road, truck, BLOCKED_AHEAD_M, BLOCKED_RADIUS_M)
+    assert zone is not None and zone.centroid.x > truck[0]  # ahead, not behind
+    assert abs(distance_m(truck, (zone.centroid.x, zone.centroid.y)) - BLOCKED_AHEAD_M) < 20
+    # The widest exclusion margin (1 km) grows the zone, and the truck must still start outside it.
+    assert BLOCKED_AHEAD_M - BLOCKED_RADIUS_M - 1000 > 0
+    assert blocked_ahead(road, (80.655, 16.50), BLOCKED_AHEAD_M, BLOCKED_RADIUS_M) is None  # the last stop is too close
+
+
+def test_a_driver_who_cannot_go_on_gives_up_the_load_and_one_held_up_keeps_it():
+    from app.api_brain.router import DEVIATION_FOR
+    from app.graph.replan import LOST_VEHICLE_KINDS
+
+    assert {DEVIATION_FOR["breakdown"], DEVIATION_FOR["accident"]} <= set(LOST_VEHICLE_KINDS)
+    assert DEVIATION_FOR["traffic"] not in LOST_VEHICLE_KINDS and DEVIATION_FOR["road_blocked"] not in LOST_VEHICLE_KINDS
+
+
+@pytest.mark.parametrize("checked_in_s_ago,reassigned", [(60, False), (400, True), (None, True)])
+async def test_a_silent_truck_keeps_its_goods_only_while_the_drivers_check_in_is_fresh(monkeypatch, checked_in_s_ago, reassigned):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from app.graph.monitor import RouteMonitor, Tracked
+
+    now = datetime.now(UTC)
+    route = Tracked(route_id="r1", plan_id="p1", vehicle_id="v1", thread_id="t1", label="AP-T1", status="active",
+                    stops=[{"kind": "dropoff", "lon": 80.1, "lat": 16.1}], completed=0, geometry=[(80.0, 16.0), (80.1, 16.1)],
+                    position=(80.0, 16.0), is_offline=True, seconds_since_seen=400,
+                    checked_in_at=None if checked_in_s_ago is None else now - timedelta(seconds=checked_in_s_ago))  # fmt: skip
+    monitor = RouteMonitor(SimpleNamespace(settings=SimpleNamespace(offline_grace_s=300, stalled_after_s=900), pool=None))
+    calls: list[str] = []
+
+    async def active(vehicle_id=None):
+        return [route]
+
+    async def deviate(r, kind, point, **_):
+        calls.append(kind)
+
+    async def note(r, silent):
+        calls.append("noted")
+
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(monitor, "_active", active)
+    monkeypatch.setattr(monitor, "_deviate", deviate)
+    monkeypatch.setattr(monitor, "_note_check_in", note)
+    monkeypatch.setattr(monitor, "_retry_unhandled_deviations", nothing)
+    await monitor.sweep()
+    assert calls == (["offline"] if reassigned else ["noted"])
+
+
 def test_a_sliver_that_rounds_to_nothing_is_left_out_instead_of_stopping_the_plan():
     allocation = Allocation(orders=[order("a", 1000), order("b", 0.0004)], shortfalls=[])
     routing = Routing(routes=[planned(["a", "b"])], unserved_order_keys=[], margin_m=250, vehicles_considered=1,

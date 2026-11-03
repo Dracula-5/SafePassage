@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, Assignment, DeviceRegistration, driverApi, DriverRequest } from "@/lib/api";
+import { ApiError, Assignment, DeviceRegistration, driverApi, DriverProblem, DriverRequest } from "@/lib/api";
 import { add, afterSend, nextBatch } from "@/lib/queue.mjs";
 
 import { REFRESH_MS } from "../LiveStatus";
@@ -15,6 +15,12 @@ import { REFRESH_MS } from "../LiveStatus";
 export const DEVICE = "rr_device";
 export const QUEUE = "rr_queue";
 const OFFLINE_FIX_MS = 30_000; // in a dead zone, fewer fixes make the phone's storage last 16 hours
+// A minute on a route with no GPS fix: ask the driver. Asked again after 3 minutes, inside the 5 the server waits
+// (offline_grace_s) before a silent truck's goods go to another one.
+const GPS_LOST_MS = 60_000;
+const ASK_AGAIN_MS = 180_000;
+
+export type ProblemReport = { problem: DriverProblem; status: "sending" | "sent" | "already" | "failed"; message?: string };
 const SPEECH_LANG: Record<string, string> = { te: "te-IN", hi: "hi-IN", en: "en-IN" };
 
 type Fix = { lon: number; lat: number; recorded_at: string; speed_mps: number | null; heading_deg: number | null; accuracy_m: number };
@@ -52,7 +58,13 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
   const [queued, setQueued] = useState(0);
   const [sentAt, setSentAt] = useState<string | null>(null);
   const [revoked, setRevoked] = useState(false);
+  const [gpsQuestion, setGpsQuestion] = useState(false);
+  const [checkedInAt, setCheckedInAt] = useState<string | null>(null);
+  const [problemOpen, setProblemOpen] = useState(false);
+  const [report, setReport] = useState<ProblemReport | null>(null);
   const lastFix = useRef(0);
+  const lastFixAt = useRef(0); // any fix, sent or not: what "GPS lost" is measured from
+  const askedAt = useRef(0);
   const routeId = useRef<string | null>(null);
 
   const speak = useCallback((text: string, language: string) => {
@@ -91,12 +103,14 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
       setAssignment(next);
       if (changed) {
         setRouteChanged(true);
+        setReport(null); // the new route is the answer to a report
         speak(next.instructions.text, next.instructions.language);
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         routeId.current = null;
         setAssignment(null);
+        setGpsQuestion(false);
       }
       if (err instanceof ApiError && err.status === 401) setRevoked(true);
     }
@@ -123,10 +137,13 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
       setQueued(read<Fix[]>(QUEUE, []).length);
     }, 0);
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/driver" });
+    lastFixAt.current = Date.now(); // the first minute after opening is not "lost"
     const record = (p: GeolocationPosition) => {
       setGps(`±${Math.round(p.coords.accuracy)} m`);
       setGpsFailed(false);
+      setGpsQuestion(false);
       const now = Date.now();
+      lastFixAt.current = now;
       if (now - lastFix.current < (navigator.onLine ? REFRESH_MS : OFFLINE_FIX_MS)) return;
       lastFix.current = now;
       const fix: Fix = { lon: p.coords.longitude, lat: p.coords.latitude, recorded_at: new Date(p.timestamp).toISOString(), speed_mps: p.coords.speed ?? null,
@@ -154,6 +171,12 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
       if (hasGps) navigator.geolocation.getCurrentPosition(record, () => undefined, { enableHighAccuracy: true, maximumAge: 2000, timeout: REFRESH_MS - 500 });
       flush();
       loadAssignment();
+      // On a route, with signal but no fix: ask the driver, since the server can still hear the answer.
+      const now = Date.now();
+      if (routeId.current && navigator.onLine && now - lastFixAt.current > GPS_LOST_MS && now - askedAt.current > ASK_AGAIN_MS) {
+        askedAt.current = now;
+        setGpsQuestion(true);
+      }
     }, REFRESH_MS);
     window.addEventListener("online", syncOnline);
     window.addEventListener("offline", syncOnline);
@@ -173,9 +196,36 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
     loadAssignment();
   }
 
+  async function confirmOnRoute() {
+    setGpsQuestion(false);
+    askedAt.current = Date.now();
+    try {
+      const { checked_in_at } = await driverApi.checkIn(vehicle.id, token);
+      setCheckedInAt(new Date(checked_in_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    } catch {
+      askedAt.current = 0; // not heard: ask again on the next beat
+    }
+  }
+
+  async function reportProblem(problem: DriverProblem, note: string) {
+    setReport({ problem, status: "sending" });
+    try {
+      const { status } = await driverApi.reportProblem(vehicle.id, token, problem, note);
+      setReport({ problem, status: status === "already_rerouting" ? "already" : "sent" });
+      setProblemOpen(false);
+    } catch (err) {
+      setReport({ problem, status: "failed", message: (err as Error).message });
+    }
+  }
+
   return {
     vehicle, noPhone, watching, assignment, request, routeChanged, gps, gpsFailed, online, queued, sentAt, revoked, speak, answer,
+    gpsQuestion, checkedInAt, confirmOnRoute, problemOpen, report, reportProblem,
     dismissRouteChange: () => setRouteChanged(false),
+    dismissGpsQuestion: () => setGpsQuestion(false),
+    openProblem: () => { setGpsQuestion(false); setProblemOpen(true); },
+    closeProblem: () => setProblemOpen(false),
+    dismissReport: () => setReport(null),
   };
 }
 

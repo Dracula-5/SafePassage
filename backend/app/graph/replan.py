@@ -8,6 +8,7 @@ The parent's orders shrink by what moves, so stock is never reserved twice.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -28,6 +29,9 @@ class Seed:
     stranded: list[dict]
     onboard_vehicle_id: str | None
     excluded_vehicle_id: str | None
+    reported_problem: str | None = None   # what the driver said, when the driver opened this deviation
+    position: tuple[float, float] | None = None
+    geometry: list[tuple[float, float]] | None = None  # the abandoned route, for the road ahead of a reported blockage
 
 
 def split_remaining(stops: list[dict], completed: int, parts: list[OrderPart]) -> tuple[list[OrderPart], list[OrderPart]]:
@@ -98,12 +102,12 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
     """Abandon the route and return what the replacement plan must carry. None if nothing is left to do."""
     async with pool.acquire() as conn, conn.transaction():
         route = await conn.fetchrow(
-            """SELECT vehicle_id::text, status::text, stops, completed_stops, parts FROM routes WHERE id = $1 FOR UPDATE""",
-            route_id)  # fmt: skip
+            """SELECT vehicle_id::text, status::text, stops, completed_stops, parts, ST_AsGeoJSON(geom) AS geojson
+               FROM routes WHERE id = $1 FOR UPDATE""", route_id)  # fmt: skip
         if route is None or route["status"] not in ("planned", "active"):
             return None
         deviation = await conn.fetchrow(
-            """SELECT kind::text, ST_Y(last_position) AS lat, ST_X(last_position) AS lon FROM route_deviations
+            """SELECT kind::text, ST_Y(last_position) AS lat, ST_X(last_position) AS lon, reported_problem FROM route_deviations
                WHERE route_id = $1 AND resolved_at IS NULL ORDER BY detected_at DESC LIMIT 1""", route_id)  # fmt: skip
         kind = deviation["kind"] if deviation else None
         allocation = await conn.fetchval("SELECT allocation FROM plans WHERE id = $1", parent_plan_id)
@@ -136,4 +140,7 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
     return Seed(kind=kind or "off_route", vehicle_id=route["vehicle_id"], stranded=stranded,
                 allocation=Allocation(orders=drafts, shortfalls=[]),
                 onboard_vehicle_id=None if lost or not loaded else route["vehicle_id"],
-                excluded_vehicle_id=route["vehicle_id"] if lost else None)  # fmt: skip
+                excluded_vehicle_id=route["vehicle_id"] if lost else None,
+                reported_problem=deviation["reported_problem"] if deviation else None,
+                position=(deviation["lon"], deviation["lat"]) if deviation and deviation["lon"] is not None else None,
+                geometry=[tuple(c) for c in json.loads(route["geojson"])["coordinates"]] if route["geojson"] else None)  # fmt: skip

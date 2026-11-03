@@ -13,7 +13,9 @@ import { useAccount } from "@/lib/session";
 
 import AppShell, { Loading } from "./AppShell";
 import styles from "./driver/driver.module.css";
-import { AssignmentsScreen, DriverNav, HomeScreen, parseDriverView, ProfileScreen, RouteScreen, StatusScreen, StopsScreen } from "./driver/DriverScreens";
+import {
+  AssignmentsScreen, DriverNav, GpsQuestion, HomeScreen, parseDriverView, ProblemDialog, ProfileScreen, RouteScreen, StatusScreen, StopsScreen,
+} from "./driver/DriverScreens";
 import { DEVICE, QUEUE, read, useTrip, write } from "./driver/useTrip";
 import { useHash } from "./supplier/nav";
 import { BrandMark } from "./ui";
@@ -126,6 +128,8 @@ function Trip({ device, demo, account, onSimulated, watching = false }: {
         )}
       </main>
       <DriverNav view={view} trip={trip} />
+      <ProblemDialog trip={trip} />
+      <GpsQuestion trip={trip} />
     </>
   );
   if (watching) return <div className={styles.app}>{body}</div>;

@@ -42,7 +42,8 @@ CAPPED_KINDS = ("off_route", "stalled")
 TRACKED_SQL = """
 SELECT a.route_id::text, a.plan_id::text, a.vehicle_id::text, a.route_status::text, a.stops, a.is_drill, p.thread_id,
        r.completed_stops, r.kind, ST_AsGeoJSON(a.geom) AS geojson, v.label, v.is_offline, v.seconds_since_seen,
-       ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat
+       ST_X(v.last_position) AS lon, ST_Y(v.last_position) AS lat,
+       (SELECT n.gps_checkin_at FROM vehicles n WHERE n.id = a.vehicle_id) AS checked_in_at
 FROM v_vehicle_assignment a
 JOIN routes r ON r.id = a.route_id JOIN plans p ON p.id = a.plan_id JOIN v_vehicle_status v ON v.id = a.vehicle_id
 """
@@ -63,6 +64,7 @@ class Tracked:
     is_offline: bool
     seconds_since_seen: float | None
     kind: str = "supply"
+    checked_in_at: datetime | None = None  # the driver's last "still on the route" with no GPS fix
 
     @property
     def next_stop(self) -> dict | None:
@@ -74,7 +76,8 @@ def _tracked(row) -> Tracked:
                    label=row["label"], status=row["route_status"], stops=row["stops"], completed=row["completed_stops"],
                    geometry=[tuple(c) for c in json.loads(row["geojson"])["coordinates"]],
                    position=None if row["lon"] is None else (row["lon"], row["lat"]),
-                   is_offline=row["is_offline"], seconds_since_seen=row["seconds_since_seen"], kind=row["kind"])  # fmt: skip
+                   is_offline=row["is_offline"], seconds_since_seen=row["seconds_since_seen"], kind=row["kind"],
+                   checked_in_at=row["checked_in_at"])  # fmt: skip
 
 
 class RouteMonitor:
@@ -84,6 +87,7 @@ class RouteMonitor:
         self.off_route_streak: dict[str, int] = {}
         self.anchor: dict[str, tuple[Point, datetime]] = {}  # last real movement per vehicle
         self.held: set[str] = set()  # deviations already reported as paused
+        self.check_ins: dict[str, datetime] = {}  # the driver check-in last written to the activity log, per route
 
     async def handle(self, envelope: EventEnvelope) -> None:
         if envelope.event_type == VEHICLE_TELEMETRY:
@@ -209,12 +213,27 @@ class RouteMonitor:
                 continue
             silent = route.seconds_since_seen or 0
             if route.is_offline and silent >= self.s.offline_grace_s:  # also a phone that died before the first fix
+                if route.checked_in_at and (now - route.checked_in_at).total_seconds() < self.s.offline_grace_s:
+                    await self._note_check_in(route, silent)
+                    continue
                 await self._deviate(route, "offline", route.position)
                 continue
             anchor = self.anchor.get(route.vehicle_id)
             parked_too_long = anchor and (now - anchor[1]).total_seconds() >= self.s.stalled_after_s
             if route.status == "active" and parked_too_long and not self._at_a_stop(route, anchor[0]):
                 await self._deviate(route, "stalled", anchor[0])
+
+    async def _note_check_in(self, route: Tracked, silent: float) -> None:
+        """A silent truck whose driver said on the phone that it is still on its route keeps its goods for now.
+        Written once per answer, so the duty officer sees why nothing was reassigned."""
+        if self.check_ins.get(route.route_id) == route.checked_in_at:
+            return
+        self.check_ins[route.route_id] = route.checked_in_at
+        ago = int((datetime.now(UTC) - route.checked_in_at).total_seconds() // 60)
+        await Audit(self.deps.pool, route.plan_id, route.thread_id)(
+            "replanner", "decision", f"{route.label} has sent no GPS fix for {silent / 60:.0f} min, but the driver confirmed "
+            f"{'just now' if ago < 1 else f'{ago} min ago'} that the truck is still on its route: its goods stay with it for now",
+            {"checked_in_at": route.checked_in_at, "silent_s": silent}, [f"route:{route.route_id}", f"vehicle:{route.vehicle_id}"])
 
     def _at_a_stop(self, route: Tracked, point: Point) -> bool:
         """Loading takes longer than the stall limit, so a truck parked at the stop it just reached is fine."""

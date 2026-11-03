@@ -218,6 +218,7 @@ export default function LiveMap(props: Props) {
       ${p.simulated === true || p.simulated === "true" ? '<span class="badge sim">SIMULATED</span>' : ""}
       ${p.driver_name ? `<div>${escapeHtml(String(p.driver_name))}</div>` : ""}
       <div>${offline ? '<span class="badge stale">OFFLINE</span>' : "online"} &middot; ${onRoute ? "on a route" : "waiting"}</div>
+      ${offline && p.gps_checkin_at ? `<div>driver confirmed on route at ${escapeHtml(new Date(String(p.gps_checkin_at)).toLocaleTimeString())}</div>` : ""}
       <div class="muted">capacity ${p.capacity_kg} kg &middot; last GPS ${escapeHtml(seen)}</div>
       <a href="/driver-view?vehicle=${escapeHtml(String(p.id))}" target="_blank" rel="noreferrer">Driver screen</a>
       ${offline || onRoute ? "" : `<button data-ask-truck="${escapeHtml(String(p.id))}">Send request</button>`}</div>`;
@@ -233,7 +234,8 @@ export default function LiveMap(props: Props) {
       features: vehicles.map((v) => ({
         type: "Feature", geometry: v.position!,
         properties: { id: v.id, label: v.label, status: v.status, is_offline: v.is_offline, capacity_kg: v.capacity_kg, last_seen_at: v.last_seen_at,
-          simulated: Boolean(v.simulated), on_route: Boolean(v.on_route), driver_name: v.driver_name, fleet_number: v.fleet_number },
+          simulated: Boolean(v.simulated), on_route: Boolean(v.on_route), driver_name: v.driver_name, fleet_number: v.fleet_number,
+          gps_checkin_at: v.gps_checkin_at ?? null },
       })),
     });
     // The number sits on the round button as HTML: the raster basemap has no font glyphs for symbol layers.

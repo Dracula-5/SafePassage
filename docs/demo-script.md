@@ -42,6 +42,12 @@ A big job does not wait for anyone either. What the trucks could not carry shows
 
 Press **Lose GPS** on another truck for the offline story. It goes offline after 2 minutes, and its goods move to another truck after 5, so start this early or just describe it. **Restore GPS** brings it back.
 
+The driver can report a problem too. On a driver's screen, under the next stop, press **Report a problem** (on a duty officer's view of a truck it reads **Report a problem for this driver**) and choose:
+- **Heavy traffic** or **Road blocked:** the same truck keeps its deliveries and gets a new route that avoids the road about 1.5 km ahead, in about 15 seconds.
+- **Vehicle breakdown** or **Accident:** goods still at suppliers go to another truck, and a load already on board is flagged for a person to recover.
+
+The Activity tab shows who reported what, with the driver's note. On a real phone, a minute with signal but no GPS fix brings up **We can't see your GPS**. **Yes, I'm on my route** keeps the truck's goods with it for 5 more minutes, and the log says so; **No, I have a problem** opens the same report.
+
 **9. Add a driver live (duty officer, 30 s).** On the **Fleet** tab, open **Add a driver**, type a name and number plate, and choose a town. The truck appears on the map within seconds. **Directory**, at the top of the screen, lists every driver, every supplier with its stock, and everyone with an account, and you can search them.
 
 **10. Ask a particular driver (all roles, 1 min).** Click a drill on the map and press **Find nearest drivers**. The **Fleet** tab sorts by distance, and each truck's number matches its round button on the map. Press **Send request** on the driver you want. A signed-in driver sees it on their screen and presses **Accept**; a simulated driver accepts by itself in about 10 seconds. An accepted truck moves to the edge of the area. Press **Make a plan with accepted drivers**: that driver goes first in the new plan. Requests appear in the app only, not by SMS. A driver on a route or offline can't be asked.

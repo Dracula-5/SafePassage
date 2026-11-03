@@ -29,13 +29,16 @@ function useDialog(open: boolean, onClose: () => void) {
   };
 }
 
-export function ConfirmDialog({ open, title, children, confirmLabel = "Confirm", danger, busy, onConfirm, onCancel }: {
+export function ConfirmDialog({ open, title, children, confirmLabel = "Confirm", cancelLabel = "Cancel", danger, busy, disabled, onConfirm, onCancel }: {
   open: boolean;
   title: string;
   children?: ReactNode;
   confirmLabel?: string;
+  cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
+  /** The confirm button waits, e.g. for a choice to be made. */
+  disabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -46,8 +49,8 @@ export function ConfirmDialog({ open, title, children, confirmLabel = "Confirm",
         <h2 id="confirm-title">{title}</h2>
         {children}
         <div className={styles.dialogActions}>
-          <button type="button" onClick={onCancel}>Cancel</button>
-          <button type="button" className={danger ? "danger solid" : "primary"} disabled={busy} onClick={onConfirm}>{busy ? "Working…" : confirmLabel}</button>
+          <button type="button" onClick={onCancel}>{cancelLabel}</button>
+          <button type="button" className={danger ? "danger solid" : "primary"} disabled={busy || disabled} onClick={onConfirm}>{busy ? "Working…" : confirmLabel}</button>
         </div>
       </div>
     </dialog>

@@ -46,6 +46,18 @@
 .tag { display: inline-block; padding: 2px 9px; border-radius: 99px; background: #fff; color: var(--warn-text); font-size: 12px; font-weight: 800; }
 
 .big { min-height: 56px; width: 100%; border-radius: 16px; font-size: 17px; font-weight: 700; }
+.report { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-color: #f0c2c8; color: var(--bad-text); background: #fff; }
+.choices { display: grid; gap: 8px; }
+.choice {
+  display: grid; gap: 2px; width: 100%; min-height: 64px; padding: 12px 14px; text-align: left; border: 2px solid var(--line); border-radius: 14px; background: #fff;
+  font-weight: 400; cursor: pointer; justify-content: stretch; justify-items: start; align-content: center;
+}
+.choice b { font-size: 17px; }
+.choice small { color: var(--muted); font-size: 14px; }
+/* Stronger than the global button:hover, which would otherwise pale the choice the finger is still resting on. */
+button.choiceOn, button.choiceOn:hover:not(:disabled) { border-color: var(--teal); background: var(--teal); color: #fff; }
+button.choiceOn small { color: rgb(255 255 255 / 0.9); }
+.noteField { display: grid; gap: 6px; font-size: 15px; font-weight: 600; }
 .bigRow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .stops { display: grid; margin-top: 4px; }
