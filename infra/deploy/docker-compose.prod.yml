@@ -16,7 +16,7 @@ x-hardening: &hardening
 x-backend: &backend
   <<: *hardening
   image: reliefroute-backend
-  build: { context: ../.., dockerfile: infra/deploy/backend.Dockerfile }
+  build: { context: ../.., dockerfile: infra/deploy/backend.Dockerfile, target: app }  # extracts come from DATA_DIR below
   cap_drop: [ALL]
   read_only: true
   tmpfs: [/tmp]

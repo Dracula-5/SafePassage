@@ -55,6 +55,20 @@ This builds the same thing as `render-free.yaml` from the dashboard, with no Blu
 
 If the log says `Refusing to start in production`, it lists each setting to fix. If it says `permission denied to create extension`, the database user cannot add PostGIS: make sure the database was created on PostgreSQL 13 or later.
 
+### The full live demo from a laptop, free
+
+The free Render API has no data worker, planning worker, road router or simulated fleet, so its screens stay empty. For a presentation, the whole stack can run on a laptop, exactly as `.\infra\dev\stack.ps1 demo` runs it, and the Vercel site can reach it through a free ngrok tunnel. The site is live while the laptop is on and Docker is running; otherwise it shows "Cannot reach the server".
+
+1. Start the stack: `.\infra\dev\stack.ps1 demo`, then check <http://localhost:3000/health>.
+2. Make a free account at <https://ngrok.com>, install the agent (`winget install ngrok.ngrok`), and run `ngrok config add-authtoken <your token>` once.
+3. In the ngrok dashboard, under **Domains**, claim your one free static domain, e.g. `something.ngrok-free.app`. It stays the same each time, so Vercel only needs setting once.
+4. Start the tunnel and leave it running:
+   `ngrok http 3000 --url=https://<your-domain> --host-header=localhost:3000`
+   `--host-header` matters: Caddy answers only requests addressed to `localhost:3000`. An older agent that rejects `--url` takes `--domain=<your-domain>` instead.
+5. In Vercel, set `API_ORIGIN` to `https://<your-domain>` for Production and Preview, then redeploy. To go back to Render later, set it back and redeploy.
+
+ngrok's free plan puts a warning page in front of browser traffic. `frontend/src/proxy.ts` adds `ngrok-skip-browser-warning` to every call the site forwards, so API calls never see that page. Accounts on the laptop are the local database's, not Render's.
+
 ## 2. Point Vercel at it
 
 1. In the Vercel project for `safepassage-frontend`, open **Settings > General** and check that **Root Directory** is `frontend`.
