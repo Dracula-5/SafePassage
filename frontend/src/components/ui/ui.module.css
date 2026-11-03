@@ -158,6 +158,13 @@ a.metric:hover, button.metric:hover:not(:disabled) { border-color: #b8d6df; back
 /* ---------- Wide screens ---------- */
 @media (min-width: 640px) {
   .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .metricsSix { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1280px) {
+  .metricsSix { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .metricsSix .metric { padding: 14px 16px; }
+  .metricsSix .metricValue { font-size: 27px; }
 }
 
 @media (min-width: 1024px) {

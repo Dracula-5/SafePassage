@@ -30,8 +30,9 @@ export function MetricCard({ label, value, note, tone, href }: { label: string; 
   return href ? <Link href={href} className={cls}>{body}</Link> : <div className={cls}>{body}</div>;
 }
 
-export function MetricRow({ children }: { children: ReactNode }) {
-  return <section className={styles.metrics} aria-label="Summary">{children}</section>;
+/** `six` fits six cards in one row on a wide screen, and three to a row below that. */
+export function MetricRow({ six, children }: { six?: boolean; children: ReactNode }) {
+  return <section className={`${styles.metrics} ${six ? styles.metricsSix : ""}`} aria-label="Summary">{children}</section>;
 }
 
 export function AlertCard({ tone = "info", title, children, action }: { tone?: "warn" | "bad" | "good" | "info"; title?: string; children?: ReactNode; action?: ReactNode }) {

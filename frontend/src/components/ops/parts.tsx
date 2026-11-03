@@ -4,7 +4,7 @@
 
 import { useState } from "react";
 
-import { Evacuation, HazardProperties, plansApi } from "@/lib/api";
+import { Evacuation, HazardProperties, plansApi, PlanSummary } from "@/lib/api";
 
 import { ConfirmDialog, StatusBadge, Tone } from "../ui";
 import { SEVERITY_COLORS } from "./constants";
@@ -24,6 +24,18 @@ const PLAN_STATUS: Record<string, { text: string; tone: Tone }> = {
 
 export function planLabel(status: string): { text: string; tone: Tone } {
   return PLAN_STATUS[status] ?? { text: status.replace(/_/g, " "), tone: "plain" };
+}
+
+/** What to say when a plan has no summary: a plan that ended must not read as if it were still being prepared. */
+const NO_SUMMARY: Record<string, string> = {
+  failed: "This plan could not be completed. Open it to see why.",
+  unreachable: "No safe road route was found. Open it to see why.",
+  superseded: "Replaced by a newer plan.",
+  rejected: "Rejected by a duty officer.",
+};
+
+export function planText(plan: PlanSummary, max?: number): string {
+  return (plan.summary ?? NO_SUMMARY[plan.status] ?? "The plan is still being prepared.").slice(0, max);
 }
 
 export function PlanStatus({ status }: { status: string }) {

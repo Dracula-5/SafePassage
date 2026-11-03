@@ -14,7 +14,7 @@ import { ago, itemName, plate } from "@/lib/format";
 import { ActionButton, AlertCard, ConfirmDialog, EmptyState, FilterChips, PageHeader, StatusBadge, Surface } from "../ui";
 import styles from "./ops.module.css";
 import { useOps } from "./OpsProvider";
-import { PlanStatus } from "./parts";
+import { PlanStatus, planText } from "./parts";
 
 const LiveMap = dynamic(() => import("../LiveMap"), { ssr: false, loading: () => <div className="map map-loading">Loading map…</div> });
 const NO_ROUTES: never[] = [];
@@ -30,16 +30,9 @@ const FILTERS = [
 type FilterKey = (typeof FILTERS)[number]["key"];
 const MAX_LINES = 3;
 
-/** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
-/** What to say when a plan has no summary: a plan that ended must not read as if it were still being prepared. */
-const NO_SUMMARY: Record<string, string> = {
-  failed: "This plan could not be completed. Open it to see why.",
-  unreachable: "No safe road route was found. Open it to see why.",
-  superseded: "Replaced by a newer plan.",
-  rejected: "Rejected by a duty officer.",
-};
 const BLOCKED_TITLE: Record<string, string> = { failed: "This plan could not be completed", unreachable: "No safe road route" };
 
+/** The same shortfall at each relief point reads as noise: one line per item and reason, with the total. */
 function escalationLines(escalations: Escalation[]): string[] {
   const totals = new Map<string, { quantity: number; item: string; reason: string; sites: number }>();
   const others: string[] = [];
@@ -188,7 +181,7 @@ export default function PlansPage() {
                 </span>
                 <small className={styles.muted}>{ago(p.created_at)}</small>
               </span>
-              <span className={styles.itemText}>{(p.summary ?? NO_SUMMARY[p.status] ?? "Plan is being prepared.").slice(0, 120)}</span>
+              <span className={styles.itemText}>{planText(p, 120)}</span>
             </button>
           ))}
         </div>
@@ -211,7 +204,7 @@ export default function PlansPage() {
                   </span>
                   <small className={styles.muted}>Created {ago(detail.created_at)} · updated {ago(detail.updated_at)}</small>
                 </div>
-                <p style={{ marginTop: 10 }}>{detail.summary ?? NO_SUMMARY[detail.status] ?? "The plan is still being prepared."}</p>
+                <p style={{ marginTop: 10 }}>{planText(detail)}</p>
                 {detail.is_drill && <p className={styles.muted} style={{ marginTop: 6, fontSize: 13 }}>This plan comes from a what-if drill. Its routes are marked DRILL on the driver&apos;s screen.</p>}
                 {!detail.requires_approval && !detail.evacuation && !detail.parent_plan_id && (detail.status === "approved" || detail.status === "dispatched") && (
                   <AlertCard tone="good" title="Approved by the rules">Nothing about this plan is unclear.</AlertCard>

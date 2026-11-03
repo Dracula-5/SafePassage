@@ -29,12 +29,32 @@
 .attentionItem { display: grid; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--bg); font-size: 13.5px; text-decoration: none; color: inherit; border: 1px solid var(--line); }
 a.attentionItem:hover { border-color: #b8d6df; background: #fff; }
 .attentionItem b { font-size: 14px; }
-.legend { left: 12px; bottom: 28px; display: flex; flex-wrap: wrap; gap: 10px 14px; padding: 8px 12px; border-radius: 12px; background: rgb(255 255 255 / 0.94); font-size: 12px; box-shadow: var(--shadow); max-width: calc(100% - 24px); }
+.mapFoot { left: 12px; right: 12px; bottom: 28px; display: flex; flex-wrap: wrap-reverse; align-items: flex-end; justify-content: space-between; gap: 6px 10px; pointer-events: none; }
+.mapFoot > * { pointer-events: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 14px; padding: 8px 12px; border-radius: 12px; background: rgb(255 255 255 / 0.94); font-size: 12px; box-shadow: var(--shadow); max-width: 100%; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; }
 .legend i { width: 10px; height: 10px; border-radius: 3px; }
 .legend i.line { width: 16px; height: 4px; border-radius: 2px; }
 .legend i.round { border-radius: 50%; }
-.mapStatus { right: 12px; bottom: 28px; padding: 4px 10px; border-radius: 10px; background: rgb(255 255 255 / 0.92); color: var(--muted); font-size: 12px; }
+.mapStatus { padding: 4px 10px; border-radius: 10px; background: rgb(255 255 255 / 0.92); color: var(--muted); font-size: 12px; }
+
+/* ---------- Command Center: the map, and the live panel on its right ---------- */
+.command { display: grid; gap: 16px; min-width: 0; }
+.panel { display: flex; flex-direction: column; min-width: 0; max-height: 560px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow); overflow: hidden; }
+.panelTabs { display: flex; flex: none; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.panelTab {
+  flex: 1 0 auto; min-height: 46px; padding: 0 8px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
+  color: var(--muted); font-size: 13.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.panelTab:hover:not(:disabled) { background: var(--bg); }
+.panelTab small { margin-left: 6px; padding: 1px 7px; border-radius: 99px; background: #eef2f6; color: #475569; font-size: 11.5px; }
+.panelTabOn, .panelTabOn:hover:not(:disabled) { color: var(--teal); border-bottom-color: var(--teal); }
+.panelBody { display: grid; gap: 8px; align-content: start; padding: 12px; overflow-y: auto; min-height: 0; flex: 1; }
+.panelRow { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: inherit; text-decoration: none; font-size: 13.5px; }
+a.panelRow:hover { border-color: #b8d6df; background: var(--soft-blue); }
+.panelText { color: var(--ink); overflow-wrap: anywhere; }
+.panelNode { text-transform: capitalize; }
+.panelNote { color: var(--muted); font-size: 13.5px; padding: 4px 2px; }
 
 /* ---------- Master and detail ---------- */
 .master { display: grid; gap: 8px; align-content: start; max-height: calc(100dvh - 300px); min-height: 240px; overflow-y: auto; }
@@ -99,6 +119,12 @@ a.attentionItem:hover { border-color: #b8d6df; background: #fff; }
   .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .splitPlans { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }
   .splitHalf { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+/* The panel sits beside the map only when the map keeps enough room; below that it follows the map. */
+@media (min-width: 1200px) {
+  .command { grid-template-columns: minmax(0, 1fr) clamp(340px, 27vw, 400px); align-items: stretch; }
+  .panel { max-height: none; height: clamp(440px, 64vh, 780px); }
 }
 
 @media (max-width: 899px) {
