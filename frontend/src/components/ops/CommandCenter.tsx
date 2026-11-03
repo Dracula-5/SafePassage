@@ -13,11 +13,11 @@ import { api, PlanRoute } from "@/lib/api";
 import { sourceName, tonnes } from "@/lib/format";
 
 import { AlertCard, Icon, MetricCard, MetricRow, PageHeader } from "../ui";
-import { EVACUATION_ROUTE, SEVERITIES, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./constants";
+import { EVACUATION_ROUTE, SEVERITIES, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLIER_STOCK, SUPPLY_ROUTE, WAREHOUSE } from "./constants";
 import LivePanel from "./LivePanel";
 import styles from "./ops.module.css";
 import { useOps } from "./OpsProvider";
-import { EvacuateDialog, planLabel } from "./parts";
+import { EvacuateDialog, planLabel, WarehouseGlyph } from "./parts";
 
 const LiveMap = dynamic(() => import("../LiveMap"), { ssr: false, loading: () => <div className="map map-loading">Loading map…</div> });
 const NO_ROUTES: PlanRoute[] = [];
@@ -126,6 +126,8 @@ export default function CommandCenter() {
               <span><i className="line" style={{ background: SUPPLY_ROUTE }} />supply route</span>
               <span><i className="line" style={{ background: EVACUATION_ROUTE }} />evacuation</span>
               <span><i className="round" style={{ background: "#fff", boxShadow: `0 0 0 2px ${SIMULATED_TRUCK}` }} />{simulated > 0 ? "simulated truck" : "truck"}</span>
+              <span><WarehouseGlyph color={WAREHOUSE} />warehouse</span>
+              <span><WarehouseGlyph color={SUPPLIER_STOCK} />supplier stock</span>
             </div>
             {facilities && <div className={styles.mapStatus}>{facilities}</div>}
           </div>

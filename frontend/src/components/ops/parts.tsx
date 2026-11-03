@@ -53,6 +53,18 @@ export function SeverityBadge({ severity }: { severity: HazardProperties["severi
   );
 }
 
+/** The map's warehouse icon, for legends: the same shape LiveMap draws (warehouseIcon there). */
+export function WarehouseGlyph({ color, size = 14 }: { color: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="2" y="2" width="28" height="28" rx="7" fill={color} stroke="#fff" strokeWidth="3" />
+      <path d="M8 15 16 8 24 15Z" fill="#fff" />
+      <rect x="10" y="15" width="12" height="9" fill="#fff" />
+      <rect x="14" y="18" width="4" height="6" fill={color} />
+    </svg>
+  );
+}
+
 /** DRILL and STALE are always shown beside a hazard: a person must never mistake one for the other. */
 export function HazardFlags({ hazard }: { hazard: HazardProperties }) {
   return (

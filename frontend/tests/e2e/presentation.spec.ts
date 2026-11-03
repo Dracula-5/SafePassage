@@ -69,7 +69,7 @@ async function signUp(page: Page, role: "operator" | "driver" | "supplier", name
   }
 }
 
-test("the map comes through this site, with warehouses showing at any zoom", async ({ browser }) => {
+test("the map comes through this site, with warehouses once zoomed in", async ({ browser }) => {
   const page = await browser.newPage();
   const tiles: number[] = [];
   const elsewhere: string[] = [];
@@ -82,7 +82,13 @@ test("the map comes through this site, with warehouses showing at any zoom", asy
   await expect.poll(() => tiles.length).toBeGreaterThan(4);
   expect(tiles.every((status) => status === 200)).toBe(true);
   expect(elsewhere).toEqual([]);
-  await expect(page.getByText(/\d+ warehouses and godowns in view/)).toBeVisible();
+  // At state zoom the warehouses would cover the hazards: they wait until the map is about a district across.
+  await expect(page.getByText("Zoom in to see warehouses", { exact: false })).toBeVisible();
+  for (let i = 0; i < 2; i++) {
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await page.waitForTimeout(600);
+  }
+  await expect(page.getByText(/\d+ (warehouses and godowns|facilities) in view/)).toBeVisible();
   await page.close();
 });
 

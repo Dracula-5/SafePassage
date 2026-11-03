@@ -11,11 +11,14 @@ import { useEffect, useRef } from "react";
 import { api, FacilityProperties, FeatureCollection, HazardProperties, LiveRoute, PlanRoute, Vehicle } from "@/lib/api";
 import { plate } from "@/lib/format";
 
-import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLY_ROUTE } from "./ops/constants";
+import { EVACUATION_ROUTE, SEVERITY_COLORS, SIMULATED_TRUCK, SUPPLIER_STOCK, SUPPLY_ROUTE, WAREHOUSE } from "./ops/constants";
 
 const FACILITY_KINDS = ["hospital", "shelter", "warehouse", "godown", "school", "depot"];
 const STORAGE_KINDS = ["warehouse", "godown", "depot"];
-const FACILITY_MIN_ZOOM = 9; // below this, tens of thousands of points would be requested
+// At state zoom some 700 warehouses covered the hazards; from a few districts across they help, so they wait for it.
+const WAREHOUSE_MIN_ZOOM = 7;
+const FACILITY_MIN_ZOOM = 9; // hospitals, schools and shelters: below this, tens of thousands of points would be requested
+const IS_STORAGE: maplibregl.ExpressionSpecification = ["in", ["get", "kind"], ["literal", STORAGE_KINDS]];
 
 // Worker file served from public/ by scripts/copy-maplibre-worker.mjs (postinstall).
 const WORKER_PATH = "/maplibre/maplibre-gl-worker.mjs";
@@ -40,6 +43,32 @@ interface Props {
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** A small warehouse, the shape of WarehouseGlyph in ops/parts.tsx, drawn at twice its size for sharp screens. */
+function warehouseIcon(fill: string): ImageData {
+  const size = 32;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const g = canvas.getContext("2d")!;
+  g.fillStyle = fill;
+  g.strokeStyle = "#fff";
+  g.lineWidth = 3;
+  g.beginPath();
+  g.roundRect(2, 2, 28, 28, 7);
+  g.fill();
+  g.stroke();
+  g.fillStyle = "#fff";
+  g.beginPath();
+  g.moveTo(8, 15);
+  g.lineTo(16, 8);
+  g.lineTo(24, 15);
+  g.closePath();
+  g.fill();
+  g.fillRect(10, 15, 12, 9);
+  g.fillStyle = fill;
+  g.fillRect(14, 18, 4, 6);
+  return g.getImageData(0, 0, size, size);
 }
 
 function hazardPopup(p: HazardProperties): string {
@@ -107,12 +136,24 @@ export default function LiveMap(props: Props) {
         paint: { "line-color": color, "line-width": 1.2 } });
       m.addLayer({ id: "drill-line", type: "line", source: "hazards", filter: ["get", "is_drill"],
         paint: { "line-color": "#6f2dbd", "line-width": 3, "line-dasharray": [2, 1.5] } });
-      m.addLayer({ id: "facility-points", type: "circle", source: "facilities",
+      m.addLayer({ id: "facility-points", type: "circle", source: "facilities", filter: ["!", IS_STORAGE],
         paint: {
           "circle-radius": ["case", ["get", "is_supplier"], 6, 4],
-          "circle-color": ["match", ["get", "kind"], "hospital", "#d6336c", "shelter", "#2b8a3e", "school", "#1971c2",
-            "warehouse", "#5f3dc4", "godown", "#5f3dc4", "#495057"],
+          "circle-color": ["match", ["get", "kind"], "hospital", "#d6336c", "shelter", "#2b8a3e", "school", "#1971c2", "#495057"],
           "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+      m.addImage("warehouse", warehouseIcon(WAREHOUSE), { pixelRatio: 2 });
+      m.addImage("supplier", warehouseIcon(SUPPLIER_STOCK), { pixelRatio: 2 });
+      // An icon that would overlap another is left out, registered suppliers first: a few per town at district zoom,
+      // every one up close. Icons need no font, so this symbol layer works on the raster basemap.
+      m.addLayer({ id: "warehouse-icons", type: "symbol", source: "facilities", filter: IS_STORAGE, minzoom: WAREHOUSE_MIN_ZOOM,
+        layout: {
+          "icon-image": ["case", ["get", "is_supplier"], "supplier", "warehouse"],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], WAREHOUSE_MIN_ZOOM, 0.75, 13, 1.1],
+          "icon-allow-overlap": false,
+          // Wide spacing when zoomed out, so an area shows a handful; it closes up as the map does.
+          "icon-padding": ["interpolate", ["linear"], ["zoom"], WAREHOUSE_MIN_ZOOM, 18, 9, 9, 11, 3],
+          "symbol-sort-key": ["case", ["get", "is_supplier"], 0, 1],
+        } });
       m.addLayer({ id: "route-casing", type: "line", source: "routes", paint: { "line-color": "#fff", "line-width": 7 } });
       m.addLayer({ id: "route-line", type: "line", source: "routes",
         paint: { "line-color": ["match", ["get", "kind"], "evacuation", EVACUATION_ROUTE, SUPPLY_ROUTE], "line-width": 4 } });
@@ -134,12 +175,12 @@ export default function LiveMap(props: Props) {
         latest.current.onMapClick([e.lngLat.lng, e.lngLat.lat]);
         return;
       }
-      const hits = m.queryRenderedFeatures(e.point, { layers: ["vehicle-points", "facility-points", "hazard-fill"] });
+      const hits = m.queryRenderedFeatures(e.point, { layers: ["vehicle-points", "warehouse-icons", "facility-points", "hazard-fill"] });
       if (!hits.length) return;
       const hit = hits[0];
       const html = hit.layer.id === "vehicle-points"
         ? vehiclePopup(hit.properties as Record<string, unknown>)
-        : hit.layer.id === "facility-points"
+        : hit.layer.id === "facility-points" || hit.layer.id === "warehouse-icons"
         ? facilityPopup(hit.properties as unknown as FacilityProperties)
         : hazardPopup(hit.properties as unknown as HazardProperties);
       const popup = new maplibregl.Popup({ maxWidth: "340px" }).setLngLat(e.lngLat).setHTML(html).addTo(m);
@@ -248,6 +289,11 @@ export default function LiveMap(props: Props) {
     const m = map.current;
     if (!m) return;
     const source = m.getSource("facilities") as GeoJSONSource | undefined;
+    if (m.getZoom() < WAREHOUSE_MIN_ZOOM) {
+      source?.setData(EMPTY);
+      latest.current.onFacilitiesStatus("Zoom in to see warehouses, and closer for hospitals, schools and shelters");
+      return;
+    }
     const close = m.getZoom() >= FACILITY_MIN_ZOOM;
     const b = m.getBounds();
     try {
@@ -258,7 +304,7 @@ export default function LiveMap(props: Props) {
       source?.setData(fc as unknown as GeoJSON.FeatureCollection);
       latest.current.onFacilitiesStatus(close
         ? `${fc.features.length} facilities in view`
-        : `${fc.features.length} warehouses and godowns in view. Zoom in for hospitals, schools and shelters`);
+        : `${fc.features.length} warehouses and godowns in view. Zoom in to see each one, and hospitals, schools and shelters`);
     } catch (err) {
       latest.current.onFacilitiesStatus(`facilities unavailable: ${(err as Error).message}`);
     }

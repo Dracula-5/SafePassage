@@ -12,6 +12,8 @@ export const SEVERITY_COLORS: Record<string, string> = {
 export const SIMULATED_TRUCK = "#12263a";  // the ring on a white truck: a real truck's is teal
 export const SUPPLY_ROUTE = "#f76707";
 export const EVACUATION_ROUTE = "#2b8a3e";
+export const WAREHOUSE = "#5f3dc4";       // a warehouse, godown or depot on the map
+export const SUPPLIER_STOCK = "#2f9e44";  // one that is a registered supplier, so its stock can be ordered
 
 export const HAZARD_TYPES = ["flood", "cyclone", "heavy_rain", "storm", "landslide", "wildfire", "heatwave", "other"];
 export const SEVERITIES: Severity[] = ["extreme", "severe", "moderate", "minor"];
