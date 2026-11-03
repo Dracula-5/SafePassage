@@ -46,3 +46,16 @@ def reasons_for_a_person(hazards: list[HazardFact], triage: Triage, allocation: 
         ("Safety check rejected the first route", attempt > 1),
     ]
     return [reason for reason, applies in checks if applies]
+
+
+# An order to a supplier nobody has vouched for reaches a real business, whoever drives: presentation mode keeps it.
+KEPT_IN_PRESENTATION = ("Unverified supplier",)
+
+
+def waived_in_presentation(reasons: list[str], routing: Routing, presentation: bool) -> tuple[list[str], list[str]]:
+    """Presentation mode sends a plan by itself when every truck it moves is simulated: nobody real is on those roads.
+    One real truck and every reason stands. Returns (reasons still for a person, reasons waived)."""
+    simulated_only = bool(routing.routes) and all(r.vehicle_label.startswith(SIMULATED_LABEL) for r in routing.routes)
+    if not presentation or not simulated_only:
+        return reasons, []
+    return [r for r in reasons if r in KEPT_IN_PRESENTATION], [r for r in reasons if r not in KEPT_IN_PRESENTATION]

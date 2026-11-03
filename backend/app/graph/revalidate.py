@@ -33,14 +33,15 @@ def carried_orders(allocation: Allocation, routing: Routing) -> list[OrderDraft]
         for line in part.lines:
             lines[line.item_code] = lines.get(line.item_code, 0.0) + line.quantity
         weights[part.order_key] = weights.get(part.order_key, 0.0) + part.weight_kg
+    # Orders are stored to 3 decimals, so a sliver under half a thousandth would become an order for 0 and stop the
+    # plan: it is left out, and an order left with nothing is not placed.
+    lines = {key: [OrderLineDraft(item_code=code, quantity=round(qty, 3))
+                   for code, qty in sorted(items.items(), key=lambda kv: kv[0].value) if round(qty, 3) > 0]
+             for key, items in quantities.items()}  # fmt: skip
     return [
-        order.model_copy(update={
-            "lines": [OrderLineDraft(item_code=code, quantity=round(qty, 3))
-                      for code, qty in sorted(quantities[order.order_key].items(), key=lambda kv: kv[0].value)],
-            "weight_kg": weights[order.order_key],
-        })
-        for order in allocation.orders if order.order_key in quantities
-    ]  # fmt: skip
+        order.model_copy(update={"lines": lines[order.order_key], "weight_kg": weights[order.order_key]})
+        for order in allocation.orders if lines.get(order.order_key)
+    ]
 
 
 def shift_etas(routing: Routing, delay: timedelta) -> Routing:

@@ -207,7 +207,9 @@ export default function PlansPage() {
                 <p style={{ marginTop: 10 }}>{planText(detail)}</p>
                 {detail.is_drill && <p className={styles.muted} style={{ marginTop: 6, fontSize: 13 }}>This plan comes from a what-if drill. Its routes are marked DRILL on the driver&apos;s screen.</p>}
                 {!detail.requires_approval && !detail.evacuation && !detail.parent_plan_id && (detail.status === "approved" || detail.status === "dispatched") && (
-                  <AlertCard tone="good" title="Approved by the rules">Nothing about this plan is unclear.</AlertCard>
+                  detail.waived?.length
+                    ? <AlertCard tone="warn" title="Sent by the rules in presentation mode">Only simulated trucks move, so nobody waited for a person. With real trucks a duty officer would check: {detail.waived.join(", ")}.</AlertCard>
+                    : <AlertCard tone="good" title="Approved by the rules">Nothing about this plan is unclear.</AlertCard>
                 )}
               </Surface>
 

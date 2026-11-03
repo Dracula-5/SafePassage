@@ -12,7 +12,7 @@ import asyncpg
 from langgraph.types import interrupt
 
 from app.agents import data, reasoning
-from app.agents.approval import Limits, reasons_for_a_person
+from app.agents.approval import Limits, reasons_for_a_person, waived_in_presentation
 from app.agents.critic import review
 from app.agents.needs import compute_demand, still_needed
 from app.agents.planner import MAX_MATRIX_LOCATIONS, Site, VehicleIn, plan_routes
@@ -392,6 +392,7 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         reasons = reasons_for_a_person(hazards, triage, allocation, routing, state.get("verdicts", []), state["attempt"],
                                        Limits(s.auto_approve_max_kg, s.auto_approve_max_unserved, s.auto_approve_min_clearance_m),
                                        crosses_warning)  # fmt: skip
+        reasons, waived = waived_in_presentation(reasons, routing, s.demo_fleet and s.auto_approve)
         if not s.auto_approve and not reasons:
             reasons = ["Automatic approval is off"]
         plan_brief: PlanBrief = await _llm_or_fallback(
@@ -407,8 +408,10 @@ def make_nodes(deps: Deps) -> dict[str, Any]:
         await audit("supervisor", "approval_requested" if reasons else "decision",
                     ("Needs a duty officer: " + ", ".join(reasons)) if reasons
                     else "Auto-approved: re-route of goods already approved" if state.get("replan_route_id")
+                    else ("Auto-approved in presentation mode, simulated trucks only. With real trucks a person would check: "
+                          + ", ".join(waived)) if waived
                     else "Auto-approved: nothing about this plan is unclear",
-                    {"brief": plan_brief.model_dump(), "reasons": reasons})
+                    {"brief": plan_brief.model_dump(), "reasons": reasons, "waived": waived})
         return {"brief": plan_brief.model_dump(), "requires_approval": bool(reasons), "approval_reasons": reasons}
 
     async def approval_gate(state: PlanState) -> dict:

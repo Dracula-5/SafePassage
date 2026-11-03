@@ -180,8 +180,12 @@ async def get_plan(plan_id: UUID) -> dict:
     asked = await pool.fetchval(
         """SELECT payload->'reasons' FROM agent_events WHERE plan_id = $1 AND event_type = 'approval_requested'
            ORDER BY id DESC LIMIT 1""", plan_id)  # fmt: skip
+    waived = await pool.fetchval(
+        """SELECT payload->'waived' FROM agent_events WHERE plan_id = $1 AND node = 'supervisor' AND event_type = 'decision'
+             AND payload ? 'waived' ORDER BY id DESC LIMIT 1""", plan_id)  # fmt: skip
     return plans.summary_out(row) | {
         "needs_person": asked or [],
+        "waived": waived or [],  # what presentation mode sent without a person, see agents/approval.py
         "waves_left": await waves.left(pool, row["hazard_ids"], get_brain_settings().next_wave_max),
         "demand": [{k: v for k, v in line.items()} for line in (extra["demand"] or {}).get("lines", [])],
         "routes": [_route_out(r) for r in routes],

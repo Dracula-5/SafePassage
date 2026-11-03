@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.agents.approval import Limits, reasons_for_a_person
+from app.agents.approval import Limits, reasons_for_a_person, waived_in_presentation
 from app.agents.reasoning import SUMMARY_CHARS, PlanBrief
 from app.agents.schemas import Allocation, HazardFact, OrderDraft, OrderPart, PlannedRoute, Routing, Triage
 from app.graph import fallbacks
@@ -104,6 +104,27 @@ def test_every_reason_is_short():
     many = decide(hazards=[hazard(is_drill=False, severity="extreme", is_stale=True)], tri=triage(recommend_human_review=True),
                   orders=[order(verified=False)], route=routing(parts=[part("a", 999_999)]), attempt=3)  # fmt: skip
     assert len(many) >= 5 and all(len(reason) <= 45 for reason in many)
+
+
+PRESENTATION_REASONS = ["Route crosses a wide warning area", "Real alert, but simulated trucks", "Unverified supplier"]
+
+
+def test_presentation_mode_sends_a_simulated_fleet_by_itself_but_keeps_an_unverified_supplier():
+    kept, waived = waived_in_presentation(PRESENTATION_REASONS, routing(), presentation=True)
+    assert kept == ["Unverified supplier"]
+    assert waived == ["Route crosses a wide warning area", "Real alert, but simulated trucks"]
+
+
+def test_one_real_truck_keeps_every_reason_in_presentation_mode():
+    mixed = Routing.model_construct(routes=[PlannedRoute.model_construct(vehicle_label="TEST-SIM-GPS AP 16 TX 1"),
+                                            PlannedRoute.model_construct(vehicle_label="AP 16 TX 1234")])
+    assert waived_in_presentation(PRESENTATION_REASONS, mixed, presentation=True) == (PRESENTATION_REASONS, [])
+
+
+def test_without_presentation_mode_or_any_truck_nothing_is_waived():
+    assert waived_in_presentation(PRESENTATION_REASONS, routing(), presentation=False) == (PRESENTATION_REASONS, [])
+    no_trucks = Routing.model_construct(routes=[])
+    assert waived_in_presentation(PRESENTATION_REASONS, no_trucks, presentation=True) == (PRESENTATION_REASONS, [])
 
 
 def test_a_long_brief_is_cut_at_a_sentence_without_spending_a_retry():

@@ -99,6 +99,14 @@ def test_carried_orders_only_cover_parts_a_vehicle_takes():
     assert carried[0].weight_kg == 2000 and carried[0].lines[0].quantity == 2000
 
 
+def test_a_sliver_that_rounds_to_nothing_is_left_out_instead_of_stopping_the_plan():
+    allocation = Allocation(orders=[order("a", 1000), order("b", 0.0004)], shortfalls=[])
+    routing = Routing(routes=[planned(["a", "b"])], unserved_order_keys=[], margin_m=250, vehicles_considered=1,
+                      deferred_part_keys=[], parts=[part("a", "a", 1000), part("b", "b", 0.0004)])  # fmt: skip
+    carried = carried_orders(allocation, routing)
+    assert [o.order_key for o in carried] == ["a"]  # 0.0004 L would be stored as 0, which no order line may hold
+
+
 def test_goods_held_back_are_shown_per_destination_and_item_with_the_reason():
     allocation = Allocation(orders=[order("a", 3000)], shortfalls=[])
     routing = Routing(routes=[], unserved_order_keys=["a#1"], margin_m=250, vehicles_considered=1, deferred_part_keys=["a#2", "a#3"],

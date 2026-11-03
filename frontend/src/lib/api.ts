@@ -278,6 +278,8 @@ export interface PlanDetail extends PlanSummary {
   unreachable_reason: string | null;
   escalations: Escalation[];
   needs_person: string[];
+  /** What presentation mode sent without a person because only simulated trucks moved. */
+  waived?: string[];
   waves_left: number;
   triage: { priority: string; planning_horizon_hours: number; rationale: string; key_risks: string[] } | null;
 }
