@@ -31,8 +31,13 @@ When a wave's trucks finish and the alert is active, `graph/waves.py` starts a n
 
 A real zone over 5,000 km2 no longer counts as a road closure. Tropical Cyclone FOUR-26 arrived on 2026-11-01 with GDACS zones of 107,000 and 30,000 km2. Treated as closures, they left "no safe relief point" and timed the router out, so every coastal plan failed. Trucks may now cross such a zone, but a person decides first. Drills are always closures.
 
+## Presentation mode sends a simulated fleet by itself
+
+Requested by the project owner on 2026-11-03 ("approvals in the duty officer is doing manually, automate those tasks"). The owner chose this scope out of three: all plans in presentation mode, all plans always, or two rules dropped. With `DEMO_FLEET` on, a plan whose every truck is simulated goes out by itself. The reasons that would have sent it to a person are recorded on the plan as `waived` and shown on its page. One real truck, an unverified supplier, or `AUTO_APPROVE=false` keeps a person in the loop (`waived_in_presentation` in `agents/approval.py`).
+
 ## Changes to apply to `openapi.yaml`
 
+- `PlanDetail` gains `waived`: what presentation mode sent without a person. Empty for every other plan.
 - `PlanDetail` gains `needs_person`: why a person must decide, and `waves_left`: how many more waves can follow, 0 once the alert has ended.
 - `PlanSummary` gains `next_wave`: a plan the rules started.
 
