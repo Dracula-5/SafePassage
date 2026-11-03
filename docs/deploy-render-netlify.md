@@ -5,8 +5,8 @@ This deploys the Next.js frontend to Netlify and the API, workers, database, Red
 ## Before deploying
 
 - Connect the GitHub repository to both Render and Netlify.
-- Deploy the frontend as a Netlify site named `reliefroute-ap`, or change `PUBLIC_URL` in `render.yaml` to the site's HTTPS URL.
-- Deploy the `integration/gate3` branch, which is the branch selected in `render.yaml`.
+- `render.yaml` sets `PUBLIC_URL` to the Vercel site, <https://safepassage-frontend.vercel.app>. If you host the web app on Netlify instead, change it to the Netlify site's HTTPS URL. To keep the web app on Vercel, follow [deploy-vercel-render.md](deploy-vercel-render.md) and skip the Netlify part below.
+- Deploy the `main` branch, which is the branch selected in `render.yaml`.
 - Review the paid Render service plans and current prices before applying the Blueprint. The database, workers, Redis, and Valhalla are continuously running services; this is not a free-tier deployment. Docker builds download and verify the current Geofabrik extract, so the first backend/router builds take longer and need additional build disk.
 
 ## Deploy the backend
@@ -20,7 +20,7 @@ This deploys the Next.js frontend to Netlify and the API, workers, database, Red
 ## Deploy the frontend
 
 1. Create a Netlify site connected to the same repository and use the repository's `netlify.toml`. It sets the base directory to `frontend`, builds with Node 22, and configures the API proxy redirects.
-2. The default redirects expect the Render API at `https://reliefroute-api.onrender.com` and the site at `https://reliefroute-ap.netlify.app`. If Render assigns a different API URL or you use a custom domain, update the matching API destinations in `netlify.toml` and `PUBLIC_URL` in `render.yaml`, then redeploy both sides.
+2. The default redirects expect the Render API at `https://reliefroute-api.onrender.com`. If Render assigns a different API URL, update the API destinations in `netlify.toml`. Set `PUBLIC_URL` in `render.yaml` to the Netlify site's address, then redeploy both sides.
 3. Trigger a Netlify deploy after the Render API is available. The redirects keep API calls on the frontend's origin, so browser sessions and cookies work without exposing backend credentials to client code. No `NEXT_PUBLIC_API` secret or direct browser-to-API CORS access is needed.
 
 ## Verify the deployment

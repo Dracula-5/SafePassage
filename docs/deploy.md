@@ -126,6 +126,6 @@ It keeps its own database and its own secrets and keys in `infra\deploy\local.en
 
 Not needed, but possible. Set the project's root directory to `frontend`, and set `API_ORIGIN` to the API's address and `NEXT_PUBLIC_REGION_BBOX` to the region. Next then forwards API calls, so sign-in cookies keep working.
 
-For a temporary, limited Render free-tier demo with the frontend on Vercel, see [deploy-render-free.md](deploy-render-free.md). The full Render deployment is separate and uses paid services.
+Step by step, with the backend on Render, and what to do when the site answers 404: [deploy-vercel-render.md](deploy-vercel-render.md). The free Render blueprint and its limits are described in [deploy-render-free.md](deploy-render-free.md); the full Render deployment is separate and uses paid services.
 
 For the full hosted split deployment with the frontend on Netlify and backend on Render, see [deploy-render-netlify.md](deploy-render-netlify.md).

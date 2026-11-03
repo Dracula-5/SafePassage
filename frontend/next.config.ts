@@ -1,10 +1,32 @@
 import type { NextConfig } from "next";
 
 const dev = process.env.NODE_ENV !== "production";
-// The site and API share one address. Caddy arranges that in production. Where there is no Caddy (next
-// dev, Vercel), API_ORIGIN makes Next forward these paths to the API instead.
-const apiOrigin = process.env.API_ORIGIN;
+// The site and API share one address. Caddy arranges that in production, and netlify.toml on Netlify. Where there
+// is neither (next dev, Vercel), API_ORIGIN makes Next forward these paths to the API instead. It is read at build
+// time, so changing it on Vercel needs a redeploy.
+const apiOrigin = apiOriginFrom(process.env.API_ORIGIN);
 const API_PATHS = ["/api/:path*", "/portal/api/:path*", "/portal/whatsapp", "/health"];
+
+/** The API's origin with no trailing slash. On Vercel nothing else reaches the API, so a missing one stops the build
+ *  rather than publishing a site whose every call answers 404. */
+function apiOriginFrom(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    if (process.env.VERCEL) {
+      throw new Error("API_ORIGIN is not set. In Vercel, add it under Settings > Environment Variables (Production and Preview) "
+        + "as the backend's https origin, e.g. https://reliefroute-api.onrender.com, then redeploy. See docs/deploy-vercel-render.md.");
+    }
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`API_ORIGIN must be a full origin such as https://reliefroute-api.onrender.com, not "${value}".`);
+  }
+  if (url.pathname !== "/" || url.search) throw new Error(`API_ORIGIN must be an origin only, with no path: use ${url.origin}.`);
+  return url.origin;
+}
 
 // Next's own bootstrap is inline, so scripts need 'unsafe-inline'; everything else stays narrow.
 const csp = [

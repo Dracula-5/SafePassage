@@ -13,4 +13,6 @@ USER relief
 WORKDIR /app/backend
 ENV HOME=/home/relief PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "10"]
+# Migrations first, because a free Render service has no pre-deploy step or shell: a service made by hand in the
+# dashboard, with no Docker Command, still gets its tables. They are recorded, so a restart applies only new ones.
+CMD ["sh", "-c", "python -m app.core.migrate && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-server-header --timeout-keep-alive 10"]

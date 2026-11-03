@@ -1,5 +1,7 @@
 # Temporary free Render demo
 
+The step-by-step guide to connecting the Vercel web app, with checks and fixes for a 404, is [deploy-vercel-render.md](deploy-vercel-render.md). This page describes what the free blueprint leaves out.
+
 This deploys only the Docker API, a free Render Postgres database, and a free Render Key Value instance. It connects to the existing Vercel frontend at <https://safepassage-frontend.vercel.app/>; it does not deploy or replace that frontend, and Netlify is not needed. It is not a full ReliefRoute deployment: ingestion and planning workers and the Valhalla router are omitted, so live data collection, simulated vehicles, and route planning will not run. The API can serve basic status, account, and stored-data requests once its database is initialized.
 
 Render's free web service can sleep after inactivity, and its filesystem is ephemeral. Free Postgres expires after 30 days and has no backups; free Key Value data can be lost when it restarts. Render may restart free services at any time. This setup is for a temporary demo, not production. See [Render's free-instance limits](https://render.com/docs/free).

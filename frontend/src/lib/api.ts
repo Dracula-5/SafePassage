@@ -14,9 +14,17 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     const wait = Number(res.headers.get("Retry-After"));
-    throw new ApiError(res.status, body?.detail ?? `The server answered ${res.status}`, Number.isFinite(wait) && wait > 0 ? wait : null);
+    throw new ApiError(res.status, body?.detail ?? notAnswered(res.status, body !== null), Number.isFinite(wait) && wait > 0 ? wait : null);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+}
+
+/** The API always answers in JSON. Anything else came from the hosting in front of it, and says what is wrong with the link. */
+function notAnswered(status: number, fromApi: boolean): string {
+  if (fromApi) return `The server answered ${status}`;
+  if (status === 404) return "This site is not connected to its API server (404). Its API_ORIGIN needs setting: see docs/deploy-vercel-render.md.";
+  if (status >= 500) return `The API server is not answering (${status}). A sleeping free server takes about a minute to wake: try again shortly.`;
+  return `The server answered ${status}`;
 }
 
 /** For signed-in screens: an expired session goes back to sign-in instead of showing a broken page. */
