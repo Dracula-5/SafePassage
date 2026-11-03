@@ -52,6 +52,11 @@ a.attentionItem:hover { border-color: #b8d6df; background: #fff; }
 .panelBody { display: grid; gap: 8px; align-content: start; padding: 12px; overflow-y: auto; min-height: 0; flex: 1; }
 .panelRow { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: inherit; text-decoration: none; font-size: 13.5px; }
 a.panelRow:hover { border-color: #b8d6df; background: var(--soft-blue); }
+button.panelRow { width: 100%; min-height: 0; text-align: left; font-weight: 400; justify-content: stretch; justify-items: stretch; cursor: pointer; }
+/* Stronger than the global button:hover, so the picked plan stays marked while the pointer rests on it. */
+button.panelRowOn, button.panelRowOn:hover:not(:disabled) { border-color: var(--teal); background: var(--soft-blue); box-shadow: 0 0 0 2px rgb(8 127 140 / 0.18); }
+.panelPick { display: grid; gap: 6px; }
+.panelPickActions { display: grid; gap: 4px; padding: 0 4px 4px; font-size: 13px; }
 .panelText { color: var(--ink); overflow-wrap: anywhere; }
 .panelNode { text-transform: capitalize; }
 .panelNote { color: var(--muted); font-size: 13.5px; padding: 4px 2px; }

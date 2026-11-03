@@ -7,9 +7,9 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { api, PlanRoute } from "@/lib/api";
+import { api, PlanRoute, plansApi } from "@/lib/api";
 import { sourceName, tonnes } from "@/lib/format";
 
 import { AlertCard, Icon, MetricCard, MetricRow, PageHeader } from "../ui";
@@ -24,7 +24,18 @@ const NO_ROUTES: PlanRoute[] = [];
 
 export default function CommandCenter() {
   const router = useRouter();
-  const { status, overview, hazards, vehicles, liveRoutes, plans, evacuations, health, bounds, reloadHazards } = useOps();
+  const { status, overview, hazards, vehicles, liveRoutes, plans, evacuations, health, bounds, reloadHazards, plansVersion } = useOps();
+  // A plan picked in the panel: its routes are drawn and the map zooms to them (LiveMap). Read again with each
+  // plan refresh, so a route that finishes or changes shows that.
+  const [selected, setSelected] = useState<string | null>(null);
+  const [picked, setPicked] = useState<{ id: string; routes: PlanRoute[] } | null>(null);
+  useEffect(() => {
+    if (!selected) return;
+    let current = true;
+    plansApi.get(selected).then((p) => { if (current) setPicked({ id: selected, routes: p.routes }); }, () => undefined);
+    return () => { current = false; };
+  }, [selected, plansVersion]);
+  const pickedRoutes = selected && picked?.id === selected ? picked.routes : null;
   const [open, setOpen] = useState(true);
   const [facilities, setFacilities] = useState("");
   const [evacuateFor, setEvacuateFor] = useState<string | null>(null);
@@ -78,7 +89,7 @@ export default function CommandCenter() {
             onAskTruck={(id) => router.push(`/dashboard/fleet?truck=${id}`)}
             onEvacuate={setEvacuateFor}
             vehicles={vehicles}
-            routes={NO_ROUTES}
+            routes={pickedRoutes ?? NO_ROUTES}
             liveRoutes={liveRoutes}
           />
 
@@ -132,7 +143,7 @@ export default function CommandCenter() {
             {facilities && <div className={styles.mapStatus}>{facilities}</div>}
           </div>
         </div>
-        <LivePanel />
+        <LivePanel selectedPlanId={selected} selectedRoutes={pickedRoutes?.length ?? null} onSelectPlan={setSelected} />
       </div>
       <p className={styles.muted} style={{ fontSize: 13 }}>
         <Icon name="map" size={14} /> Click a hazard or a truck on the map for details. Draw a what-if scenario in <Link href="/dashboard/simulation">What-If Simulation</Link>.

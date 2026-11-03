@@ -88,7 +88,8 @@ function hazardPopup(p: HazardProperties): string {
 
 export default function LiveMap(props: Props) {
   const container = useRef<HTMLDivElement>(null);
-  const map = useRef<MlMap | null>(null);
+  const map = useRef<MlMap | null>(null); // set once loaded: sources and layers exist
+  const camera = useRef<MlMap | null>(null); // set at once: moving the view needs no loaded style
   const latest = useRef(props);
   latest.current = props;
   const drillMarkers = useRef<maplibregl.Marker[]>([]);
@@ -116,6 +117,7 @@ export default function LiveMap(props: Props) {
       },
       bounds: (props.initialBounds ?? undefined) as LngLatBoundsLike | undefined,
     });
+    camera.current = m;
     m.addControl(new maplibregl.NavigationControl(), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "metric" }));
 
@@ -206,6 +208,7 @@ export default function LiveMap(props: Props) {
     return () => {
       m.remove();
       map.current = null;
+      camera.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -270,15 +273,27 @@ export default function LiveMap(props: Props) {
 
   useEffect(renderOverlays, [props.vehicles, props.routes, props.liveRoutes]);
 
-  // At state zoom a route is a few pixels; show it when a plan with routes is selected. Keyed on the
-  // route ids so a refresh of the same plan does not move the map under the operator.
+  // At state zoom a route is a few pixels; show it when a plan with routes is selected, and go back to the region
+  // when it is put down. Keyed on the route ids so a refresh of the same plan does not move the map under the
+  // operator. It moves the camera only, which works before the map's "load" (that waits for every first tile, and a
+  // plan picked while one is slow was not zoomed to).
   const routeKey = props.routes.map((r) => r.id).join(",");
-  useEffect(() => {
+  const zoomedToRoutes = useRef(false);
+  function fitRoutes() {
+    const m = camera.current;
+    if (!m) return;
     const coordinates = latest.current.routes.flatMap((r) => r.geometry.coordinates as [number, number][]);
-    if (!coordinates.length) return;
+    if (!coordinates.length) {
+      const region = latest.current.initialBounds;
+      if (zoomedToRoutes.current && region) m.fitBounds(region as LngLatBoundsLike, { duration: 800 });
+      zoomedToRoutes.current = false;
+      return;
+    }
     const bounds = coordinates.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coordinates[0], coordinates[0]));
-    map.current?.fitBounds(bounds, { padding: 70, maxZoom: 13, duration: 800 });
-  }, [routeKey]);
+    m.fitBounds(bounds, { padding: 70, maxZoom: 13, duration: 800 });
+    zoomedToRoutes.current = true;
+  }
+  useEffect(fitRoutes, [routeKey]);
 
   function facilityPopup(p: FacilityProperties): string {
     return `<div class="popup"><strong>${escapeHtml(p.name)}</strong>

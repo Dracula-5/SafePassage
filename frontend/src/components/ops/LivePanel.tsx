@@ -38,7 +38,12 @@ function inGroup(status: string, group: PlanGroup): boolean {
   return !statuses || (statuses as readonly string[]).includes(status);
 }
 
-export default function LivePanel() {
+/** A plan picked here is shown on the map beside it (CommandCenter): `selectedRoutes` is its route count, null while loading. */
+export default function LivePanel({ selectedPlanId, selectedRoutes, onSelectPlan }: {
+  selectedPlanId: string | null;
+  selectedRoutes: number | null;
+  onSelectPlan: (id: string | null) => void;
+}) {
   const { plans, evacuations, events, plansError } = useOps();
   const [tab, setTab] = useState<Tab>("plans");
   const [group, setGroup] = useState<PlanGroup>("all");
@@ -73,20 +78,39 @@ export default function LivePanel() {
             {shown.length === 0 && !plansError && (
               <p className={styles.panelNote}>{plans.length === 0 ? "No plans yet. One starts when a severe alert covers a populated area, or from a drill." : "No plans have this status."}</p>
             )}
-            {shown.map((p) => (
-              <Link key={p.id} href={`/dashboard/plans?plan=${p.id}`} className={styles.panelRow}>
-                <span className={styles.itemTop}>
-                  <span className={styles.tags}>
-                    <PlanStatus status={p.status} />
-                    {p.is_drill && <StatusBadge tone="drill">DRILL</StatusBadge>}
-                    {p.evacuation && <StatusBadge tone="good">Evacuation</StatusBadge>}
-                    {p.next_wave && <StatusBadge tone="info">NEXT WAVE</StatusBadge>}
-                  </span>
-                  <small className={styles.muted}>{ago(p.created_at)}</small>
-                </span>
-                <span className={styles.panelText}>{planText(p, 110)}</span>
-              </Link>
-            ))}
+            {shown.map((p) => {
+              const on = p.id === selectedPlanId;
+              return (
+                <div key={p.id} className={styles.panelPick}>
+                  <button type="button" className={`${styles.panelRow} ${on ? styles.panelRowOn : ""}`} aria-pressed={on}
+                    onClick={() => onSelectPlan(on ? null : p.id)}>
+                    <span className={styles.itemTop}>
+                      <span className={styles.tags}>
+                        <PlanStatus status={p.status} />
+                        {p.is_drill && <StatusBadge tone="drill">DRILL</StatusBadge>}
+                        {p.evacuation && <StatusBadge tone="good">Evacuation</StatusBadge>}
+                        {p.next_wave && <StatusBadge tone="info">NEXT WAVE</StatusBadge>}
+                      </span>
+                      <small className={styles.muted}>{ago(p.created_at)}</small>
+                    </span>
+                    <span className={styles.panelText}>{planText(p, 110)}</span>
+                  </button>
+                  {on && (
+                    <div className={styles.panelPickActions}>
+                      <small className={styles.muted}>
+                        {selectedRoutes === null ? "Loading its routes…"
+                          : selectedRoutes > 0 ? `${selectedRoutes} route${selectedRoutes === 1 ? "" : "s"} shown on the map`
+                          : "No route yet: routes appear once a plan is dispatched"}
+                      </small>
+                      <span className={styles.tags}>
+                        <Link href={`/dashboard/plans?plan=${p.id}`} className={styles.link}>Open plan details</Link>
+                        <button type="button" className={styles.link} onClick={() => onSelectPlan(null)}>Show the whole region</button>
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </>
         )}
 
