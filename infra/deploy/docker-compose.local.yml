@@ -3,3 +3,6 @@
 services:
   caddy:
     ports: !override ["127.0.0.1:3000:3000"]
+    # Any host name, so a tunnel (docs/deploy-vercel-render.md) is served too: it arrives as its own address, not
+    # localhost, and ngrok's --host-header is deprecated. The port is bound to 127.0.0.1, so nothing else reaches it.
+    environment: { PUBLIC_URL: ":3000" }

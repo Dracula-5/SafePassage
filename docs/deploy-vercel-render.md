@@ -63,8 +63,8 @@ The free Render API has no data worker, planning worker, road router or simulate
 2. Make a free account at <https://ngrok.com>, install the agent (`winget install ngrok.ngrok`), and run `ngrok config add-authtoken <your token>` once.
 3. A free account gets one fixed address, such as `something.ngrok-free.dev`, shown in the ngrok dashboard under **Domains**. ngrok uses it by itself, so Vercel only needs setting once.
 4. Start the tunnel and leave it running:
-   `ngrok http 3000 --host-header=localhost:3000`
-   `--host-header` matters: Caddy answers only requests addressed to `localhost:3000`, and anything else gets an empty page. Leave out `--url`: with it, ngrok 3.39 ignored `--host-header` (checked on 2026-11-03), and the API answered every call with an empty 200.
+   `ngrok http 3000`
+   On the laptop, Caddy answers any host name (`docker-compose.local.yml`), so the tunnel needs no `--host-header`. That flag is deprecated, and ngrok 3.39 did not apply it reliably. Before this change, Caddy answered tunnelled calls with an empty 200, and sign-in said "Unexpected end of JSON input".
 5. In Vercel, set `API_ORIGIN` to `https://<your-domain>` for Production and Preview, then redeploy. To go back to Render later, set it back and redeploy.
 
 ngrok's free plan puts a warning page in front of browser traffic. `frontend/src/proxy.ts` adds `ngrok-skip-browser-warning` to every call the site forwards, so API calls never see that page. Accounts on the laptop are the local database's, not Render's.

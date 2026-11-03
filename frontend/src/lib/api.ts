@@ -16,7 +16,13 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
     const wait = Number(res.headers.get("Retry-After"));
     throw new ApiError(res.status, body?.detail ?? notAnswered(res.status, body !== null), Number.isFinite(wait) && wait > 0 ? wait : null);
   }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  if (res.status === 204) return undefined as T;
+  try {
+    return (await res.json()) as T;
+  } catch {
+    // An empty or non-JSON 200 never comes from the API itself: something in between answered for it.
+    throw new ApiError(res.status, "The API server's answer was empty or unreadable. If it runs behind a tunnel, see docs/deploy-vercel-render.md.");
+  }
 }
 
 /** The API always answers in JSON. Anything else came from the hosting in front of it, and says what is wrong with the link. */
