@@ -19,6 +19,7 @@ const OFFLINE_FIX_MS = 30_000; // in a dead zone, fewer fixes make the phone's s
 // (offline_grace_s) before a silent truck's goods go to another one.
 const GPS_LOST_MS = 60_000;
 const ASK_AGAIN_MS = 180_000;
+const RESUME_GRACE_MS = 15_000; // a phone just unlocked has had no fixes while asleep: give it a moment first
 
 export type ProblemReport = { problem: DriverProblem; status: "sending" | "sent" | "already" | "failed"; message?: string };
 const SPEECH_LANG: Record<string, string> = { te: "te-IN", hi: "hi-IN", en: "en-IN" };
@@ -162,6 +163,10 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
     };
     stayAwake();
     document.addEventListener("visibilitychange", stayAwake);
+    const resumed = () => {
+      if (document.visibilityState === "visible") lastFixAt.current = Math.max(lastFixAt.current, Date.now() - GPS_LOST_MS + RESUME_GRACE_MS);
+    };
+    document.addEventListener("visibilitychange", resumed);
     const watch = hasGps ? navigator.geolocation.watchPosition(record, (e) => {
       setGps(e.message);
       setGpsFailed(true);
@@ -187,6 +192,7 @@ export function useTrip(device: DeviceRegistration, watching: boolean) {
       window.removeEventListener("online", syncOnline);
       window.removeEventListener("offline", syncOnline);
       document.removeEventListener("visibilitychange", stayAwake);
+      document.removeEventListener("visibilitychange", resumed);
       awake?.release();
     };
   }, [flush, loadAssignment, noPhone]);

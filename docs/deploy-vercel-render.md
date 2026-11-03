@@ -69,6 +69,8 @@ The free Render API has no data worker, planning worker, road router or simulate
 
 ngrok's free plan puts a warning page in front of browser traffic. `frontend/src/proxy.ts` adds `ngrok-skip-browser-warning` to every call the site forwards, so API calls never see that page. Accounts on the laptop are the local database's, not Render's.
 
+The free plan also allows 20,000 HTTP requests a month (checked 2026-11-04). A dashboard polls about 9 calls every 5 seconds, which is roughly 6,500 an hour, so a tab left open for an evening uses up the month. On the laptop itself, use `http://localhost:3000`, which never goes through the tunnel. After a restart, `.\infra\dev\stack.ps1 present` brings Docker, the stack and the tunnel back, then checks the hosted site.
+
 ## 2. Point Vercel at it
 
 1. In the Vercel project for `safepassage-frontend`, open **Settings > General** and check that **Root Directory** is `frontend`.

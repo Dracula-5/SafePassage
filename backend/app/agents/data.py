@@ -39,21 +39,33 @@ async def population_in(conn: Conn, hazard_ids: list[str]) -> PopulationEstimate
     (OSM admin_level 6) inside the zone, assuming even density across the mandal. Suburbs are
     skipped when their mandal's city is already counted: its figure includes them.
     """
+    # An NDMA zone can cover 100,000 km2 with 25,000 vertices: the query took 105 s and planning crashed at the pool's
+    # 30 s limit. It now cuts the zone into small pieces the spatial index can use, and works out a mandal's share
+    # once per mandal with a city or town (the only places that use it), not once per place: 4.5 s, same figures.
     row = await conn.fetchrow(
         """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[])),
-           inside AS (
-               SELECT p.place_type, p.population, p.population_source, m.mandal_id, m.share
-               FROM v_places p CROSS JOIN zone
+           parts AS (SELECT ST_Subdivide(g, 256) AS g FROM zone WHERE g IS NOT NULL),
+           hits AS (SELECT DISTINCT p.id FROM parts z JOIN v_places p ON ST_Intersects(p.geom, z.g)),
+           placed AS (
+               SELECT p.place_type, p.population, p.population_source, m.mandal_id
+               FROM hits JOIN v_places p ON p.id = hits.id
                LEFT JOIN LATERAL (
-                   SELECT a.id AS mandal_id,
-                          ST_Area(ST_CollectionExtract(ST_Intersection(ST_MakeValid(a.geom), zone.g), 3)::geography)
-                              / NULLIF(ST_Area(a.geom::geography), 0) AS share
-                   FROM v_admin_areas a
+                   SELECT a.id AS mandal_id FROM v_admin_areas a
                    WHERE a.admin_level = 6 AND ST_Contains(a.geom, p.geom)
                    ORDER BY ST_Area(a.geom) LIMIT 1
                ) m ON p.place_type IN ('city', 'town', 'suburb', 'neighbourhood')
-               WHERE ST_Intersects(p.geom, zone.g)
            ),
+           shares AS (  -- rounded, so a mandal wholly inside the zone is exactly 1 however its pieces add up
+               SELECT a.id AS mandal_id,
+                      round((sum(ST_Area(ST_CollectionExtract(ST_Intersection(v.g, z.g), 3)::geography))
+                             / NULLIF(ST_Area(a.geom::geography), 0))::numeric, 6) AS share
+               FROM v_admin_areas a
+               CROSS JOIN LATERAL (SELECT ST_MakeValid(a.geom) AS g) v
+               JOIN parts z ON z.g && a.geom
+               WHERE a.id IN (SELECT mandal_id FROM placed WHERE place_type IN ('city', 'town') AND mandal_id IS NOT NULL)
+               GROUP BY a.id, a.geom
+           ),
+           inside AS (SELECT placed.*, shares.share FROM placed LEFT JOIN shares USING (mandal_id)),
            city_mandals AS (
                SELECT DISTINCT mandal_id FROM inside
                WHERE place_type IN ('city', 'town') AND population IS NOT NULL AND mandal_id IS NOT NULL
@@ -83,18 +95,28 @@ async def relief_points(conn: Conn, hazard_ids: list[str], radius_m: float, limi
     other hazard that closes roads, are excluded, and so are sites closer than min_distance_m: the
     router keeps away from hazards by a margin, so it could never reach them.
     """
+    # Measured in metres against the whole zone, every school in the state took 49 s for one cyclone alert. Cut into
+    # pieces with a bounding-box test first (1 degree is over 100 km here, so radius / 90,000 degrees always covers
+    # the radius), the index picks the candidates: 1.4 s. The distance to a zone is the least to any of its pieces.
     rows = await conn.fetch(
         """WITH zone AS (SELECT ST_Union(geom) AS g FROM v_active_hazards
                          WHERE is_drill OR ((id = ANY($1::uuid[]) OR (hazard_type::text = ANY($4) AND severity::text = ANY($5)))
                                             AND ST_Area(geom::geography) / 1e6 <= $7))
+           , zone_parts AS (SELECT ST_Subdivide(g, 256) AS g FROM zone WHERE g IS NOT NULL)
            , target AS (SELECT ST_Union(geom) AS g FROM v_active_hazards WHERE id = ANY($1::uuid[]))
-           SELECT f.id::text AS facility_id, f.name, f.kind::text AS kind, ST_X(f.geom) AS lon, ST_Y(f.geom) AS lat,
-                  ST_Distance(f.geom::geography, target.g::geography) AS distance_to_hazard_m
-           FROM v_facilities f, zone, target
-           WHERE f.kind IN ('shelter', 'school', 'hospital')
-             AND ST_DWithin(f.geom::geography, target.g::geography, $2)
-             AND (zone.g IS NULL OR NOT ST_DWithin(f.geom::geography, zone.g::geography, $6))
-           ORDER BY (f.kind = 'shelter') DESC, distance_to_hazard_m
+           , target_parts AS (SELECT ST_Subdivide(g, 256) AS g FROM target WHERE g IS NOT NULL)
+           , near AS (
+               SELECT f.id, f.name, f.kind, f.geom, min(ST_Distance(f.geom::geography, t.g::geography)) AS distance_to_hazard_m
+               FROM target_parts t JOIN v_facilities f
+                 ON f.geom && ST_Expand(t.g, $2 / 90000.0) AND ST_DWithin(f.geom::geography, t.g::geography, $2)
+               WHERE f.kind IN ('shelter', 'school', 'hospital')
+               GROUP BY f.id, f.name, f.kind, f.geom)
+           SELECT n.id::text AS facility_id, n.name, n.kind::text AS kind, ST_X(n.geom) AS lon, ST_Y(n.geom) AS lat,
+                  n.distance_to_hazard_m
+           FROM near n
+           WHERE NOT EXISTS (SELECT 1 FROM zone_parts z WHERE z.g && ST_Expand(n.geom, $6 / 90000.0)
+                                                           AND ST_DWithin(n.geom::geography, z.g::geography, $6))
+           ORDER BY (n.kind = 'shelter') DESC, n.distance_to_hazard_m, n.id  -- the id settles ties, so the choice is stable
            LIMIT $3""",
         hazard_ids, radius_m, limit, ROAD_BLOCKING_TYPES, ROAD_BLOCKING_SEVERITIES, min_distance_m, WIDE_WARNING_KM2,
     )  # fmt: skip

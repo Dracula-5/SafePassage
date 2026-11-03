@@ -55,13 +55,17 @@ def _totals(parts: list[OrderPart]) -> tuple[dict, float]:
     return lines, sum(p.weight_kg for p in parts)
 
 
-def redraft(plan_id: str, order: OrderDraft, parts: list[OrderPart], onboard: bool) -> OrderDraft:
+def redraft(plan_id: str, order: OrderDraft, parts: list[OrderPart], onboard: bool) -> OrderDraft | None:
+    """None when every line rounds to nothing: orders hold 3 decimals, and an order line of 0 is refused, which
+    stopped whole re-routes over a leftover sliver (revalidate.carried_orders leaves them out the same way)."""
     lines, weight = _totals(parts)
+    kept = [OrderLineDraft(item_code=code, quantity=round(qty, 3))
+            for code, qty in sorted(lines.items(), key=lambda kv: kv[0].value) if round(qty, 3) > 0]
+    if not kept:
+        return None
     return order.model_copy(update={
         "order_key": order_key(plan_id, order.supplier_id, order.destination_facility_id + (":onboard" if onboard else "")),
-        "lines": [OrderLineDraft(item_code=code, quantity=round(qty, 3))
-                  for code, qty in sorted(lines.items(), key=lambda kv: kv[0].value)],
-        "weight_kg": weight, "onboard": onboard,
+        "lines": kept, "weight_kg": weight, "onboard": onboard,
     })  # fmt: skip
 
 
@@ -116,7 +120,7 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
                                           [OrderPart.model_validate(p) for p in route["parts"]])
         lost = kind in LOST_VEHICLE_KINDS
 
-        drafts = [redraft(plan_id, orders[key], parts, False) for key, parts in _by_order(waiting).items()]
+        drafts = [d for key, parts in _by_order(waiting).items() if (d := redraft(plan_id, orders[key], parts, False))]
         stranded: list[dict] = []
         if lost:
             for key, parts in _by_order(loaded).items():
@@ -126,7 +130,7 @@ async def take_over_route(pool: asyncpg.Pool, plan_id: str, parent_plan_id: str,
                                                                f"position{_where(deviation)}"}
                              for item, qty in lines.items()]  # fmt: skip
         else:
-            drafts = [redraft(plan_id, orders[key], parts, True) for key, parts in _by_order(loaded).items()] + drafts
+            drafts = [d for key, parts in _by_order(loaded).items() if (d := redraft(plan_id, orders[key], parts, True))] + drafts
 
         moved = waiting if lost else [*waiting, *loaded]
         for key, parts in _by_order(moved).items():

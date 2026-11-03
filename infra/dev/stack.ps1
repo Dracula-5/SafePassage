@@ -1,15 +1,17 @@
-# Local stack on Windows.   .\infra\dev\stack.ps1 up | down | status | prod | prod-down | demo | demo-off
+# Local stack on Windows.   .\infra\dev\stack.ps1 up | down | status | prod | prod-down | demo | demo-off | present
 # up: containers, migrations, API, both workers and the dashboard, each detached with logs in
 # <data>\logs. down: stops those processes and containers; the data volumes are kept.
 # prod: the real production images on this PC, everything at http://localhost:3000, with their own
 # empty database and secrets in infra\deploy\local.env. prod-down: stops them and keeps the data.
 # demo: prod plus simulated drivers for a presentation, and it stays on until demo-off, which removes
 # them and their stock again.
+# present: before a presentation, after a restart: starts Docker if needed, waits for the stack (starting it without
+# a rebuild if it did not come back by itself), opens the ngrok tunnel window, and checks the hosted site end to end.
 # Expects the venv at $HOME\reliefroute-venv (see README); RELIEFROUTE_VENV overrides it.
 # The first `up` creates an operator token and an enrolment code in backend\.env, for scripts and the legacy
 # vehicle endpoint. Web sign-up needs no codes: where approval is enforced (production), a duty officer or the
 # operator token approves new duty officers and drivers.
-param([ValidateSet("up", "down", "status", "prod", "prod-down", "demo", "demo-off")][string]$Action = "status")
+param([ValidateSet("up", "down", "status", "prod", "prod-down", "demo", "demo-off", "present")][string]$Action = "status")
 
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $venv = if ($env:RELIEFROUTE_VENV) { $env:RELIEFROUTE_VENV } else { "$HOME\reliefroute-venv" }
@@ -92,8 +94,59 @@ function Stop-Parts {
     Remove-Item $pids
 }
 
+# The hosted web app, which reaches this PC's API through the tunnel (docs\deploy-vercel-render.md).
+$hostedSite = if ($env:RELIEFROUTE_SITE) { $env:RELIEFROUTE_SITE } else { "https://safepassage-frontend.vercel.app" }
+
+function Wait-Until($what, $seconds, [scriptblock]$ready) {
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (& $ready) { return $true }
+        Start-Sleep -Seconds 3
+    }
+    Write-Warning "$what is not answering after $seconds s"
+    return $false
+}
+
+function Start-Presentation {
+    docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        "Starting Docker Desktop..."
+        docker desktop start --timeout 300 | Out-Null
+    }
+    # The containers come back by themselves with Docker; Postgres may need a minute to recover after a hard stop.
+    $stack = { try { $null -ne (Invoke-RestMethod -Uri "http://localhost:3000/api/status" -TimeoutSec 5).hazards_active } catch { $false } }
+    if (-not (Wait-Until "The stack" 180 $stack)) {
+        "Starting the stack, without a rebuild..."
+        Compose-Prod up -d
+        if (-not (Wait-Until "The stack" 300 $stack)) { return }
+    }
+    "Stack:       up at http://localhost:3000"
+    if (-not (Get-Process ngrok -ErrorAction SilentlyContinue)) {
+        $ngrok = (Get-Command ngrok -ErrorAction SilentlyContinue).Source
+        if (-not $ngrok) {
+            $ngrok = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter ngrok.exe -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+        }
+        if (-not $ngrok) { Write-Warning "ngrok is not installed: see docs\deploy-vercel-render.md"; return }
+        # Its own window, so the tunnel outlives this script. No --host-header: Caddy here answers any host name.
+        Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle = 'SafePassage tunnel - keep open'; & '$ngrok' http 3000")
+    }
+    $tunnels = { try { (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 3).tunnels.Count -gt 0 } catch { $false } }
+    if (-not (Wait-Until "The tunnel" 60 $tunnels)) { return }
+    $tunnel = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels[0].public_url
+    "Tunnel:      $tunnel (keep its window open)"
+    $hosted = { try { $null -ne (Invoke-RestMethod -Uri "$hostedSite/api/status" -TimeoutSec 20).hazards_active } catch { $false } }
+    if (Wait-Until "The hosted site" 90 $hosted) {
+        $s = Invoke-RestMethod -Uri "$hostedSite/api/status"
+        "Hosted site: $hostedSite is live: $($s.hazards_active) hazards, $($s.sources_fresh) of $($s.sources_total) sources on time"
+    } else {
+        "If the tunnel's address changed, set API_ORIGIN in Vercel to $tunnel and redeploy"
+    }
+}
+
 switch ($Action) {
     "prod" { Start-Prod }
+    "present" { Start-Presentation }
     "demo" {
         Ensure-LocalProdEnv
         Set-LocalEnv "DEMO_FLEET" "true"

@@ -215,6 +215,13 @@ def test_redraft_gets_a_new_key_and_sums_the_remaining_parts():
     assert draft.order_key != redraft("plan-2", order("a", 3000), [part("a#1", "a", 1)], onboard=False).order_key
 
 
+def test_a_re_route_skips_a_leftover_sliver_instead_of_stopping():
+    # Seen live on 2026-11-03: three re-routes stopped with "internal error: ValidationError" over a 0.000x leftover.
+    assert redraft("plan-2", order("a", 3000), [part("a#9", "a", 0.0004)], onboard=False) is None
+    kept = redraft("plan-2", order("a", 3000), [part("a#1", "a", 1000), part("a#9", "a", 0.0004)], onboard=False)
+    assert kept is not None and kept.lines[0].quantity == 1000
+
+
 def test_critic_accepts_a_dropoff_of_goods_already_on_board():
     stops = [RouteStop(facility_id="f", name="n", kind="dropoff", eta=NOW, order_keys=["a"], lon=80, lat=16)]
     plain = Routing(routes=[planned(["a"], stops)], unserved_order_keys=[], margin_m=250, vehicles_considered=1)
