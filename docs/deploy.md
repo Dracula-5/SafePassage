@@ -93,7 +93,7 @@ New accounts then get a link to confirm their address, and *Forgot your password
 
 ## Turning on presentation mode
 
-For a demonstration with nobody in Andhra Pradesh: 42 simulated trucks and water depots, marked as simulated on every screen. Set `DEMO_FLEET=true` in `infra/deploy/.env`, then:
+For a demonstration with nobody in Andhra Pradesh: 42 simulated trucks, marked as simulated on the map, in Fleet and on their driver screens. It makes up no depots or stock: water appears only when a real supplier reports some. Set `DEMO_FLEET=true` in `infra/deploy/.env`, then:
 
 ```bash
 docker compose -f infra/deploy/docker-compose.prod.yml --env-file infra/deploy/.env --profile demo up -d --build

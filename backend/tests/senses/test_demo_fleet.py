@@ -339,8 +339,9 @@ async def test_the_fleet_comes_up_online_and_gathers_around_a_drill_without_dupl
     assert (await http.get("/api/demo")).json()["trucks"] == expected
     assert await live_env.fetchval("SELECT count(*) FROM vehicles WHERE driver_phone IS NOT NULL") == 0
     assert all(t["label"].split()[2] == "AP" or t["label"].startswith(SIMULATED_LABEL) for t in trucks)
-    assert {row["item_code"] for row in await live_env.fetch("SELECT DISTINCT item_code::text FROM stock")} == {"WATER_L"}
-    assert await live_env.fetchval("SELECT count(*) FROM suppliers WHERE name LIKE 'TEST-SIM%' AND verified") == len(TOWNS)
+    # No made-up depots or stock: every place on the map and every unit of stock is real.
+    assert await live_env.fetchval("SELECT count(*) FROM suppliers WHERE name LIKE 'TEST-SIM%'") == 0
+    assert await live_env.fetchval("SELECT count(*) FROM stock") == 0
 
     drill = {"geometry": DRILL, "hazard_type": "flood", "severity": "severe", "label": "Krishna", "ttl_minutes": 30}
     assert (await http.post("/api/drill", json=drill)).status_code == 201
@@ -366,11 +367,9 @@ async def test_ending_presentation_mode_leaves_a_clean_system(app, http, live_en
         assert mine["label"] == "AP 16 TX 1234" and mine["simulated"] is False  # theirs again, and a phone can take over
         assert (await driver.post("/api/driver/vehicle/device")).status_code == 200
 
-    await fleet.seed()  # turned on again for another presentation: the depots must have water again
-    assert await live_env.fetchval("SELECT count(*) FROM stock") == len(TOWNS)
+    await fleet.seed()  # turned on again for another presentation: trucks come back, made-up stock never does
+    assert await live_env.fetchval("SELECT count(*) FROM stock") == 0
     assert (await http.get("/api/demo")).json()["trucks"] == len(TOWNS) * demo_fleet.TRUCKS_PER_TOWN
-    await fleet.seed()  # with closed depots in the search results too, a restart must not stock a second set
-    assert await live_env.fetchval("SELECT count(*) FROM stock") == len(TOWNS)
 
 
 @pytest.mark.integration
@@ -611,22 +610,12 @@ async def test_ending_presentation_mode_removes_simulated_evacuations(http, live
 
 
 @pytest.mark.integration
-async def test_simulated_depots_get_their_water_back(http, live_env):
-    fleet = Fleet(http, 400)
-    await fleet.seed()
-    depot = await live_env.fetchrow("SELECT id, facility_id FROM suppliers WHERE name LIKE 'TEST-SIM%' LIMIT 1")
-    await live_env.execute("UPDATE stock SET reported_at = now() - interval '1 hour'")  # this PC's clock and the database's differ
-    plan = await live_env.fetchval(
-        """INSERT INTO plans (thread_id, trigger_kind, hazard_ids, requested_by, status, is_drill)
-           VALUES ('t', 'drill', '{}', 'test', 'dispatched', true) RETURNING id""")
-    order = await live_env.fetchval(
-        """INSERT INTO orders (plan_id, supplier_id, destination_facility_id, status, idempotency_key, delivered_at)
-           VALUES ($1, $2, $3, 'delivered', 'k', now()) RETURNING id""", plan, depot["id"], depot["facility_id"])
-    await live_env.execute("INSERT INTO order_lines (order_id, item_code, quantity) VALUES ($1, 'WATER_L', 60000)", order)
-    left = "SELECT available FROM v_available_stock WHERE supplier_id = $1"
-    assert await live_env.fetchval(left, depot["id"]) == 0
-    assert (await http.post("/api/demo/restock")).status_code == 204
-    assert await live_env.fetchval(left, depot["id"]) == demo_fleet.DEPOT_WATER_L
-    fleet.next_restock = 0
-    await fleet.tick()
-    assert fleet.next_restock > demo_fleet.time.monotonic()
+async def test_a_closed_presentation_depot_is_neither_a_place_nor_a_supplier(http, live_env):
+    """Older presentations made water depots; their rows stay for past orders, but they are not real places."""
+    site = await live_env.fetchval(
+        """INSERT INTO facilities (source, source_ref, kind, name, geom, fetched_at)
+           VALUES ('portal', 'portal:old', 'warehouse', 'TEST-SIM water depot Ongole (closed)',
+                   ST_SetSRID(ST_MakePoint(80.05, 15.5), 4326), now()) RETURNING id""")
+    await live_env.execute("INSERT INTO suppliers (name, facility_id, verified) VALUES ('TEST-SIM water depot Ongole (closed)', $1, false)", site)
+    assert not [f for f in (await http.get("/api/facilities?kind=warehouse")).json()["features"] if "TEST-SIM" in f["properties"]["name"]]
+    assert not [s for s in (await http.get("/api/suppliers")).json() if "TEST-SIM" in s["name"]]

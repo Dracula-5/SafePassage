@@ -14,7 +14,8 @@ made-up number of people. The nearest free truck collects them and takes them to
 Trucks wait at real fuel stations, godowns and schools, and drive approved routes along the real road
 line, faster than a truck so a delivery finishes during a presentation. Like sim_driver.py it uses only
 the API a phone uses. The drivers and plates are made up, every label starts with TEST-SIM-GPS, and they
-have no phone numbers. Water depots are simulated too, since water has no public stock source.
+have no phone numbers. It adds no depots and no stock: every place and every unit of stock is real, so water
+appears only when a real supplier reports some (the owner's decision, 2026-11-03).
 
   python -m tests.tools.demo_fleet       API_URL, OPERATOR_TOKEN; optional DEMO_SPEED_MPS
 """
@@ -51,10 +52,8 @@ OFF_ROUTE_CLEAR_M = 1000  # twice the Route Monitor's threshold
 EVACUATION_EVERY_S = (600, 900)
 FIRST_EVACUATION_S = 120  # soon after starting, so a rehearsal doesn't wait 10 minutes to see one
 EVACUEES = (20, 60)
-RESTOCK_EVERY_S = 300
 ANSWER_TICKS = 2          # a simulated driver takes a moment to answer, so the request is seen going out
 GLIDE_TICKS = 3          # how long a truck takes to reach its post: quick, because a plan starts at once
-DEPOT_WATER_L = 60_000
 SPOT_KINDS = "fuel,godown,warehouse,school"
 ROAD_CLOSING_TYPES = ("flood", "cyclone", "landslide", "tsunami", "earthquake", "wildfire")  # app/routing/repository.py
 SEVERE = ("severe", "extreme")
@@ -190,7 +189,6 @@ class Fleet:
         self.hazards_seen = ""
         self.features: list[dict] = []
         self.next_evacuation = time.monotonic() + FIRST_EVACUATION_S
-        self.next_restock = time.monotonic() + RESTOCK_EVERY_S
 
     async def _get(self, path: str, **params) -> httpx.Response:
         response = await self.http.get(path, params=params)
@@ -232,19 +230,6 @@ class Fleet:
                     "driver_name": name, "plate": plate, "capacity_kg": TRUCK_KG,
                     "driver_language": LANGUAGES[(t + n) % len(LANGUAGES)], "town": town["name"]})  # fmt: skip
                 print(f"added {plate} {name} at {town['name']}", flush=True)
-        await self.seed_depots()
-
-    async def seed_depots(self) -> None:
-        for town in self.towns:
-            site = f"TEST-SIM water depot {town['name']}"
-            if any(f["name"] == site for f in (await self._get("/portal/api/facilities", q=site)).json()):
-                continue  # one search per depot: the search stops at 20 results, and closed depots fill them
-            lon, lat = await self.home_spot(town["name"])
-            depot = (await self._post("/portal/api/register", {"name": site, "site_name": site, "lon": lon, "lat": lat})).json()
-            await self._post("/portal/api/stock", {"lines": [{"item_code": "WATER_L", "quantity": DEPOT_WATER_L, "unit_weight_kg": 1}]},
-                             headers={"X-Supplier-Token": depot["supplier_token"]})  # fmt: skip
-            await self._post(f"/api/suppliers/{depot['supplier_id']}/verify", {"verified": True})
-            print(f"added {site}", flush=True)
 
     async def sync(self) -> None:
         """Picks up new trucks, removed trucks, new routes and what the duty officer pressed."""
@@ -381,9 +366,6 @@ class Fleet:
         await self.sync()
         await self.station()
         await self.request_evacuation()
-        if time.monotonic() >= self.next_restock:
-            self.next_restock = time.monotonic() + RESTOCK_EVERY_S
-            await self._post("/api/demo/restock", {})
         reporting = [t for t in self.trucks.values() if t.step(self.speed_mps * TICK_S)]
         await asyncio.gather(*(self.report(t) for t in reporting))
 

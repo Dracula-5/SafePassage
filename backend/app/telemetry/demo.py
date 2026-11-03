@@ -133,15 +133,6 @@ async def set_driver_mode(vehicle_id: UUID, body: DriverMode) -> dict:
     return {"vehicle_id": str(vehicle_id), "mode": body.mode}
 
 
-@router.post("/api/demo/restock", status_code=204, dependencies=[Depends(demo_on), Depends(require_operator)])
-async def restock_depots() -> None:
-    """What a real supplier does after a delivery: a fresh report. Delivered goods stop counting as reserved
-    from then on (v_available_stock), and without this a few rehearsals would empty the simulated depots."""
-    await (await get_pool()).execute(
-        """UPDATE stock SET reported_at = now(), updated_at = now()
-           WHERE supplier_id IN (SELECT id FROM suppliers WHERE name LIKE 'TEST-SIM%')""")
-
-
 @router.delete("/api/demo", status_code=204, dependencies=[Depends(demo_on), Depends(require_operator)])
 async def end_demo() -> None:
     """Before going live: takes simulated trucks off the fleet and simulated stock off the shelves. A person's own

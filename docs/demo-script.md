@@ -2,7 +2,7 @@
 
 For whoever presents ReliefRoute. It shows all three roles, duty officer, driver and supplier, in about 8 minutes, from one laptop or three.
 
-**What is real and what is simulated.** Hazard alerts, roads, facilities, population, government ration stock and the planning are all live. In presentation mode the **drivers, number plates, truck GPS and the water at depots marked TEST-SIM** are simulated, because nobody can drive a real truck in Andhra Pradesh for the demo. Simulated trucks are orange on the map and carry a SIMULATED badge. Say so up front: it builds trust.
+**What is real and what is simulated.** Hazard alerts, roads, facilities, population, government ration stock and the planning are all live. In presentation mode the **drivers, number plates and truck GPS** are simulated, because nobody can drive a real truck in Andhra Pradesh for the demo. Every place and every unit of stock is real: there are no made-up depots, so water appears only when a supplier reports some (step 2). Simulated trucks are marked on the map legend, carry a SIMULATED badge in Fleet, and say so on their driver screen. There is no banner across the duty officer's screens. Say so up front: it builds trust.
 
 ## Before you present
 
@@ -79,7 +79,7 @@ The Activity tab shows who reported what, with the driver's note. On a real phon
 
 ## Questions people may ask
 
-**Is any data fake?** In this presentation, the drivers, plates, truck GPS and TEST-SIM depots are simulated, and they're marked wherever they appear. Hazards, roads, facilities, population and ration stock are live or official open data. In real use the trucks are real phones, and the simulated fleet is switched off.
+**Is any data fake?** In this presentation, the drivers, plates and truck GPS are simulated, and the trucks are marked as simulated. Every warehouse, godown and unit of stock is real. The ration godowns' points are approximate: the government does not publish shop locations, so each mandal's stock sits at a point inside that mandal's official boundary. Hazards, roads, facilities, population and ration stock are live or official open data. In real use the trucks are real phones, and the simulated fleet is switched off.
 
 **Would a simulated truck ever be sent to a real disaster?** Not without someone choosing it. A plan that uses one always waits for a person, and the mode is off unless it's turned on.
 

@@ -16,6 +16,11 @@ The master prompt forbids fake data at runtime, and this adds simulated drivers 
 - Simulated drivers have no phone number, so no message can reach anyone.
 - `DELETE /api/demo` removes them and their stock before going live.
 
+**Changed at the owner's request on 2026-11-03** ("remove this [banner] ... if simulated keep real locations only"):
+- **No banner.** The banner across the duty officer's screens is gone. Simulated trucks stay marked on the map legend, in Fleet and on their driver screens.
+- **No made-up depots or stock.** The simulator no longer makes TEST-SIM water depots, and the unused `POST /api/demo/restock` is removed. The 14 that existed on the laptop were closed like `DELETE /api/demo` closes them: their stock was removed and they were renamed "(closed)". `/api/facilities` and `/api/suppliers` leave out any `TEST-SIM` site. Water now appears only when a real supplier reports some, and plans escalate it as a shortfall until then.
+- **Automatic approval.** A plan using only simulated trucks no longer waits for a person: see request 008.
+
 ## Changes to apply to `openapi.yaml`
 
 **New endpoints.**

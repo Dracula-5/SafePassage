@@ -139,6 +139,7 @@ async def list_facilities(
            FROM facilities f
            WHERE ($1::text[] IS NULL OR f.kind::text = ANY($1))
              AND ($2::float8 IS NULL OR f.geom && ST_MakeEnvelope($2, $3::float8, $4::float8, $5::float8, 4326))
+             AND f.name NOT LIKE 'TEST-SIM%'  -- a made-up presentation site is never shown as a place
            LIMIT $6""",
         kinds, *(box or (None, None, None, None)), MAX_FACILITIES,
     )  # fmt: skip

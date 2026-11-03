@@ -1,7 +1,7 @@
 "use client";
 
 // The duty officer's frame: who is signed in, the pages they can reach, and the live-connection state.
-// Real problems (lost connection, a paused stream, presentation mode) are always shown here, never hidden.
+// Real problems (lost connection, a paused stream) are always shown here, never hidden.
 
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
@@ -41,16 +41,17 @@ export default function OpsShell({ children }: { children: ReactNode }) {
 
 function Frame({ children }: { children: ReactNode }) {
   const path = usePathname();
-  const { account, plans, evacuations, health, demo, vehicles, failed, updatedAt, stream, streamMessage } = useOps();
+  const { account, plans, evacuations, health, failed, updatedAt, stream, streamMessage } = useOps();
   const awaiting = plans.filter((p) => p.status === "awaiting_approval").length;
   const evacuating = evacuations.filter((e) => e.stage === "waiting" || e.stage === "on_the_way" || e.stage === "on_board").length;
   const stale = health.filter((s) => s.is_stale || s.breaker_state !== "closed").length;
   const badges: Record<string, number> = { plans: awaiting, evacuations: evacuating, sources: stale };
   const items: NavItem[] = PAGES.map((p) => ({ key: p.key, label: p.label, icon: p.icon, href: p.href, active: isActive(path, p.href), badge: badges[p.key] }));
   const current = PAGES.find((p) => isActive(path, p.href))?.label ?? "Operations";
-  const simulated = vehicles.filter((v) => v.simulated).length;
   const wide = path === "/dashboard/simulation";
-  const banners = failed || stream === "reconnecting" || streamMessage || demo?.enabled;
+  // No banner for presentation mode, at the owner's request (2026-11-03): simulated trucks stay marked on the map,
+  // in Fleet and on their driver screens.
+  const banners = failed || stream === "reconnecting" || streamMessage;
 
   return (
     <AppLayout items={items} title={current} wide={wide} accountName={account.name} accountDetail="Duty officer" onSignOut={signOut}
@@ -60,11 +61,6 @@ function Frame({ children }: { children: ReactNode }) {
           {failed && <AlertCard tone="bad" title="Cannot reach the server">These numbers may be out of date. Retrying every 5 seconds.</AlertCard>}
           {!failed && stream === "reconnecting" && <AlertCard tone="warn" title="Live updates interrupted">Retrying. Plans and trucks may be out of date until it reconnects.</AlertCard>}
           {streamMessage && <AlertCard tone="warn" title="The server reports a problem">{streamMessage}</AlertCard>}
-          {demo?.enabled && (
-            <AlertCard tone="warn" title="Presentation mode">
-              {simulated} simulated trucks. Their drivers, number plates and GPS are made up, and so is the stock at depots marked TEST-SIM. Alerts, roads, ration stock and places are live.
-            </AlertCard>
-          )}
         </div>
       )}
       {children}

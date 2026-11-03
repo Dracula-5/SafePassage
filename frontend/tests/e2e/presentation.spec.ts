@@ -95,7 +95,9 @@ test("the map comes through this site, with warehouses once zoomed in", async ({
 test("a duty officer sees that the fleet is simulated, and can add a driver", async ({ page, context }) => {
   await signUp(page, "operator", "E2E Demo Officer");
   await expect(page).toHaveURL(/\/dashboard/);
-  await expect(page.getByText("Presentation mode", { exact: true })).toBeVisible();
+  // No banner any more (the owner's decision): the trucks themselves say they are simulated.
+  await expect(page.getByText(/\d+ simulated/)).toBeVisible();
+  await expect(page.getByText("Presentation mode", { exact: true })).toHaveCount(0);
   await page.getByRole("link", { name: "Fleet & Drivers" }).click();
   await expect(page.locator("tbody tr").first()).toBeVisible();
   await expect.poll(() => page.locator("tbody tr .badge.sim").count()).toBeGreaterThanOrEqual(42);
@@ -140,9 +142,11 @@ test("a duty officer can look up any driver or supplier", async ({ browser }) =>
   await expect(page.locator("tbody tr").getByText("SIMULATED")).toBeVisible();
 
   await page.getByRole("button", { name: "Suppliers" }).click();
-  await page.getByLabel("Search").fill("TEST-SIM water depot Vijayawada");
-  await expect(page.locator("tbody tr")).toHaveCount(1);
-  await expect(page.locator("tbody tr td").nth(1)).toContainText(/\d Water|Nothing available/);  // rehearsals use the water up
+  // Only real suppliers: presentation mode makes no depots, and the old made-up ones are not listed.
+  await page.getByLabel("Search").fill("TEST-SIM");
+  await expect(page.locator("tbody tr")).toHaveCount(0);
+  await page.getByLabel("Search").fill("PDS stock");
+  await expect(page.locator("tbody tr").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Warehouses" }).click();
   await page.getByLabel("Search").fill("godown");

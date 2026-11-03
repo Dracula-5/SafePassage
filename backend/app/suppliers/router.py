@@ -156,6 +156,7 @@ async def list_suppliers() -> list[dict]:
                   COALESCE(json_agg(json_build_object('item_code', st.item_code, 'available', st.available, 'reserved', st.reserved)
                                     ORDER BY st.item_code) FILTER (WHERE st.supplier_id IS NOT NULL), '[]')::text AS stock
            FROM suppliers s JOIN facilities f ON f.id = s.facility_id LEFT JOIN v_available_stock st ON st.supplier_id = s.id
+           WHERE s.name NOT LIKE 'TEST-SIM%'  -- the old presentation depots: made up, and closed
            GROUP BY s.id, f.name ORDER BY s.account_id IS NULL, s.name""")  # fmt: skip
     return [{"id": str(r["id"]), "name": r["name"], "site": r["site"], "verified": r["verified"], "has_account": r["has_account"],
              "contact": r["contact_whatsapp"] or r["contact_phone"], "stock": json.loads(r["stock"]),
