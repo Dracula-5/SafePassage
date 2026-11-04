@@ -29,7 +29,7 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
 function notAnswered(status: number, fromApi: boolean): string {
   if (fromApi) return `The server answered ${status}`;
   if (status === 404) return "This site is not connected to its API server (404). Its API_ORIGIN needs setting: see docs/deploy-vercel-render.md.";
-  if (status >= 500) return `The API server is not answering (${status}). A sleeping free server takes about a minute to wake: try again shortly.`;
+  if (status >= 500) return `The API server is not answering (${status}). It may be starting up, or the link to it is slow: try again in a moment.`;
   return `The server answered ${status}`;
 }
 
