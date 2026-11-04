@@ -121,10 +121,15 @@ function Start-Presentation {
         if (-not (Wait-Until "The stack" 300 $stack)) { return }
     }
     "Stack:       up at http://localhost:3000"
-    # Tailscale Funnel: a fixed address, which the Tailscale service keeps across restarts. It replaced ngrok, whose
-    # free 1 GB a month ran out on 2026-11-04 (ERR_NGROK_725, a 403 on every call).
+    # Cloudflare quick tunnel first: about 0.3 s a call, live stream included, no account. Its address changes at each
+    # start, so Vercel's API_ORIGIN must follow (the hosted check below says so). ngrok's free 1 GB a month ran out on
+    # 2026-11-04 (ERR_NGROK_725, a 403 on every call), and Tailscale Funnel then took 16-45 s a call from this laptop.
+    $cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
     $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-    if (Test-Path $tailscale) {
+    if (Test-Path $cloudflared) {
+        $tunnel = Start-Cloudflared $cloudflared
+        if (-not $tunnel) { return }
+    } elseif (Test-Path $tailscale) {
         & $tailscale funnel --bg 3000 *> $null
         $tunnel = (& $tailscale funnel status 2>$null | Select-String -Pattern "https://[^\s]+" | Select-Object -First 1).Matches.Value
         if (-not $tunnel) { Write-Warning "Tailscale Funnel is not on: run '& `"$tailscale`" funnel 3000' once and follow its link"; return }
@@ -140,6 +145,21 @@ function Start-Presentation {
     } else {
         "If the tunnel's address changed, set API_ORIGIN in Vercel to $tunnel and redeploy"
     }
+}
+
+function Start-Cloudflared($cloudflared) {
+    $log = "$env:TEMP\safepassage-cloudflared.log"
+    if (-not (Get-Process cloudflared -ErrorAction SilentlyContinue)) {
+        if (Test-Path $log) { Clear-Content $log }
+        # Its own window, so the tunnel outlives this script; the log is where its address appears.
+        Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command",
+            "`$Host.UI.RawUI.WindowTitle = 'SafePassage tunnel (Cloudflare) - keep open'; & '$cloudflared' tunnel --no-autoupdate --url http://localhost:3000 --logfile '$log'")
+    }
+    $ready = { (Test-Path $log) -and (Select-String -Path $log -Pattern "Registered tunnel connection" -Quiet) }
+    if (-not (Wait-Until "The Cloudflare tunnel" 90 $ready)) { return $null }
+    $url = (Select-String -Path $log -Pattern "https://[a-z0-9-]+\.trycloudflare\.com" | Select-Object -Last 1).Matches.Value
+    Write-Host "Tunnel:      $url (Cloudflare: keep its window open; a new address at each start)"
+    return $url
 }
 
 function Start-Ngrok {
