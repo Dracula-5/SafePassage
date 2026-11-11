@@ -28,7 +28,7 @@ jsonschema==4.26.0
 jsonschema-path==0.5.0
 jsonschema-specifications==2025.9.1
 langchain-core==1.7.3
-langchain-protocol==0.0.20
+langchain-protocol==0.0.21
 langgraph==1.2.18
 langgraph-checkpoint==4.3.1
 langgraph-checkpoint-postgres==3.2.0
