@@ -4,12 +4,14 @@ Start here when continuing the project. The rules are in `docs/MASTER_PROMPT.md`
 
 ## 1. Where things are
 
+Updated 2026-11-11: at the owner's request, everything is on `main`.
+
 | Branch | Contents |
 |---|---|
-| `integration/gate3` | **Everything.** Work continues here |
-| `feat/brain` | Gate 2 plus the merged PRs; the GitHub default branch |
-| `main` | Gate 2, without `infra/demo/seed_demo_water.py`. Not updated: nothing is pushed to `main` without a PR |
-| `feat/senses-face` | B's work up to Gate 2 only |
+| `main` | **Everything.** Work continues here. CI, Vercel and Render build from it |
+| `feat/brain` | Fast-forwarded to `main` on 2026-11-11, so it matches. Still the GitHub default branch until the owner switches it to `main` (Settings > General > Default branch) |
+| `integration/gate3` | Gates 3 and 4, up to 2026-11-03. Fully contained in `main` |
+| `integration/gate2`, `feat/senses-face` | Gate 2 history. Fully contained in `main` |
 
 Tags: `phase0-contracts`, `phase1-routing`, `phase1-senses`. Gate 2 and 3 are not tagged because they aren't fully verified (see §3).
 

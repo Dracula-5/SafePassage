@@ -159,15 +159,15 @@ Labels: `gate-4`, `contract`, `needs-owner`
 Labels: `gate-4`, `needs-owner`
 
 **Why.**
-- GitHub's default branch is `feat/brain`, which stopped at Gate 2 on 2026-10-31.
-- `main` contains all of it plus 69 later commits.
-- `integration/gate3`, `integration/gate2` and `feat/senses-face` are all already contained in `main`.
-- HANDOFF §1 still describes `main` as Gate 2 only.
+- Everything is on `main`.
+- GitHub's default branch is still `feat/brain`. It was fast-forwarded to `main` on 2026-11-11, so the two match for now, but new work lands only on `main`.
+- `integration/gate3`, `integration/gate2` and `feat/senses-face` are all contained in `main`.
+
+Changing the default branch needs admin rights on the repository.
 
 **Done when.**
-- [ ] The repository's default branch is `main`.
+- [ ] The repository's default branch is `main` (Settings > General > Default branch).
 - [ ] The merged branches are deleted, or kept and labelled as history.
-- [ ] HANDOFF §1 describes the branches as they are.
 
 **Source.** HANDOFF §3 ("Merge into main").
 
