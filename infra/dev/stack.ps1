@@ -121,12 +121,18 @@ function Start-Presentation {
         if (-not (Wait-Until "The stack" 300 $stack)) { return }
     }
     "Stack:       up at http://localhost:3000"
-    # Cloudflare quick tunnel first: about 0.3 s a call, live stream included, no account. Its address changes at each
-    # start, so Vercel's API_ORIGIN must follow (the hosted check below says so). ngrok's free 1 GB a month ran out on
-    # 2026-11-04 (ERR_NGROK_725, a 403 on every call), and Tailscale Funnel then took 16-45 s a call from this laptop.
+    # ngrok first: the owner's account has a fixed address, so Vercel's API_ORIGIN never has to change. Its free plan's
+    # 1 GB a month ran out on 2026-11-04 (ERR_NGROK_725, a 403 on every call), and the account is now on a paid plan.
+    # The Cloudflare quick tunnel is next (about 0.3 s a call, no account, but a new address at each start,
+    # so API_ORIGIN must follow); RELIEFROUTE_TUNNEL=cloudflare picks it. Tailscale Funnel took 16-45 s a call here.
     $cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
     $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-    if (Test-Path $cloudflared) {
+    $haveNgrok = (Get-Command ngrok -ErrorAction SilentlyContinue) -or
+        (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter ngrok.exe -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($haveNgrok -and $env:RELIEFROUTE_TUNNEL -ne "cloudflare") {
+        $tunnel = Start-Ngrok
+        if (-not $tunnel) { return }
+    } elseif (Test-Path $cloudflared) {
         $tunnel = Start-Cloudflared $cloudflared
         if (-not $tunnel) { return }
     } elseif (Test-Path $tailscale) {
@@ -135,10 +141,10 @@ function Start-Presentation {
         if (-not $tunnel) { Write-Warning "Tailscale Funnel is not on: run '& `"$tailscale`" funnel 3000' once and follow its link"; return }
         "Tunnel:      $tunnel (Tailscale Funnel, kept across restarts)"
     } else {
-        $tunnel = Start-Ngrok
-        if (-not $tunnel) { return }
+        Write-Warning "No tunnel is installed: winget install Ngrok.Ngrok (or Cloudflare.cloudflared)"
+        return
     }
-    $hosted = { try { $null -ne (Invoke-RestMethod -Uri "$hostedSite/api/status" -TimeoutSec 20).hazards_active } catch { $false } }
+    $hosted ={ try { $null -ne (Invoke-RestMethod -Uri "$hostedSite/api/status" -TimeoutSec 20).hazards_active } catch { $false } }
     if (Wait-Until "The hosted site" 90 $hosted) {
         $s = Invoke-RestMethod -Uri "$hostedSite/api/status"
         "Hosted site: $hostedSite is live: $($s.hazards_active) hazards, $($s.sources_fresh) of $($s.sources_total) sources on time"

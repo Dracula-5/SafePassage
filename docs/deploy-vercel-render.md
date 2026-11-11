@@ -57,18 +57,19 @@ If the log says `Refusing to start in production`, it lists each setting to fix.
 
 ### The full live demo from a laptop, free
 
-The free Render API has no data worker, planning worker, road router or simulated fleet, so its screens stay empty. For a presentation, the whole stack can run on a laptop, exactly as `.\infra\dev\stack.ps1 demo` runs it, and the Vercel site can reach it through a free Cloudflare quick tunnel. The site is live while the laptop is on, Docker is running and the tunnel window is open; otherwise it shows "Cannot reach the server".
+The free Render API has no data worker, planning worker, road router or simulated fleet, so its screens stay empty. For a presentation, the whole stack can run on a laptop, exactly as `.\infra\dev\stack.ps1 demo` runs it, and the Vercel site can reach it through a tunnel. The site is live while the laptop is on, Docker is running and the tunnel window is open; otherwise it shows "Cannot reach the server".
 
-1. Start the stack: `.\infra\dev\stack.ps1 demo`, then check <http://localhost:3000/health>.
-2. Install the Cloudflare agent once: `winget install Cloudflare.cloudflared`. No account is needed.
-3. Run `.\infra\dev\stack.ps1 present`. It opens the tunnel in a window titled "SafePassage tunnel (Cloudflare) - keep open", prints its address (such as `https://customize-colored-parker-manual.trycloudflare.com`), and checks the hosted site.
-4. **The address changes each time the tunnel starts.** When `present` says the hosted site is not answering, set `API_ORIGIN` in Vercel (Production and Preview) to the printed address, then redeploy. That takes about a minute. To go back to Render later, set it back and redeploy.
+1. Start Docker Desktop, then the stack: `.\infra\dev\stack.ps1 demo`. Check <http://localhost:3000/health>.
+2. Run `.\infra\dev\stack.ps1 present`. It starts the stack if it is down, opens the tunnel in its own window ("SafePassage tunnel - keep open"), prints the tunnel's address, and checks the hosted site.
+3. If `present` says the hosted site is not answering, set `API_ORIGIN` in Vercel (Production and Preview) to the printed address, then redeploy. That takes about a minute. To go back to Render later, set it back and redeploy.
 
-On the laptop, Caddy answers any host name (`docker-compose.local.yml`), so the tunnel arrives under its own address. Accounts on the laptop are the local database's, not Render's. Measured on 2026-11-04, the tunnel took about 0.3 s a call, and the live stream works through it.
+**Which tunnel.** `present` uses ngrok when it is installed (`winget install Ngrok.Ngrok`, then `ngrok config add-authtoken <token>` once). The owner's ngrok account has a fixed address (its dev domain, on the ngrok dashboard under Domains), so `API_ORIGIN` stays the same from one presentation to the next. The account is on a paid plan, because the free plan's 1 GB a month ran out (below). Without ngrok, or with `$env:RELIEFROUTE_TUNNEL = "cloudflare"`, it opens a free Cloudflare quick tunnel instead (`winget install Cloudflare.cloudflared`, no account). That address changes each time it starts, so `API_ORIGIN` must follow it.
+
+On the laptop, Caddy answers any host name (`docker-compose.local.yml`), so the tunnel arrives under its own address. Accounts on the laptop are the local database's, not Render's. Measured on 2026-11-04, the Cloudflare tunnel took about 0.3 s a call, and the live stream works through it.
 
 **Why not Tailscale Funnel.** It gives a fixed address and was tried next, but from this laptop each call took 16-45 s, on both campus Wi-Fi and a phone hotspot. The handshake was fast inside the laptop and slow over Tailscale's relay. It worked well at first and degraded once Docker Desktop was running. The Funnel is turned off (`tailscale funnel reset`).
 
-**Why not ngrok.** It was used first. Its free plan allows 1 GB and 20,000 requests a month, and on 2026-11-04 a dashboard left open overnight used up the gigabyte. From then on ngrok answered every call with a 403 (`ERR_NGROK_725`) until the monthly reset, so sign-in on the hosted site failed. A dashboard then moved about 50 KB every 5 seconds, plus 1.8 MB of hazard shapes each time an alert changed, all uncompressed. Caddy now compresses API answers, about six times less data, and leaves `/api/stream` uncompressed. `frontend/src/proxy.ts` still adds ngrok's `ngrok-skip-browser-warning` header, which is harmless anywhere else, in case ngrok is used again.
+**ngrok's free plan ran out.** Its free plan allows 1 GB and 20,000 requests a month, and on 2026-11-04 a dashboard left open overnight used up the gigabyte. From then on ngrok answered every call with a 403 (`ERR_NGROK_725`) until the monthly reset, so sign-in on the hosted site failed. That is why the account moved to a paid plan, and why Cloudflare was used in between. If the hosted site shows `ERR_NGROK_725` again, the plan's limit has been reached: use Cloudflare until it resets. A dashboard then moved about 50 KB every 5 seconds, plus 1.8 MB of hazard shapes each time an alert changed, all uncompressed. Caddy now compresses API answers, about six times less data, and leaves `/api/stream` uncompressed. `frontend/src/proxy.ts` still adds ngrok's `ngrok-skip-browser-warning` header, which is harmless anywhere else, in case ngrok is used again.
 
 ## 2. Point Vercel at it
 
