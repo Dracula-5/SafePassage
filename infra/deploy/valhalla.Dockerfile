@@ -7,7 +7,7 @@ WORKDIR /work
 COPY infra/valhalla/build.sh ./build.sh
 RUN DATA_DIR=/data bash ./build.sh
 
-FROM ghcr.io/valhalla/valhalla-scripted@sha256:f0556eec9720432337024ef3f29a9cb1ccd752f47ac057c58d3122209989d8da
+FROM ghcr.io/valhalla/valhalla-scripted@sha256:7f37f55ed41131b10f349798ad4fa91f0d8bc5c132fff82aea969b22910e459a
 
 COPY --from=mapdata /data/valhalla/andhra-pradesh.osm.pbf /custom_files/andhra-pradesh.osm.pbf
 ENV serve_tiles=True \
